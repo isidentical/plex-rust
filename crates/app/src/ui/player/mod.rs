@@ -29,7 +29,7 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{NSCursor, NSMenuItem, NSView, NSWindowStyleMask};
 use objc2_foundation::{
-    NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
+    NSActivityOptions, NSDate, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
 };
 use player::{Chapter, DolbyVision, EndReason, Event, Player, Track, TrackKind};
@@ -192,8 +192,12 @@ pub struct Ivars {
     /// is watching. A check never holds them: it must not take the media
     /// keys away from whatever the owner of the Mac is listening to.
     remote: RefCell<Option<Remote>>,
-    /// Running from open to close. Its absence means the screen is closed.
+    /// Held from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
+    /// Whether the timer is put off until something happens: nothing on
+    /// screen changes while a film is paused and its controls are away,
+    /// and a timer that fires all the same keeps the processor awake.
+    resting: Cell<bool>,
     ticks: Cell<u32>,
     /// The file's length, kept for when mpv no longer knows it.
     duration: Cell<Option<Duration>>,
@@ -244,6 +248,7 @@ define_class!(
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&AnyObject>) {
             self.or_log(self.on_tick());
+            self.or_log(self.rest_if_still());
         }
     }
 );
@@ -307,6 +312,7 @@ impl PlayerScreen {
             awake: RefCell::new(None),
             remote: RefCell::new(None),
             timer: RefCell::new(None),
+            resting: Cell::new(false),
             ticks: Cell::new(0),
             duration: Cell::new(None),
             background,
@@ -686,6 +692,7 @@ impl PlayerScreen {
     }
 
     fn act_on(&self, key: Key, press: Press) -> bool {
+        self.wake();
         // Only the arrows mean something again and again while held. A
         // held Space must not pause and resume thirty times a second.
         let repeats = matches!(
@@ -773,6 +780,7 @@ impl PlayerScreen {
     /// Hears where the pointer has moved to in the screen's view, or that
     /// it has left the view.
     fn pointer_moved(&self, place: Option<NSPoint>) {
+        self.wake();
         let controls = &self.ivars().controls;
         let on_controls =
             place.is_some_and(|place| controls.top.holds(place) || controls.bottom.holds(place));
@@ -824,15 +832,41 @@ impl PlayerScreen {
         self.refresh()?;
         let idle = ivars.ticks_idle.get() + 1;
         ivars.ticks_idle.set(idle);
-        // A paused picture keeps its controls, and so does a pointer that
-        // is on them.
+        // A pointer that is on the controls keeps them.
         let in_use = ivars.pointer_on_controls.get()
             || ivars.controls.scrubber.is_dragging()
             || ivars.menu_open.get();
-        if idle >= TICKS_UNTIL_HIDDEN && !in_use && !ivars.player.is_paused()? {
+        if idle >= TICKS_UNTIL_HIDDEN && !in_use {
             self.show_controls(false);
         }
         Ok(())
+    }
+
+    /// Puts the timer off for as long as nothing can change: the film is
+    /// paused, the bar is away and no notice is waiting to be taken down.
+    /// Anything that happens next wakes it.
+    fn rest_if_still(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let still = ivars.phase.get() == Phase::Playing
+            && !ivars.controls_shown.get()
+            && ivars.ticks_of_notice_left.get() == 0
+            && ivars.player.is_paused()?;
+        if let (true, Some(timer)) = (still, ivars.timer.borrow().as_ref()) {
+            timer.setFireDate(&NSDate::distantFuture());
+            ivars.resting.set(true);
+        }
+        Ok(())
+    }
+
+    /// Sets the timer going again after a rest.
+    fn wake(&self) {
+        let ivars = self.ivars();
+        if !ivars.resting.replace(false) {
+            return;
+        }
+        if let Some(timer) = ivars.timer.borrow().as_ref() {
+            timer.setFireDate(&NSDate::dateWithTimeIntervalSinceNow(TICK.as_secs_f64()));
+        }
     }
 
     /// Asks the server for the episodes of the show being played, to know
@@ -976,7 +1010,7 @@ impl PlayerScreen {
     fn show_item(&self, item: Item) {
         let ivars = self.ivars();
         let controls = &ivars.controls;
-        controls.set_heading(&item);
+        controls.set_heading(&item, None);
         let start = item.view_offset.map(Into::into).unwrap_or_default();
         let duration = item.duration.map(Into::into).unwrap_or_default();
         self.show_progress(start, duration);
@@ -1376,6 +1410,7 @@ impl PlayerScreen {
     }
 
     fn notify_for(&self, notice: &Notice, ticks: u32) {
+        self.wake();
         let ivars = self.ivars();
         ivars.controls.badge.show(notice);
         ivars.ticks_of_notice_left.set(ticks);
@@ -1395,16 +1430,25 @@ impl PlayerScreen {
 
     /// Fades the controls, the window's own buttons and the cursor in or
     /// out. Showing them also restarts the wait before they hide again.
+    ///
+    /// Over a paused picture the title stays when the rest goes: it and
+    /// the time left are what someone coming back to the screen wants to
+    /// know, and nothing else is in the way of the picture.
     fn show_controls(&self, shown: bool) {
         let ivars = self.ivars();
         if shown {
+            self.wake();
             ivars.ticks_idle.set(0);
         }
         if ivars.controls_shown.replace(shown) == shown {
             return;
         }
-        ivars.controls.top.set_shown(shown);
+        let paused = ivars.player.is_paused().unwrap_or(false);
+        ivars.controls.top.set_shown(shown || paused);
         ivars.controls.bottom.set_shown(shown);
+        if !shown {
+            ivars.controls.bubble.setHidden(true);
+        }
         if let Some(window) = ivars.root.window() {
             chrome::show_buttons(&window, shown);
         }
@@ -1439,6 +1483,7 @@ impl PlayerScreen {
     }
 
     fn handle(&self, event: &Event) {
+        self.wake();
         let ivars = self.ivars();
         // Until its file is open, what the player says is about the file
         // this item took over from, which is on its way out.
@@ -1499,6 +1544,7 @@ impl PlayerScreen {
             return Ok(());
         }
         self.ivars().player.set_paused(pause)?;
+        self.show_time_left(pause);
         let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
         self.ivars().controls.toggle.set_name(name);
@@ -1506,6 +1552,19 @@ impl PlayerScreen {
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);
         self.show_now_playing()
+    }
+
+    /// Adds what is left of the film to the line under its title, or with
+    /// `shown` false takes it off again. It is there while paused.
+    fn show_time_left(&self, shown: bool) {
+        let ivars = self.ivars();
+        let left = match (shown, ivars.player.position(), ivars.player.duration()) {
+            (true, Ok(Some(position)), Ok(Some(duration))) => {
+                Some(time_left(duration.saturating_sub(position)))
+            }
+            _ => None,
+        };
+        ivars.controls.set_heading(&self.item(), left.as_deref());
     }
 
     /// Brings the controls up to date with the player.
@@ -1544,6 +1603,10 @@ impl PlayerScreen {
         ivars.ticks_of_scrub_settling_left.set(settling.saturating_sub(1));
         if !controls.scrubber.is_dragging() && settling == 0 {
             self.show_progress(position, duration);
+        }
+        // Paused, the place can still change: by a key or the scrubber.
+        if player.is_paused()? {
+            self.show_time_left(true);
         }
         Ok(())
     }
@@ -1660,6 +1723,17 @@ fn log_unsaved(sent: plex::Result<()>) {
 /// under the pointer that is the same thing said twice.
 fn is_timestamp(title: &str) -> bool {
     title.chars().all(|character| character.is_ascii_digit() || matches!(character, ':' | '.'))
+}
+
+/// What is left of a film, as it is said: "1 h 2 min left", "6 min left",
+/// and in the last minute "40 s left".
+fn time_left(left: Duration) -> String {
+    let seconds = left.as_secs();
+    match (seconds / 3600, seconds / 60 % 60) {
+        (0, 0) => format!("{seconds} s left"),
+        (0, minutes) => format!("{minutes} min left"),
+        (hours, minutes) => format!("{hours} h {minutes} min left"),
+    }
 }
 
 /// `1:02:03`, or `2:03` under an hour.

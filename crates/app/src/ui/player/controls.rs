@@ -136,16 +136,21 @@ impl Controls {
         controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);
 
-        controls.set_heading(item);
+        controls.set_heading(item, None);
         controls.place_top(main_thread, root, material);
         controls.place_bottom(main_thread, root, material);
         controls.place_loose(root);
         controls
     }
 
-    /// Names `item` as what is playing.
-    pub fn set_heading(&self, item: &Item) {
+    /// Names `item` as what is playing. `note` is added to the line that
+    /// places it.
+    pub fn set_heading(&self, item: &Item, note: Option<&str>) {
         let (title, detail) = heading(item);
+        let detail = match (detail, note) {
+            (Some(detail), Some(note)) => Some(format!("{detail} \u{b7} {note}")),
+            (detail, note) => detail.or(note.map(str::to_owned)),
+        };
         self.title.setStringValue(&NSString::from_str(&title));
         self.detail.setStringValue(&NSString::from_str(detail.as_deref().unwrap_or_default()));
         self.detail.setHidden(detail.is_none());
