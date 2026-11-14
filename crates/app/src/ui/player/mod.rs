@@ -379,7 +379,11 @@ impl PlayerScreen {
         }
         // `on_close` may drop the last other reference to this screen.
         let _alive = self.retain();
-        self.report(PlaybackState::Stopped);
+        // After a failure mpv has no position, and a report without one
+        // gives the end of the file: the server would mark it as watched.
+        if !matches!(outcome, Outcome::Failed(_)) {
+            self.report(PlaybackState::Stopped);
+        }
         self.or_log(self.ivars().player.quit());
         (self.ivars().on_close)(outcome);
     }
