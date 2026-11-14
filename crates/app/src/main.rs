@@ -3,18 +3,24 @@
 mod account;
 mod error;
 mod play;
+mod progress;
 mod video_layer;
 
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::error::Result;
+use player::Source;
+use plex::model::RatingKey;
+
+use crate::error::{Error, Result};
+use crate::progress::Progress;
 
 const USAGE: &str = "\
 usage: reel login
        reel servers [<address>]
        reel api <path>
-       reel play <file-or-url> [--report-after <seconds>]";
+       reel play <file-or-url> [--unattended <seconds>]
+       reel play item:<rating-key> [--unattended <seconds>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,7 +29,7 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("reel: {error}");
+            eprintln!("reel: {}", error::with_causes(&error));
             ExitCode::FAILURE
         }
     }
@@ -35,13 +41,42 @@ fn run(args: &[&str]) -> Result<()> {
         ["servers"] => servers(None),
         ["servers", address] => servers(Some(address)),
         ["api", path] => api(path),
-        ["play", source] => Ok(play::run(source, None)?),
-        ["play", source, "--report-after", seconds] => {
-            let seconds = seconds.parse().map_err(|_| error::Error::Usage(USAGE))?;
-            Ok(play::run(source, Some(Duration::from_secs(seconds)))?)
+        ["play", what] => play(what, None),
+        ["play", what, "--unattended", seconds] => {
+            let seconds = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
+            play(what, Some(Duration::from_secs(seconds)))
         }
-        _ => Err(error::Error::Usage(USAGE)),
+        _ => Err(Error::Usage(USAGE)),
     }
+}
+
+/// Plays a file, a URL, or with `item:<rating-key>` an item from the first
+/// server, resuming where it was left and reporting progress.
+fn play(what: &str, unattended: Option<Duration>) -> Result<()> {
+    let Some(key) = what.strip_prefix("item:") else {
+        return Ok(play::run(&Source::new(what), None, unattended)?);
+    };
+
+    let (client, token) = account::signed_in()?;
+    let runtime = runtime()?;
+    let (server, item) = runtime.block_on(async {
+        let servers = plex::discovery::servers(&client, &token).await?;
+        let server = servers.first().ok_or(Error::NoServer)?;
+        let server = plex::MediaServer::connect(&client, server, None).await?;
+        let item = server.item(&RatingKey::new(key)).await?;
+        Ok::<_, Error>((server, item))
+    })?;
+
+    let part = item.media.first().and_then(|media| media.parts.first());
+    let part = part.ok_or_else(|| Error::NotPlayable(item.title.clone()))?;
+    let file = server.original_file(part);
+    let source = Source {
+        location: file.url,
+        headers: file.headers,
+        start: item.view_offset.map(Into::into).unwrap_or_default(),
+    };
+    let progress = Progress::new(runtime, server, item.rating_key);
+    Ok(play::run(&source, Some(progress), unattended)?)
 }
 
 /// Lists the account's servers and the address each one answers at.
@@ -64,7 +99,7 @@ fn api(path: &str) -> Result<()> {
     let (client, token) = account::signed_in()?;
     runtime()?.block_on(async {
         let servers = plex::discovery::servers(&client, &token).await?;
-        let server = servers.first().ok_or(error::Error::NoServer)?;
+        let server = servers.first().ok_or(Error::NoServer)?;
         let server = plex::MediaServer::connect(&client, server, None).await?;
         println!("{}", server.get_text(path).await?);
         Ok(())
@@ -76,5 +111,5 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(error::Error::Runtime)
+        .map_err(Error::Runtime)
 }

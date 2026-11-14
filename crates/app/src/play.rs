@@ -1,47 +1,107 @@
-//! `reel play`: one file or URL in a bare window.
+//! `reel play`: one file, URL or library item in a bare window.
 
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
     NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, ns_string};
-use player::{EndReason, Event, Player};
+use objc2_foundation::{
+    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, ns_string,
+};
+use player::{EndReason, Event, Player, Source};
+use plex::playback::PlaybackState;
 
+use crate::error::with_causes;
+use crate::progress::Progress;
 use crate::video_layer::VideoLayer;
 
+/// How often the server hears from a running playback. Plex asks for 10 s.
+const REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// A playback and, for library items, the means to report its progress.
+struct Playback {
+    player: Player,
+    progress: Option<Progress>,
+}
+
+impl Playback {
+    fn report(&self, state: PlaybackState) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        if let Err(error) = progress.report(&self.player, state) {
+            eprintln!("reel: progress was not saved: {}", with_causes(&error));
+        }
+    }
+
+    fn report_current_state(&self) {
+        match self.player.is_paused() {
+            Ok(true) => self.report(PlaybackState::Paused),
+            Ok(false) => self.report(PlaybackState::Playing),
+            Err(error) => eprintln!("reel: {error}"),
+        }
+    }
+}
+
 /// Plays `source` in a window until it ends or the window is closed.
-pub fn run(source: &str, report_after: Option<Duration>) -> player::Result<()> {
+///
+/// With `progress`, the server is kept up to date on the position.
+///
+/// With `unattended`, the run is a check and not a viewing: it is muted,
+/// leaves the keyboard focus where it is, prints the playback state after
+/// that long, and exits.
+pub fn run(
+    source: &Source,
+    progress: Option<Progress>,
+    unattended: Option<Duration>,
+) -> player::Result<()> {
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
 
-    let player = Player::new()?;
+    let playback = Arc::new(Playback {
+        player: Player::new()?,
+        progress,
+    });
+    let player = &playback.player;
 
     let app = NSApplication::sharedApplication(main_thread);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let delegate = AppDelegate::new(main_thread);
+    let delegate = AppDelegate::new(main_thread, Arc::clone(&playback));
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-    let window = video_window(main_thread, &player)?;
-    window.makeKeyAndOrderFront(None);
+    let window = video_window(main_thread, player)?;
+    player.set_muted(unattended.is_some())?;
     player.load(source)?;
-    #[allow(deprecated)]
-    app.activateIgnoringOtherApps(true);
 
-    let events = player.clone();
-    thread::spawn(move || exit_when_playback_ends(&events));
-    if let Some(delay) = report_after {
-        let reporter = player.clone();
-        thread::spawn(move || report_and_exit(&reporter, delay));
+    spawn(&playback, exit_when_playback_ends);
+    spawn(&playback, report_periodically);
+    match unattended {
+        Some(delay) => {
+            window.orderFrontRegardless();
+            spawn(&playback, move |playback| {
+                print_state_and_exit(playback, delay)
+            });
+        }
+        None => {
+            window.makeKeyAndOrderFront(None);
+            #[allow(deprecated)]
+            app.activateIgnoringOtherApps(true);
+        }
     }
 
     app.run();
     Ok(())
+}
+
+fn spawn(playback: &Arc<Playback>, work: impl FnOnce(&Playback) + Send + 'static) {
+    let playback = Arc::clone(playback);
+    thread::spawn(move || work(&playback));
 }
 
 fn video_window(
@@ -78,29 +138,37 @@ fn video_window(
     Ok(window)
 }
 
-fn exit_when_playback_ends(player: &Player) -> ! {
+fn exit_when_playback_ends(playback: &Playback) {
     loop {
-        match player.wait_event() {
-            Event::Loaded => {}
+        match playback.player.wait_event() {
+            Event::Loaded => playback.report(PlaybackState::Playing),
             Event::Ended(EndReason::Failed(error)) => {
                 eprintln!("reel: playback failed: {error}");
                 std::process::exit(1);
             }
             Event::Ended(EndReason::Finished | EndReason::Stopped) | Event::Shutdown => {
+                playback.report(PlaybackState::Stopped);
                 std::process::exit(0);
             }
         }
     }
 }
 
+fn report_periodically(playback: &Playback) {
+    loop {
+        thread::sleep(REPORT_INTERVAL);
+        playback.report_current_state();
+    }
+}
+
 /// Prints the playback state as one line of JSON, then exits.
-///
-/// This is how an unattended run checks that video really plays.
-fn report_and_exit(player: &Player, delay: Duration) -> ! {
+fn print_state_and_exit(playback: &Playback, delay: Duration) {
     thread::sleep(delay);
-    match report(player) {
-        Ok(report) => {
-            println!("{report}");
+    let state = state(&playback.player);
+    playback.report(PlaybackState::Stopped);
+    match state {
+        Ok(state) => {
+            println!("{state}");
             std::process::exit(0);
         }
         Err(error) => {
@@ -110,7 +178,7 @@ fn report_and_exit(player: &Player, delay: Duration) -> ! {
     }
 }
 
-fn report(player: &Player) -> player::Result<serde_json::Value> {
+fn state(player: &Player) -> player::Result<serde_json::Value> {
     let seconds = |time: Option<Duration>| time.map(|time| time.as_secs_f64());
     Ok(serde_json::json!({
         "position": seconds(player.position()?),
@@ -127,6 +195,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "ReelAppDelegate"]
+    #[ivars = Arc<Playback>]
     struct AppDelegate;
 
     unsafe impl NSObjectProtocol for AppDelegate {}
@@ -136,12 +205,20 @@ define_class!(
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             true
         }
+
+        /// Closing the window ends the app without the player ever
+        /// reporting an end, so the last position is sent from here.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            self.ivars().report(PlaybackState::Stopped);
+        }
     }
 );
 
 impl AppDelegate {
-    fn new(main_thread: MainThreadMarker) -> Retained<Self> {
+    fn new(main_thread: MainThreadMarker, playback: Arc<Playback>) -> Retained<Self> {
+        let this = Self::alloc(main_thread).set_ivars(playback);
         // SAFETY: `init` is NSObject's designated initializer.
-        unsafe { msg_send![Self::alloc(main_thread), init] }
+        unsafe { msg_send![super(this), init] }
     }
 }

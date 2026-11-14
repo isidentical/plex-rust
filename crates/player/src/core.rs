@@ -47,6 +47,28 @@ impl Drop for Handle {
     }
 }
 
+/// Something to play.
+#[derive(Debug, Clone, Default)]
+pub struct Source {
+    /// A file path or URL.
+    pub location: String,
+    /// Extra HTTP request headers as name and value, for URLs that need a
+    /// token.
+    pub headers: Vec<(String, String)>,
+    /// Where to start playing.
+    pub start: Duration,
+}
+
+impl Source {
+    /// A source that plays `location` from the beginning.
+    pub fn new(location: impl Into<String>) -> Self {
+        Self {
+            location: location.into(),
+            ..Self::default()
+        }
+    }
+}
+
 /// What happened in the player, as returned by [`Player::wait_event`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -91,9 +113,18 @@ impl Player {
         Ok(player)
     }
 
-    /// Starts playing `source`, a file path or URL, replacing what is playing.
-    pub fn load(&self, source: &str) -> Result<()> {
-        self.command(&["loadfile", source])
+    /// Starts playing `source`, replacing what is playing.
+    pub fn load(&self, source: &Source) -> Result<()> {
+        let headers: Vec<String> = source
+            .headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect();
+        self.set_strings("http-header-fields", &headers)?;
+
+        let start = format!("start={}", source.start.as_secs_f64());
+        // "-1" is the playlist index argument, which "replace" ignores.
+        self.command(&["loadfile", &source.location, "replace", "-1", &start])
     }
 
     /// Asks mpv to shut down. [`Event::Shutdown`] follows.
@@ -107,6 +138,14 @@ impl Player {
 
     pub fn set_paused(&self, paused: bool) -> Result<()> {
         self.set_string("pause", if paused { "yes" } else { "no" })
+    }
+
+    pub fn set_muted(&self, muted: bool) -> Result<()> {
+        self.set_string("mute", if muted { "yes" } else { "no" })
+    }
+
+    pub fn is_paused(&self) -> Result<bool> {
+        Ok(self.string("pause")?.as_deref() == Some("yes"))
     }
 
     /// Sets the playback rate, where 1.0 is normal speed.
@@ -190,6 +229,46 @@ impl Player {
         let status =
             unsafe { sys::mpv_set_property_string(self.raw(), c_name.as_ptr(), c_value.as_ptr()) };
         check(status, || format!("set {name}={value}"))
+    }
+
+    /// Sets a list property. Passing the items as a list, and not as one
+    /// comma-separated string, keeps commas inside an item intact.
+    fn set_strings(&self, name: &str, items: &[String]) -> Result<()> {
+        let c_name = c_string(name)?;
+        let owned = items
+            .iter()
+            .map(|item| c_string(item))
+            .collect::<Result<Vec<_>>>()?;
+        let mut nodes: Vec<sys::mpv_node> = owned
+            .iter()
+            .map(|item| sys::mpv_node {
+                u: sys::mpv_node__bindgen_ty_1 {
+                    string: item.as_ptr().cast_mut(),
+                },
+                format: sys::mpv_format_MPV_FORMAT_STRING,
+            })
+            .collect();
+        let mut list = sys::mpv_node_list {
+            num: libc::c_int::try_from(nodes.len()).unwrap_or(libc::c_int::MAX),
+            values: nodes.as_mut_ptr(),
+            keys: ptr::null_mut(),
+        };
+        let mut node = sys::mpv_node {
+            u: sys::mpv_node__bindgen_ty_1 { list: &mut list },
+            format: sys::mpv_format_MPV_FORMAT_NODE_ARRAY,
+        };
+        // SAFETY: the handle is valid, the name is NUL-terminated, and the
+        // node is a well-formed array of `num` strings. mpv copies what it
+        // needs and does not keep or modify any of these pointers.
+        let status = unsafe {
+            sys::mpv_set_property(
+                self.raw(),
+                c_name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_NODE,
+                ptr::from_mut(&mut node).cast(),
+            )
+        };
+        check(status, || format!("set {name}"))
     }
 
     /// Reads a property as text. `None` means it has no value right now.
