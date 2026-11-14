@@ -40,6 +40,7 @@ open target/plex-rust.app
 | Command-[ and Command-] | Back and forward |
 | Command-1, Command-2, ... | Home and the libraries |
 | Command-F | Search |
+| Down, in the search field | Into the results |
 | Command-R | Load the page again |
 | Shift-Command-U | Mark as watched or unwatched |
 
