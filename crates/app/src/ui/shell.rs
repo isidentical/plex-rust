@@ -173,8 +173,11 @@ struct Shell {
     /// last launch's is started from. Not so for a snapshot, which goes
     /// where it is told and must leave no trace.
     keeps_place: Cell<bool>,
-    /// The place on screen, for the writes that keep it.
-    place: Arc<Mutex<Option<Place>>>,
+    /// The place on screen, the settings and the listings, for the
+    /// writes that keep them.
+    place: Latest<Place>,
+    kept_settings: Latest<Settings>,
+    kept_listings: Latest<Listings>,
     /// What Home held at the last launch, read along with the libraries
     /// so that the first Home of this one is built with it.
     saved_home: RefCell<Option<Vec<Hub>>>,
@@ -186,6 +189,9 @@ struct Shell {
     /// Only [`hear`](Self::hear) changes it.
     reach: Cell<Reach>,
 }
+
+/// What a file is to hold, shared with the writes of it that are under way.
+type Latest<T> = Arc<Mutex<Option<T>>>;
 
 /// What exists only while a server is known.
 #[derive(Clone)]
@@ -594,6 +600,8 @@ impl Shell {
                 read_only: Cell::new(false),
                 keeps_place: Cell::new(false),
                 place: Arc::default(),
+                kept_settings: Arc::default(),
+                kept_listings: Arc::default(),
                 saved_home: RefCell::new(None),
             }
         })
@@ -890,21 +898,27 @@ impl Shell {
         if !self.keeps_place.get() {
             return;
         }
-        // The file is written off the main thread, and what is written is
-        // the place at that moment: of two moves in quick succession the
-        // second is then the one kept, whichever write runs last.
-        let latest = Arc::clone(&self.place);
+        self.keep(&self.place, place, Place::save);
+    }
+
+    /// Writes `value` to its file with `save`, off the main thread, which
+    /// a slow disk would otherwise hold up. `latest` is what the file is
+    /// to hold, and what is written is its value at that moment: of two
+    /// changes in quick succession the second is then the one kept,
+    /// whichever write runs last.
+    fn keep<T: Send + 'static>(&self, latest: &Latest<T>, value: T, save: fn(&T) -> Result<()>) {
+        let latest = Arc::clone(latest);
         if let Ok(mut latest) = latest.lock() {
-            *latest = Some(place);
+            *latest = Some(value);
         }
-        let save = async move {
+        let write = async move {
             match latest.lock().as_deref() {
-                Ok(Some(place)) => place.save(),
+                Ok(Some(value)) => save(value),
                 // Nothing to keep, or a write that panicked holding it.
                 Ok(None) | Err(_) => Ok(()),
             }
         };
-        self.background.run(self.main_thread, save, |saved| {
+        self.background.run(self.main_thread, write, |saved| {
             if let Err(error) = saved {
                 eprintln!("plex-rust: {}", with_causes(&error));
             }
@@ -1482,9 +1496,7 @@ impl Shell {
     /// Lists a library another way from now on, and shows it that way.
     fn relist(self: &Rc<Self>, section: &Section, listing: Listing) {
         self.listings.borrow_mut().set(&section.key, listing);
-        if let Err(error) = self.listings.borrow().save() {
-            eprintln!("plex-rust: {}", with_causes(&error));
-        }
+        self.keep(&self.kept_listings, self.listings.borrow().clone(), Listings::save);
         self.replace(Route::Library(section.clone(), listing));
     }
 
@@ -2452,9 +2464,7 @@ impl Shell {
 
     fn save_settings(&self, settings: Settings) {
         self.settings.set(settings);
-        if let Err(error) = settings.save() {
-            eprintln!("plex-rust: {}", with_causes(&error));
-        }
+        self.keep(&self.kept_settings, settings, Settings::save);
     }
 
     /// Turns low power on if it is off and off if it is on, for what is
