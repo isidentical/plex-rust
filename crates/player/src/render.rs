@@ -5,7 +5,6 @@
     reason = "Apple deprecated OpenGL, but it is the only API mpv can render through when embedded"
 )]
 
-use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,9 +12,9 @@ use std::sync::{Mutex, PoisonError};
 
 use libmpv2_sys as sys;
 use objc2_open_gl::{
-    CGLChoosePixelFormat, CGLContextObj, CGLCreateContext, CGLOpenGLProfile,
+    CGLChoosePixelFormat, CGLContextObj, CGLCreateContext, CGLLockContext, CGLOpenGLProfile,
     CGLPixelFormatAttribute, CGLPixelFormatObj, CGLReleaseContext, CGLReleasePixelFormat,
-    CGLSetCurrentContext,
+    CGLSetCurrentContext, CGLUnlockContext,
 };
 
 use crate::clock::HostTime;
@@ -37,8 +36,22 @@ pub struct FrameTiming {
     /// When mpv wants the frame on screen. `None` when the draw repeated a
     /// frame that was already shown.
     pub due: Option<HostTime>,
+    /// The display refresh the draw was made for. `None` when it was not
+    /// timed to one, as when a resized window is redrawn.
+    pub refresh: Option<HostTime>,
     pub began: HostTime,
     pub ended: HostTime,
+}
+
+/// What mpv is holding out to be drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    Nothing,
+    /// A picture to draw without delay: the last frame again, as after a
+    /// change of settings while paused, or a frame mpv gave no time for.
+    Now,
+    /// A new frame, and when mpv wants it on screen.
+    Due(HostTime),
 }
 
 /// Draws the player's video with OpenGL.
@@ -47,6 +60,11 @@ pub struct FrameTiming {
 /// shows the video by handing that context and pixel format to Core
 /// Animation and calling [`render`](Self::render) from its draw method.
 ///
+/// Any thread may call any method. Each one locks the OpenGL context and
+/// makes it current for the length of the call, which is also what keeps
+/// the calls into mpv's renderer one at a time, as mpv requires
+/// (mpv/render.h, "Threading").
+///
 /// mpv can only start video playback once a renderer exists, so create it
 /// before calling [`Player::load`].
 pub struct Renderer {
@@ -54,7 +72,7 @@ pub struct Renderer {
     gl: CGLContextObj,
     pixel_format: CGLPixelFormatObj,
     /// Width and height in pixels of the last frame drawn.
-    drawn_size: Cell<(i32, i32)>,
+    drawn_size: Mutex<(i32, i32)>,
     /// Host time minus mpv's clock, in nanoseconds. Both count the same
     /// ticks, mpv from when it started (osdep/timer.c).
     clock_offset: i64,
@@ -64,6 +82,28 @@ pub struct Renderer {
     signal: Box<Signal>,
     // Keeps mpv alive for as long as the render context exists.
     _player: Player,
+}
+
+// SAFETY: `mpv` and `gl` are only used through `current`, which holds the
+// OpenGL context's own lock, so one thread at a time uses them, with the
+// context current on that thread. mpv allows its render functions on any
+// thread under exactly those two conditions (mpv/render.h, "Threading").
+// `gl` and `pixel_format` are also handed out to be retained, which CGL
+// allows from any thread. Every other field is `Send` and `Sync`.
+unsafe impl Send for Renderer {}
+// SAFETY: as above.
+unsafe impl Sync for Renderer {}
+
+/// The renderer's OpenGL context, locked and current on this thread.
+struct Current<'a>(&'a Renderer);
+
+impl Drop for Current<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the context is valid and this thread locked it in
+        // `Renderer::current`. It is left current: Core Animation, which
+        // calls in with it current, expects to find it so afterwards.
+        unsafe { CGLUnlockContext(self.0.gl) };
+    }
 }
 
 impl Renderer {
@@ -79,7 +119,7 @@ impl Renderer {
                 return Err(error);
             }
         };
-        // SAFETY: `gl` is a valid context.
+        // SAFETY: `gl` is a valid context that no other thread knows yet.
         unsafe { CGLSetCurrentContext(gl) };
 
         let mut init = sys::mpv_opengl_init_params {
@@ -130,7 +170,7 @@ impl Renderer {
             mpv,
             gl,
             pixel_format,
-            drawn_size: Cell::new((0, 0)),
+            drawn_size: Mutex::new((0, 0)),
             clock_offset,
             timings: Mutex::new(None),
             signal,
@@ -141,7 +181,7 @@ impl Renderer {
     /// Width and height in pixels of the last frame drawn, which is the
     /// resolution the picture is really rendered at.
     pub fn drawn_size(&self) -> (i32, i32) {
-        self.drawn_size.get()
+        *self.drawn_size.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The OpenGL context frames are drawn with. Valid while `self` lives.
@@ -165,51 +205,85 @@ impl Renderer {
         self.timings.lock().unwrap_or_else(PoisonError::into_inner).take().unwrap_or_default()
     }
 
-    /// When mpv wants the frame it is holding out to be on screen. `None`
-    /// when it holds none, or only a request to draw the last one again.
-    fn next_frame_due(&self) -> Option<HostTime> {
+    /// Locks the OpenGL context and makes it current on this thread.
+    fn current(&self) -> Current<'_> {
+        // SAFETY: the context is valid. Its lock is recursive ("You can use
+        // CGLLockContext recursively", OpenGL Programming Guide for Mac,
+        // "Concurrency and OpenGL"), so this also works inside Core
+        // Animation's draw call, whether or not that holds the lock.
+        unsafe {
+            CGLLockContext(self.gl);
+            CGLSetCurrentContext(self.gl);
+        }
+        Current(self)
+    }
+
+    /// Runs `work` while no other thread can draw, with the OpenGL context
+    /// current.
+    pub fn exclusively<T>(&self, work: impl FnOnce() -> T) -> T {
+        let _current = self.current();
+        work()
+    }
+
+    /// What mpv is holding out to be drawn.
+    pub fn pending(&self) -> Pending {
+        let _current = self.current();
+        self.pending_while_current()
+    }
+
+    fn pending_while_current(&self) -> Pending {
         let mut info = sys::mpv_render_frame_info { flags: 0, target_time: 0 };
-        // SAFETY: the render context is valid and `info` is the type this
-        // parameter writes to.
+        // SAFETY: the render context is valid, the OpenGL context is
+        // current, and `info` is the type this parameter writes to.
         let status = unsafe {
             sys::mpv_render_context_get_info(
                 self.mpv.as_ptr(),
                 param(sys::mpv_render_param_type_MPV_RENDER_PARAM_NEXT_FRAME_INFO, &mut info),
             )
         };
-        let is_new = info.flags & FRAME_PRESENT != 0 && info.flags & FRAME_REDRAW == 0;
-        if status < 0 || !is_new || info.target_time <= 0 {
-            return None;
+        if status < 0 || info.flags & FRAME_PRESENT == 0 {
+            return Pending::Nothing;
+        }
+        if info.flags & FRAME_REDRAW != 0 || info.target_time <= 0 {
+            return Pending::Now;
         }
         // render.h says microseconds, but mpv 0.42 stores the frame's time
         // in nanoseconds on the clock of `mpv_get_time_ns` (vo_libmpv.c,
         // `info->target_time = frame->pts`).
         let nanos = info.target_time.saturating_add(self.clock_offset);
-        Some(HostTime::from_nanos(u64::try_from(nanos).unwrap_or(0)))
+        Pending::Due(HostTime::from_nanos(u64::try_from(nanos).unwrap_or(0)))
     }
 
-    /// Draws the current frame into the framebuffer that is bound for
-    /// drawing in the renderer's context, filling the viewport.
-    pub fn render(&self) -> Result<()> {
+    /// Draws the pending frame, or the last one again if none is pending,
+    /// into the framebuffer that is bound for drawing in the renderer's
+    /// context, filling the viewport.
+    ///
+    /// `refresh` is the display refresh the caller timed the draw for. mpv
+    /// is told not to wait for the frame's due time inside the call (it
+    /// would, for up to `video-timing-offset`): render.h asks callers who
+    /// turn that off to time frames themselves from their due times, which
+    /// is what [`pending`](Self::pending) and `Cadence` are for.
+    pub fn render(&self, refresh: Option<HostTime>) -> Result<()> {
         let began = HostTime::now();
-        let due = self.next_frame_due();
+        let _current = self.current();
+        let pending = self.pending_while_current();
         let mut framebuffer = 0;
         // x, y, width, height in pixels.
         let mut viewport = [0; 4];
-        // SAFETY: the context is valid, and each query writes exactly as
+        // SAFETY: the context is current, and each query writes exactly as
         // many integers as its target holds.
         unsafe {
-            CGLSetCurrentContext(self.gl);
             glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mut framebuffer);
             glGetIntegerv(GL_VIEWPORT, viewport.as_mut_ptr());
         }
 
         // Acknowledges mpv's frame signal. The frame is drawn either way,
         // because a resized layer needs the same picture drawn again.
-        // SAFETY: the render context is valid.
+        // SAFETY: the render context is valid and the context current.
         unsafe { sys::mpv_render_context_update(self.mpv.as_ptr()) };
 
-        self.drawn_size.set((viewport[2], viewport[3]));
+        *self.drawn_size.lock().unwrap_or_else(PoisonError::into_inner) =
+            (viewport[2], viewport[3]);
         let mut fbo = sys::mpv_opengl_fbo {
             fbo: framebuffer,
             w: viewport[2],
@@ -219,10 +293,6 @@ impl Renderer {
         // OpenGL's origin is bottom-left; without the flip the picture is
         // upside down.
         let mut flip_y: libc::c_int = 1;
-        // By default mpv sleeps inside the render call until the frame is
-        // due: 37 ms on average for 24 fps video. The call runs on the main
-        // thread, so it must return at once. mpv already signals each frame
-        // close to when it should be shown.
         let mut wait_until_due: libc::c_int = 0;
         let mut params = [
             param(sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO, &mut fbo),
@@ -246,21 +316,54 @@ impl Renderer {
         }
         if let Some(timings) = &mut *self.timings.lock().unwrap_or_else(PoisonError::into_inner) {
             let signalled = HostTime::from_nanos(self.signal.at.load(Ordering::Relaxed));
-            timings.push(FrameTiming { signalled, due, began, ended: HostTime::now() });
+            let due = match pending {
+                Pending::Due(due) => Some(due),
+                Pending::Nothing | Pending::Now => None,
+            };
+            timings.push(FrameTiming { signalled, due, refresh, began, ended: HostTime::now() });
         }
         Ok(())
+    }
+
+    /// Takes the pending frame from mpv without drawing it, for when there
+    /// is nowhere to draw: macOS does not draw a window that is covered or
+    /// on another Space. Left pending, the frame would hold mpv's video
+    /// thread for 200 ms and be counted as dropped (vo_libmpv.c,
+    /// `flip_page`).
+    pub fn skip(&self) -> Result<()> {
+        let _current = self.current();
+        let mut skip: libc::c_int = 1;
+        let mut wait_until_due: libc::c_int = 0;
+        let mut params = [
+            param(sys::mpv_render_param_type_MPV_RENDER_PARAM_SKIP_RENDERING, &mut skip),
+            param(
+                sys::mpv_render_param_type_MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                &mut wait_until_due,
+            ),
+            END,
+        ];
+        // SAFETY: the render context is valid, its OpenGL context is
+        // current, and `params` is terminated and outlives the call.
+        let status =
+            unsafe { sys::mpv_render_context_render(self.mpv.as_ptr(), params.as_mut_ptr()) };
+        // SAFETY: the render context is valid.
+        unsafe { sys::mpv_render_context_report_swap(self.mpv.as_ptr()) };
+        check(status, || "skip a frame".into())
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
         // SAFETY: all three objects are valid and not used again. mpv frees
-        // its OpenGL resources in the context it created them in, and
-        // freeing the render context also stops the frame callback.
+        // its OpenGL resources in the context it created them in, which is
+        // locked and current on this thread, whichever thread that is.
+        // Freeing the render context also stops the frame callback.
         unsafe {
+            CGLLockContext(self.gl);
             CGLSetCurrentContext(self.gl);
             sys::mpv_render_context_free(self.mpv.as_ptr());
             CGLSetCurrentContext(ptr::null_mut());
+            CGLUnlockContext(self.gl);
             CGLReleaseContext(self.gl);
             CGLReleasePixelFormat(self.pixel_format);
         }

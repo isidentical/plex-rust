@@ -1,31 +1,44 @@
 //! The layer that shows the video.
+//!
+//! Frames are drawn on a thread of their own, the frame clock, which a
+//! display link wakes ahead of every refresh of the display. Each frame is
+//! drawn for the refresh nearest the moment mpv wants it on screen. The
+//! main thread takes no part in showing a frame, so nothing the interface
+//! does can delay one.
 
 #![expect(
     deprecated,
     reason = "Apple deprecated OpenGL, but it is the only API mpv can render through when embedded"
 )]
 
-use std::cell::OnceCell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak as WeakArc, mpsc};
+use std::thread;
+use std::time::Duration;
 
-use dispatch2::{DispatchQueue, MainThreadBound};
+use block2::RcBlock;
 use objc2::rc::{Allocated, Retained, Weak};
 use objc2::runtime::AnyObject;
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send, sel};
 use objc2_app_kit::NSView;
-use objc2_core_foundation::CFTimeInterval;
+use objc2_core_foundation::{CFRetained, CFRunLoop, CFTimeInterval, kCFRunLoopDefaultMode};
 use objc2_core_graphics::{
     CGColorSpace, kCGColorSpaceDisplayP3_PQ, kCGColorSpaceITUR_2100_PQ, kCGColorSpaceSRGB,
 };
 use objc2_core_video::CVTimeStamp;
-use objc2_foundation::NSObject;
+use objc2_foundation::{NSDefaultRunLoopMode, NSObject, NSPort, NSRunLoop};
 use objc2_open_gl::{CGLContextObj, CGLPixelFormatObj, CGLRetainContext, CGLRetainPixelFormat};
-use objc2_quartz_core::{CALayer, CAOpenGLLayer};
-use player::{Colors, FrameTiming, Player, Renderer};
+use objc2_quartz_core::{CADisplayLink, CALayer, CAOpenGLLayer, CATransaction};
+use player::{Cadence, Colors, FrameTiming, HostTime, Pending, Player, Refresh, Renderer};
+
+/// The display link pauses after this many refreshes in a row with no
+/// frame to show, about a second, so that a paused player wakes nothing.
+const IDLE_REFRESHES: u32 = 120;
 
 pub struct Ivars {
-    renderer: Rc<Renderer>,
+    pace: Arc<Pace>,
+    /// Empty until [`fit_to_display`] finds the layer in a window.
+    clock: Arc<OnceLock<Clock>>,
 }
 
 define_class!(
@@ -46,8 +59,8 @@ define_class!(
             // SAFETY: Core Animation only copies a layer from one of its own
             // class, so `layer` is a `VideoLayer`.
             let original = unsafe { &*std::ptr::from_ref(layer).cast::<Self>() };
-            let renderer = Rc::clone(&original.ivars().renderer);
-            let this = this.set_ivars(Ivars { renderer });
+            let Ivars { pace, clock } = original.ivars();
+            let this = this.set_ivars(Ivars { pace: Arc::clone(pace), clock: Arc::clone(clock) });
             // SAFETY: `initWithLayer:` is CALayer's copy initializer and
             // `layer` is a valid layer.
             unsafe { msg_send![super(this), initWithLayer: layer] }
@@ -59,13 +72,26 @@ define_class!(
         #[unsafe(method(copyCGLPixelFormatForDisplayMask:))]
         fn pixel_format(&self, _display_mask: u32) -> CGLPixelFormatObj {
             // SAFETY: the renderer's pixel format is valid while it lives.
-            unsafe { CGLRetainPixelFormat(self.ivars().renderer.gl_pixel_format()) }
+            unsafe { CGLRetainPixelFormat(self.ivars().pace.renderer.gl_pixel_format()) }
         }
 
         #[unsafe(method(copyCGLContextForPixelFormat:))]
         fn context(&self, _format: CGLPixelFormatObj) -> CGLContextObj {
             // SAFETY: the renderer's context is valid while it lives.
-            unsafe { CGLRetainContext(self.ivars().renderer.gl_context()) }
+            unsafe { CGLRetainContext(self.ivars().pace.renderer.gl_context()) }
+        }
+
+        /// The frame clock draws frames through this, and the main thread
+        /// a resized layer. One at a time: the layer draws with a single
+        /// OpenGL context.
+        #[unsafe(method(display))]
+        fn display_one_at_a_time(&self) {
+            self.ivars().pace.renderer.exclusively(|| {
+                // SAFETY: `display` is CALayer's own method, called here on
+                // whichever thread asked, as Core Animation allows inside a
+                // transaction.
+                let () = unsafe { msg_send![super(self), display] };
+            });
         }
 
         #[unsafe(method(drawInCGLContext:pixelFormat:forLayerTime:displayTime:))]
@@ -76,7 +102,13 @@ define_class!(
             _layer_time: CFTimeInterval,
             _display_time: *const CVTimeStamp,
         ) {
-            if let Err(error) = self.ivars().renderer.render() {
+            let pace = &self.ivars().pace;
+            pace.drew.store(true, Ordering::Release);
+            let refresh = match pace.drawing_for.load(Ordering::Acquire) {
+                0 => None,
+                nanos => Some(HostTime::from_nanos(nanos)),
+            };
+            if let Err(error) = pace.renderer.render(refresh) {
                 eprintln!("plex-rust: {error}");
             }
         }
@@ -85,40 +117,52 @@ define_class!(
 
 impl VideoLayer {
     /// Creates the layer and the renderer behind it. `player` can load
-    /// video once this returns.
-    pub fn new(player: &Player, main_thread: MainThreadMarker) -> player::Result<Retained<Self>> {
-        // The renderer needs a way to reach the layer, and the layer needs
-        // the renderer to exist. The slot is filled in once both do.
-        let slot = Arc::new(MainThreadBound::new(OnceCell::new(), main_thread));
-        let renderer = Renderer::new(player, redraw_request(Arc::clone(&slot)))?;
+    /// video once this returns. Frames appear once the layer's view is in
+    /// a window and [`fit_to_display`] has been called for it.
+    pub fn new(player: &Player, _main_thread: MainThreadMarker) -> player::Result<Retained<Self>> {
+        let clock = Arc::new(OnceLock::new());
+        let waker =
+            Arc::new(Waker { clock: Arc::downgrade(&clock), ticking: AtomicBool::new(false) });
+        let renderer = Renderer::new(player, {
+            let waker = Arc::clone(&waker);
+            move || waker.wake()
+        })?;
+        let pace = Arc::new(Pace {
+            renderer,
+            waker,
+            layer: OnceLock::new(),
+            cadence: Mutex::new(Cadence::default()),
+            idle_refreshes: AtomicU32::new(0),
+            drawing_for: AtomicU64::new(0),
+            drew: AtomicBool::new(false),
+        });
 
-        let this = Self::alloc().set_ivars(Ivars { renderer: Rc::new(renderer) });
+        let this = Self::alloc().set_ivars(Ivars { pace: Arc::clone(&pace), clock });
         // SAFETY: `init` is CALayer's designated initializer.
         let layer: Retained<Self> = unsafe { msg_send![super(this), init] };
         // Cannot fail: the slot was created empty a few lines up.
-        let _ = slot.get(main_thread).set(Weak::new(&*layer));
+        let _ = pace.layer.set(LayerRef(Weak::new(&*layer)));
 
-        // Draw when mpv has a frame, not on every display refresh.
+        // Core Animation draws only when asked: by the frame clock for a
+        // new frame, and by itself when the layer changes size.
         layer.setAsynchronous(false);
         layer.setNeedsDisplayOnBoundsChange(true);
         Ok(layer)
     }
-}
 
-impl VideoLayer {
     /// Width and height in pixels of the last frame drawn.
     pub fn drawn_size(&self) -> (i32, i32) {
-        self.ivars().renderer.drawn_size()
+        self.ivars().pace.renderer.drawn_size()
     }
 
     /// Starts keeping the times of every draw.
     pub fn record_timings(&self) {
-        self.ivars().renderer.record_timings();
+        self.ivars().pace.renderer.record_timings();
     }
 
     /// The draws since [`record_timings`](Self::record_timings).
     pub fn take_timings(&self) -> Vec<FrameTiming> {
-        self.ivars().renderer.take_timings()
+        self.ivars().pace.renderer.take_timings()
     }
 
     /// Sets up the layer and the player for the colours of the video that
@@ -149,13 +193,34 @@ impl VideoLayer {
         self.setColorspace(CGColorSpace::with_name(Some(name)).as_deref());
         player.set_output_colors(output)
     }
+
+    /// Starts the frame clock on a display link from `view`, which hosts
+    /// the layer and is in a window. The link follows the view from
+    /// display to display by itself, and rests while the view is hidden.
+    fn start_clock(&self, view: &NSView) -> player::Result<()> {
+        let Ivars { pace, clock } = self.ivars();
+        if clock.get().is_some() {
+            return Ok(());
+        }
+        let ticker = Ticker::new(Arc::clone(pace));
+        // SAFETY: `ticker` responds to `tick:` with the one argument a
+        // display link passes, the link itself.
+        let link = unsafe { view.displayLinkWithTarget_selector(&ticker, sel!(tick:)) };
+        pace.waker.ticking.store(true, Ordering::Release);
+        // Cannot fail: only the main thread fills the slot, and it was
+        // empty a few lines up.
+        let _ = clock.set(Clock::start(link)?);
+        Ok(())
+    }
 }
 
 /// Fits the video layer that `view` hosts to the display its window is on:
-/// the display's pixel density, and [`VideoLayer::match_video`] for its
-/// brightness range. Call it when the view enters a window, when the window
-/// changes display, and when the player reports a change of picture. Does
-/// nothing while the view is in no window.
+/// the display's pixel density and refreshes, and
+/// [`VideoLayer::match_video`] for its brightness range. Call it when the
+/// view enters a window, when the window changes display, and when the
+/// player reports a change of picture. Does nothing while the view is in
+/// no window, and no frame is shown before the first call that does
+/// something.
 pub fn fit_to_display(view: &NSView, player: &Player) -> player::Result<()> {
     let layer = view.layer().and_then(|layer| layer.downcast::<VideoLayer>().ok());
     let (Some(layer), Some(window)) = (layer, view.window()) else {
@@ -165,6 +230,7 @@ pub fn fit_to_display(view: &NSView, player: &Player) -> player::Result<()> {
     // the default of 1.0 a Retina display would get a picture rendered at
     // half its resolution and stretched.
     layer.setContentsScale(window.backingScaleFactor());
+    layer.start_clock(view)?;
     // Above 1.0, the display can show brighter than SDR white.
     let headroom = window.screen().is_some_and(|screen| {
         screen.maximumPotentialExtendedDynamicRangeColorComponentValue() > 1.0
@@ -172,19 +238,229 @@ pub fn fit_to_display(view: &NSView, player: &Player) -> player::Result<()> {
     layer.match_video(player, headroom)
 }
 
-type LayerSlot = Arc<MainThreadBound<OnceCell<Weak<VideoLayer>>>>;
+/// A reference to the layer that does not keep it alive and may be held
+/// by any thread.
+struct LayerRef(Weak<VideoLayer>);
 
-/// A closure, callable from any thread, that asks the main thread to redraw
-/// the layer in `slot`.
-fn redraw_request(slot: LayerSlot) -> impl Fn() + Send + Sync + 'static {
-    move || {
-        let slot = Arc::clone(&slot);
-        DispatchQueue::main().exec_async(move || {
-            slot.get_on_main(|slot| {
-                if let Some(layer) = slot.get().and_then(Weak::load) {
-                    layer.setNeedsDisplay();
-                }
-            });
+// SAFETY: loading an Objective-C weak reference is thread-safe. The one
+// thing another thread does with the layer it loads is `display` inside a
+// transaction, which Core Animation allows off the main thread.
+unsafe impl Send for LayerRef {}
+// SAFETY: as above.
+unsafe impl Sync for LayerRef {}
+
+/// Resumes the frame clock when mpv has a frame and the clock rests.
+struct Waker {
+    clock: WeakArc<OnceLock<Clock>>,
+    /// Whether the display link ticks, or is about to.
+    ticking: AtomicBool,
+}
+
+impl Waker {
+    /// Callable from any thread, and cheap while the clock ticks.
+    fn wake(&self) {
+        if self.ticking.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // Before the clock exists there is nothing to resume, and it
+        // starts out ticking.
+        match self.clock.upgrade().as_deref().and_then(OnceLock::get) {
+            Some(clock) => clock.on_its_thread(|link| link.setPaused(false)),
+            None => self.ticking.store(false, Ordering::Release),
+        }
+    }
+}
+
+/// Decides, at every display refresh, whether to draw.
+struct Pace {
+    renderer: Renderer,
+    waker: Arc<Waker>,
+    /// Filled in once the layer exists.
+    layer: OnceLock<LayerRef>,
+    cadence: Mutex<Cadence>,
+    /// Refreshes in a row at which mpv held nothing out.
+    idle_refreshes: AtomicU32,
+    /// The refresh a draw in progress is timed for, in host nanoseconds,
+    /// or 0.
+    drawing_for: AtomicU64,
+    /// Whether Core Animation called the layer's draw method since this
+    /// was last cleared.
+    drew: AtomicBool,
+}
+
+impl Pace {
+    /// Draws what is due at `refresh`, if anything. Called on the frame
+    /// clock's thread ahead of every refresh. Returns whether the clock
+    /// should go on ticking: not once mpv has had nothing for a while.
+    fn tick(&self, refresh: Refresh) -> bool {
+        let due = match self.renderer.pending() {
+            Pending::Nothing => {
+                return self.idle_refreshes.fetch_add(1, Ordering::AcqRel) + 1 < IDLE_REFRESHES;
+            }
+            Pending::Now => None,
+            Pending::Due(due) => Some(due),
+        };
+        self.idle_refreshes.store(0, Ordering::Release);
+        let mut cadence = self.cadence.lock().unwrap_or_else(PoisonError::into_inner);
+        if due.is_some_and(|due| !cadence.is_time(due, refresh)) {
+            return true;
+        }
+        let Some(layer) = self.layer.get().and_then(|layer| layer.0.load()) else {
+            return true;
+        };
+
+        self.drew.store(false, Ordering::Release);
+        self.drawing_for.store(refresh.at.nanos(), Ordering::Release);
+        // The transaction is what sends the drawn frame to the screen:
+        // this thread's run loop does not do that for it.
+        CATransaction::begin();
+        CALayer::display(&layer);
+        CATransaction::commit();
+        self.drawing_for.store(0, Ordering::Release);
+
+        // Core Animation does not draw a layer nobody can see. mpv still
+        // has to be rid of the frame (IINA does the same, issue #5025).
+        if !self.drew.load(Ordering::Acquire)
+            && let Err(error) = self.renderer.skip()
+        {
+            eprintln!("plex-rust: {error}");
+        }
+        if let Some(due) = due {
+            cadence.shown(due, refresh);
+        }
+        true
+    }
+
+    /// Pauses `link`, unless a frame turned up meanwhile. Called on the
+    /// frame clock's thread.
+    fn rest(&self, link: &CADisplayLink) {
+        link.setPaused(true);
+        self.idle_refreshes.store(0, Ordering::Release);
+        self.waker.ticking.store(false, Ordering::Release);
+        if self.renderer.pending() != Pending::Nothing {
+            self.waker.wake();
+        }
+    }
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements and `Ticker` does
+    // not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "PlexRustFrameTicker"]
+    #[ivars = Arc<Pace>]
+    struct Ticker;
+
+    impl Ticker {
+        /// What the display link calls, on the frame clock's thread, ahead
+        /// of every refresh.
+        #[unsafe(method(tick:))]
+        fn tick(&self, link: &CADisplayLink) {
+            let (now, target) = (link.timestamp(), link.targetTimestamp());
+            let refresh = Refresh {
+                at: HostTime::from_seconds(target),
+                period: Duration::try_from_secs_f64(target - now).unwrap_or_default(),
+            };
+            let pace = self.ivars();
+            if !pace.tick(refresh) {
+                pace.rest(link);
+            }
+        }
+    }
+);
+
+impl Ticker {
+    fn new(pace: Arc<Pace>) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(pace);
+        // SAFETY: `init` is NSObject's designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The frame clock: a thread whose run loop a display link ticks on.
+/// Dropping it ends the thread and lets go of the link's target.
+struct Clock {
+    run_loop: CFRetained<CFRunLoop>,
+    link: Retained<CADisplayLink>,
+}
+
+// SAFETY: `run_loop` is only given blocks and woken, which Core Foundation
+// allows from any thread. `link` is created on the main thread and from
+// then on only used inside those blocks, on the clock's own thread.
+unsafe impl Send for Clock {}
+// SAFETY: as above.
+unsafe impl Sync for Clock {}
+
+/// A display link on its way to the one thread that will use it.
+struct ForClock(Retained<CADisplayLink>);
+
+// SAFETY: the link is moved to the frame clock's thread and only used
+// there.
+unsafe impl Send for ForClock {}
+
+impl ForClock {
+    fn arrive(self) -> Retained<CADisplayLink> {
+        self.0
+    }
+}
+
+impl Clock {
+    /// Starts the thread and puts `link` on its run loop, ticking.
+    fn start(link: Retained<CADisplayLink>) -> player::Result<Self> {
+        let (ready, run_loop) = mpsc::channel();
+        let for_clock = ForClock(link.clone());
+        let run = move || {
+            let link = for_clock.arrive();
+            player::run_thread_at_interactive_priority();
+            let run_loop = NSRunLoop::currentRunLoop();
+            // SAFETY: the mode is a valid run loop mode. The port has no
+            // use but to keep the run loop from returning while the link
+            // is paused.
+            unsafe {
+                run_loop.addPort_forMode(&NSPort::port(), NSDefaultRunLoopMode);
+                link.addToRunLoop_forMode(&run_loop, NSDefaultRunLoopMode);
+            }
+            // The receiver waits for this, so it is there.
+            let _ = ready.send(SendRunLoop(run_loop.getCFRunLoop().into()));
+            CFRunLoop::run();
+        };
+        thread::Builder::new()
+            .name("frame clock".into())
+            .spawn(run)
+            .map_err(|_| player::Error::NoFrameClock)?;
+        let SendRunLoop(run_loop) = run_loop.recv().map_err(|_| player::Error::NoFrameClock)?;
+        Ok(Self { run_loop, link })
+    }
+
+    /// Queues `work` to run with the link on the clock's thread.
+    fn on_its_thread(&self, work: impl Fn(&CADisplayLink) + 'static) {
+        let link = self.link.clone();
+        let work = RcBlock::new(move || work(&link));
+        // SAFETY: the mode is Core Foundation's own constant, and the run
+        // loop copies the block. The link the block holds is only used
+        // where the block runs, on the clock's thread.
+        unsafe {
+            self.run_loop.perform_block(kCFRunLoopDefaultMode.map(|mode| &**mode), Some(&work));
+        }
+        self.run_loop.wake_up();
+    }
+}
+
+impl Drop for Clock {
+    fn drop(&mut self) {
+        self.on_its_thread(|link| {
+            // Lets go of the `Ticker`, and with it of the renderer.
+            link.invalidate();
+            if let Some(run_loop) = CFRunLoop::current() {
+                run_loop.stop();
+            }
         });
     }
 }
+
+/// A run loop on its way from its thread to the thread that started it.
+struct SendRunLoop(CFRetained<CFRunLoop>);
+
+// SAFETY: a `CFRunLoop` may be retained, released, given blocks and woken
+// from any thread.
+unsafe impl Send for SendRunLoop {}

@@ -144,10 +144,13 @@ objc2-foundation / app-kit / quartz-core / image-io / io-kit 0.3.2, block2
 API), reqwest 0.13.5, tokio 1.54.1, serde 1.0.229, serde_json 1.0.154,
 rusqlite 0.42.0, thiserror.
 
-Threading has one rule: AppKit and the mpv render call live on the main
-thread. Network and disk run on a tokio runtime. `runtime::spawn(future,
-on_main)` runs the future off the main thread and delivers its `Result` to a
-closure on the main queue. No other cross-thread path exists.
+Threading has two rules. AppKit lives on the main thread; network and disk
+run on a tokio runtime, and `runtime::spawn(future, on_main)` runs the future
+off the main thread and delivers its `Result` to a closure on the main queue.
+Video frames are drawn on one more thread, the frame clock in
+`video_layer.rs`, so that the interface cannot delay a frame: a busy main
+thread used to. Whoever draws holds the lock of the renderer's OpenGL
+context. No other cross-thread path exists.
 
 ## 6. Plex API surface
 
@@ -211,8 +214,10 @@ Options are from the mpv 0.42 manual [V].
 **Pipeline:** `vo=libmpv`, `hwdec=videotoolbox`. With the OpenGL render API on
 macOS the VideoToolbox frames reach the renderer without a copy
 (`CGLTexImageIOSurface2D`) [V]. The video view hosts a `CAOpenGLLayer`
-subclass that draws only when mpv signals a new frame. No free-running display
-link.
+subclass that draws only when mpv has a new frame. A display link times each
+frame to the display refresh nearest the moment mpv wants it shown. The link
+ticks only while frames are coming, and pauses about a second after the last
+one, so a paused player wakes nothing.
 
 **Quality:** always the original file, no server transcode. mpv scaler
 defaults stay (`scale=lanczos`, `dscale=hermite`). If a file cannot be played

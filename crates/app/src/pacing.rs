@@ -316,6 +316,11 @@ fn display(refreshes: &[HostTime]) -> Value {
 /// `refreshes_per_frame` counts, for each frame, how many display
 /// refreshes passed before the next one, taking a frame to appear at the
 /// first refresh after its draw. Even pacing is one count throughout.
+///
+/// The `aimed` figures cover the frames drawn for a refresh of the
+/// display: how long after its due time each one's refresh was, how long
+/// before the refresh its draw was finished, and the count of refreshes
+/// from one frame's to the next.
 fn frames(timings: &[FrameTiming], refreshes: &[HostTime]) -> Value {
     let new: Vec<&FrameTiming> = timings.iter().filter(|timing| timing.due.is_some()).collect();
     let since = |later: HostTime, earlier: HostTime| millis(later.nanos(), earlier.nanos());
@@ -327,6 +332,13 @@ fn frames(timings: &[FrameTiming], refreshes: &[HostTime]) -> Value {
     let period = median(&gaps(refreshes.iter().copied()));
     let appeared = new.iter().filter_map(|t| first_at_or_after(refreshes, t.ended));
     let steps = gaps(appeared).into_iter().map(|gap| gap / period);
+    let aimed: Vec<(&FrameTiming, HostTime)> =
+        new.iter().filter_map(|t| t.refresh.map(|refresh| (*t, refresh))).collect();
+    let aimed_late: Vec<f64> =
+        aimed.iter().filter_map(|(t, refresh)| t.due.map(|due| since(*refresh, due))).collect();
+    let spare: Vec<f64> = aimed.iter().map(|(t, refresh)| since(*refresh, t.ended)).collect();
+    let aimed_steps = gaps(aimed.iter().map(|(_, refresh)| *refresh));
+
     json!({
         "new": new.len(),
         "redrawn": timings.len() - new.len(),
@@ -340,6 +352,10 @@ fn frames(timings: &[FrameTiming], refreshes: &[HostTime]) -> Value {
         "signal_to_draw": spread(&waited),
         "draw_duration": spread(&drew),
         "refreshes_per_frame": histogram(steps),
+        "aimed": aimed.len(),
+        "aimed_late": spread(&aimed_late),
+        "aimed_spare": spread(&spare),
+        "aimed_refreshes_per_frame": histogram(aimed_steps.into_iter().map(|gap| gap / period)),
     })
 }
 

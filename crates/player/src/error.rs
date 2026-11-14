@@ -16,6 +16,9 @@ pub enum Error {
     #[error("OpenGL is not usable: {0}")]
     OpenGl(&'static str),
 
+    #[error("the thread that times frames to the display did not start")]
+    NoFrameClock,
+
     #[error("{0:?} contains a NUL byte and cannot be passed to mpv")]
     Nul(String),
 }

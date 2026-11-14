@@ -26,6 +26,12 @@ impl HostTime {
         Self(u64::try_from(nanos).unwrap_or(u64::MAX))
     }
 
+    /// From seconds on the host clock, which is how Core Animation
+    /// stamps display refreshes.
+    pub fn from_seconds(seconds: f64) -> Self {
+        Self((seconds.max(0.0) * 1e9) as u64)
+    }
+
     pub fn from_nanos(nanos: u64) -> Self {
         Self(nanos)
     }
@@ -49,6 +55,18 @@ pub fn cpu_time() -> Duration {
             + Duration::from_micros(u64::from(time.tv_usec.cast_unsigned()))
     };
     of(usage.ru_utime) + of(usage.ru_stime)
+}
+
+/// Asks the system to run the calling thread ahead of everything that is
+/// not on screen right now. A frame has a few milliseconds to be drawn
+/// in, and must not wait behind background work for a processor.
+pub fn run_thread_at_interactive_priority() {
+    // SAFETY: the call only changes the scheduling class of the calling
+    // thread. It can fail only for a thread that has opted out of QoS,
+    // which a thread started by `std::thread` has not.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0)
+    };
 }
 
 /// `mach_timebase_info_data_t`: one tick lasts `numerator / denominator`
