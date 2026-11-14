@@ -614,6 +614,11 @@ impl PlayerScreen {
             Key::Character(_) => return false,
         };
         self.or_log(result);
+        // The key may have closed the screen, which then has no controls
+        // left to bring up.
+        if self.ivars().timer.borrow().is_none() {
+            return true;
+        }
         // A hand on the keyboard is not on the mouse: wherever the pointer
         // was left, it is no longer holding the controls up.
         self.ivars().pointer_on_controls.set(false);
