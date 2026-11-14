@@ -21,7 +21,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
 use plex::library::{appearances, next_up, of_genre};
-use plex::model::{Hub, Item, Kind, RatingKey, Role, Tag};
+use plex::model::{Hub, Item, Kind, Media, Part, RatingKey, Role, Stream, StreamKind, Tag};
 
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
@@ -95,11 +95,14 @@ pub struct Detail {
     /// Where to scroll and what to select once the episodes are there.
     /// Taken when that is done, so it happens once.
     opening: RefCell<Option<Opening>>,
+    /// The version the viewer picked to play, by the id of the media.
+    /// Without one it is the first.
+    version: Cell<Option<u64>>,
     /// How tall the header is, which is as tall as its content takes at
     /// the width of the window.
     header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 5],
+    _targets: [Retained<Callback>; 8],
 }
 
 /// The views at the top of the page.
@@ -146,6 +149,13 @@ struct Hero {
     more: Retained<HoverView>,
     /// Who directed it and who made it.
     credits: Retained<NSTextField>,
+    /// What to play of a film or an episode: which version of it, with
+    /// which sound and which subtitles. Each is there only when there is
+    /// more than one to choose from.
+    choices: Retained<NSStackView>,
+    version: Choice,
+    audio: Choice,
+    subtitles: Choice,
     seasons: Retained<NSPopUpButton>,
     season_size: Retained<NSTextField>,
     on_event: Rc<dyn Fn(Event)>,
@@ -179,6 +189,9 @@ impl Detail {
                 target(Self::press_watched),
                 target(Self::press_download),
                 target(Self::season_chosen),
+                target(Self::version_chosen),
+                target(Self::audio_chosen),
+                target(Self::subtitles_chosen),
             ];
             let heard = Weak::clone(page);
             let hero = Hero::new(main_thread, kind, move |event| {
@@ -186,7 +199,7 @@ impl Detail {
                     page.hear(event);
                 }
             });
-            let [play, restart, watched, download, season] = &targets;
+            let [play, restart, watched, download, season, version, audio, subtitles] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -206,6 +219,12 @@ impl Detail {
                 hero.menu_watched.setAction(Some(Callback::action()));
                 hero.seasons.setTarget(Some(season));
                 hero.seasons.setAction(Some(Callback::action()));
+                let choices =
+                    [(&hero.version, version), (&hero.audio, audio), (&hero.subtitles, subtitles)];
+                for (choice, target) in choices {
+                    choice.picker.setTarget(Some(target));
+                    choice.picker.setAction(Some(Callback::action()));
+                }
             }
 
             // Until the header has been laid out and says how tall it is.
@@ -255,6 +274,7 @@ impl Detail {
                 related: RefCell::new(Vec::new()),
                 season: RefCell::new(opening.season.clone()),
                 opening: RefCell::new(Some(opening)),
+                version: Cell::new(None),
                 header_height: Cell::new(height),
                 _targets: targets,
             }
@@ -302,9 +322,7 @@ impl Detail {
 
     /// Plays the item, or for a show, the episode to watch next.
     pub fn press_play(&self) {
-        if let Some(item) = self.playable() {
-            (self.on_action)(Action::Play(item));
-        }
+        self.play(false);
     }
 
     /// Downloads the item, or deletes its download if it has one, be it
@@ -318,9 +336,61 @@ impl Detail {
 
     /// Plays from its beginning what the play button would resume.
     pub fn press_restart(&self) {
+        self.play(true);
+    }
+
+    fn play(&self, from_start: bool) {
         if let Some(item) = self.playable() {
-            (self.on_action)(Action::PlayAs(item, Playback { from_start: true }));
+            let playback = Playback { from_start, version: self.version.get() };
+            (self.on_action)(Action::PlayAs(item, playback));
         }
+    }
+
+    /// Takes the version picked in the menu as the one to play, and
+    /// shows what that one is.
+    fn version_chosen(&self) {
+        let item = self.item.borrow().clone();
+        let picked = self.hero.version.chosen();
+        let version = item.as_ref().zip(picked).and_then(|(item, picked)| item.media.get(picked));
+        if let (Some(item), Some(version)) = (&item, version) {
+            self.version.set(Some(version.id));
+            self.hero.show(item, Some(version.id), &self.images);
+        }
+    }
+
+    /// Has the server remember the sound picked in the menu, as the
+    /// player does for one picked while playing.
+    fn audio_chosen(&self) {
+        let Some(part) = self.part() else {
+            return;
+        };
+        let picked = self.hero.audio.chosen();
+        let track = picked.and_then(|picked| part.embedded(StreamKind::Audio).nth(picked));
+        if let Some(audio) = track.map(|track| track.id) {
+            (self.on_action)(Action::ChooseStreams { part, audio: Some(audio), subtitles: None });
+        }
+    }
+
+    /// Has the server remember the subtitles picked in the menu, where
+    /// the first entry is none.
+    fn subtitles_chosen(&self) {
+        let Some(part) = self.part() else {
+            return;
+        };
+        let subtitles = match self.hero.subtitles.chosen() {
+            Some(0) => Some(None),
+            Some(picked) => subtitles(&part).nth(picked - 1).map(|track| Some(track.id)),
+            None => None,
+        };
+        if subtitles.is_some() {
+            (self.on_action)(Action::ChooseStreams { part, audio: None, subtitles });
+        }
+    }
+
+    /// The file that plays: the first of the version picked.
+    fn part(&self) -> Option<Part> {
+        let item = self.item.borrow();
+        version_of(item.as_ref()?, self.version.get())?.parts.first().cloned()
     }
 
     /// Marks the item as watched if it is not, and the other way round.
@@ -350,7 +420,7 @@ impl Detail {
     /// Fills the page with `item`. Called again when the server has more
     /// to say about it, such as how far it was watched.
     pub fn show(&self, item: &Item) {
-        self.hero.show(item, &self.images);
+        self.hero.show(item, self.version.get(), &self.images);
         if let Some(colors) = item.colors {
             self.backdrop.set_colors(colors);
         }
@@ -586,6 +656,18 @@ fn is_downloadable(item: &Item) -> bool {
     matches!(item.kind, Kind::Movie | Kind::Episode) && part.is_some_and(|part| part.size.is_some())
 }
 
+/// The version of `item` with the id `version`, or without one or with
+/// one the item no longer has, its first.
+fn version_of(item: &Item, version: Option<u64>) -> Option<&Media> {
+    item.media.iter().find(|media| Some(media.id) == version).or(item.media.first())
+}
+
+/// The subtitles there are for a file: those inside it and those in
+/// files of their own beside it, in the server's order.
+fn subtitles(part: &Part) -> impl Iterator<Item = &Stream> {
+    part.streams.iter().filter(|stream| stream.kind == StreamKind::Subtitle)
+}
+
 /// The seasons that `episodes` belong to, in order, as key and title.
 fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
     let mut seasons: Vec<(RatingKey, String)> = Vec::new();
@@ -741,6 +823,15 @@ impl Hero {
         more.setAccessibilityLabel(Some(ns_string!("Read the whole summary")));
         more.setHidden(true);
 
+        let choice = |caption| Choice::new(caption, main_thread);
+        let (version, audio, subtitles) = (choice("Version"), choice("Audio"), choice("Subtitles"));
+        let rows: [&NSView; 3] = [&version.row, &audio.row, &subtitles.row];
+        let choices = NSStackView::stackViewWithViews(&NSArray::from_slice(&rows), main_thread);
+        choices.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        choices.setAlignment(NSLayoutAttribute::Leading);
+        choices.setSpacing(theme::SPACE_XS);
+        choices.setHidden(true);
+
         let (menu_play, menu_watched) =
             (NSMenuItem::new(main_thread), NSMenuItem::new(main_thread));
         let menu_restart = NSMenuItem::new(main_thread);
@@ -791,6 +882,10 @@ impl Hero {
             summary,
             more,
             credits: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            choices,
+            version,
+            audio,
+            subtitles,
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
             on_event,
@@ -820,13 +915,14 @@ impl Hero {
         headline.setAlignment(NSLayoutAttribute::Top);
         headline.setSpacing(theme::SPACE_M);
 
-        let lines: [&NSView; 8] = [
+        let lines: [&NSView; 9] = [
             &headline,
             &self.facts,
             &self.badges,
             buttons,
             &self.summary,
             &self.more,
+            &self.choices,
             &self.genres,
             &self.credits,
         ];
@@ -917,7 +1013,9 @@ impl Hero {
         self.season_size.setHidden(hidden);
     }
 
-    fn show(&self, item: &Item, images: &Rc<Images>) {
+    /// Fills the header with `item`, and with `version` of it where it
+    /// has several.
+    fn show(&self, item: &Item, version: Option<u64>, images: &Rc<Images>) {
         let set = |label: &NSTextField, words: &str| {
             label::set(label, words);
             label.setHidden(words.is_empty());
@@ -956,7 +1054,8 @@ impl Hero {
             NSStackViewGravity::Leading,
         );
         self.genres.setHidden(genres.is_empty());
-        let media = item.media.first();
+        let media = version_of(item, version);
+        self.show_choices(item, media);
         let mut badges: Vec<Retained<NSView>> = media
             .map(formats::badges)
             .unwrap_or_default()
@@ -995,6 +1094,88 @@ impl Hero {
             let poster = item.grandparent_thumb.as_deref();
             self.show_poster.show(poster, theme::HERO_SHOW_POSTER_REQUEST, images);
         }
+    }
+}
+
+impl Hero {
+    /// Fills the menus that choose what plays, from the versions of
+    /// `item` and the tracks of the one picked, `media`.
+    fn show_choices(&self, item: &Item, media: Option<&Media>) {
+        let versions: Vec<String> = item.media.iter().map(formats::version).collect();
+        let picked = item.media.iter().position(|version| Some(version) == media);
+        self.version.offer(&versions, picked.unwrap_or(0));
+
+        let part = media.and_then(|media| media.parts.first());
+        let tracks = |kind| part.into_iter().flat_map(move |part| part.embedded(kind));
+        let audio: Vec<String> = tracks(StreamKind::Audio).map(formats::track).collect();
+        let heard = tracks(StreamKind::Audio).position(|track| track.selected);
+        self.audio.offer(&audio, heard.unwrap_or(0));
+
+        let written = || part.into_iter().flat_map(subtitles);
+        let mut subtitles = vec!["Off".to_owned()];
+        subtitles.extend(written().map(formats::track));
+        // The first entry is none, so a track is one further down.
+        let read = written().position(|track| track.selected).map_or(0, |track| track + 1);
+        self.subtitles.offer(&subtitles, read);
+
+        let rows = [&self.version, &self.audio, &self.subtitles];
+        self.choices.setHidden(rows.iter().all(|choice| choice.row.isHidden()));
+    }
+}
+
+/// One thing to choose about what plays: a caption and, beside it, a
+/// menu of what there is.
+struct Choice {
+    row: Retained<NSStackView>,
+    picker: Retained<NSPopUpButton>,
+}
+
+impl Choice {
+    fn new(caption: &str, main_thread: MainThreadMarker) -> Self {
+        let secondary = NSColor::secondaryLabelColor();
+        let name = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
+        label::set(&name, caption);
+        let picker = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(main_thread),
+            NSRect::ZERO,
+            false,
+        );
+        picker.setControlSize(NSControlSize::Small);
+        picker.setFont(Some(&label::font(theme::FONT_CAPTION, Weight::Regular)));
+        picker.setAccessibilityLabel(Some(&NSString::from_str(caption)));
+        picker.setTranslatesAutoresizingMaskIntoConstraints(false);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            name.widthAnchor().constraintEqualToConstant(theme::CHOICE_CAPTION_WIDTH),
+            picker.widthAnchor().constraintLessThanOrEqualToConstant(theme::CHOICE_MENU_MAX_WIDTH),
+        ]));
+        let row: [&NSView; 2] = [&name, &picker];
+        let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
+        row.setSpacing(theme::SPACE_S);
+        row.setHidden(true);
+        Self { row, picker }
+    }
+
+    /// Fills the menu with `titles`, the one at `picked` chosen. With
+    /// fewer than two there is nothing to choose, and the row goes.
+    fn offer(&self, titles: &[String], picked: usize) {
+        self.row.setHidden(titles.len() < 2);
+        self.picker.removeAllItems();
+        let Some(menu) = self.picker.menu() else {
+            return;
+        };
+        // Added to the menu one by one: given titles, the button drops
+        // any it already has, and two tracks may both be "English".
+        for title in titles {
+            let entry = NSMenuItem::new(self.picker.mtm());
+            entry.setTitle(&NSString::from_str(title));
+            menu.addItem(&entry);
+        }
+        self.picker.selectItemAtIndex(picked.cast_signed());
+    }
+
+    /// Which entry of the menu is chosen, counting from zero.
+    fn chosen(&self) -> Option<usize> {
+        usize::try_from(self.picker.indexOfSelectedItem()).ok()
     }
 }
 

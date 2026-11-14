@@ -32,7 +32,7 @@ use objc2_foundation::{
     NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSet, NSString,
     ns_string,
 };
-use plex::model::{Item, Kind, RatingKey, Role};
+use plex::model::{Item, Kind, Part, RatingKey, Role};
 
 use super::episode::EpisodeItem;
 use super::heading::{self, Paging};
@@ -96,6 +96,14 @@ pub enum Action {
     SetWatched(Item, bool),
     /// Download it, or if it is downloaded or on its way, delete that.
     ToggleDownload(Item),
+    /// Remember which tracks of this file to play, by stream id, as
+    /// [`MediaServer::choose_streams`](plex::MediaServer::choose_streams)
+    /// takes them.
+    ChooseStreams {
+        part: Part,
+        audio: Option<u64>,
+        subtitles: Option<Option<u64>>,
+    },
     /// Go from this episode to its show, with the episode's season chosen.
     OpenShow(Item),
     /// Go from this episode to its season: the list it is in.
@@ -114,6 +122,9 @@ pub enum Action {
 pub struct Playback {
     /// From its beginning, wherever it was stopped.
     pub from_start: bool,
+    /// This one of its versions, by the id of the media, and not the
+    /// first.
+    pub version: Option<u64>,
 }
 
 impl Playback {
@@ -121,6 +132,11 @@ impl Playback {
     pub fn apply(self, item: &mut Item) {
         if self.from_start {
             item.view_offset = None;
+        }
+        if let Some(version) = self.version {
+            // The first version is the one that plays. The sort is stable,
+            // so the others keep their order behind it.
+            item.media.sort_by_key(|media| media.id != version);
         }
     }
 }

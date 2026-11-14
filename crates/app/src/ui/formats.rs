@@ -49,6 +49,34 @@ pub fn file_facts(media: &Media) -> String {
     facts.join(" · ")
 }
 
+/// One version among several of the same item, as a menu names it:
+/// "4K · HEVC · 6.8 GB".
+pub fn version(media: &Media) -> String {
+    let resolution = media.video_resolution.as_deref().map(resolution);
+    let facts = Some(file_facts(media)).filter(|facts| !facts.is_empty());
+    let words: Vec<String> = resolution.into_iter().chain(facts).collect();
+    if words.is_empty() { "Version".to_owned() } else { words.join(" · ") }
+}
+
+/// A title of the file's own longer than this many characters is a
+/// sentence about the track, not a name for it.
+const LONGEST_TRACK_TITLE: usize = 30;
+
+/// What a menu calls a track: the server's words for it, such as
+/// "English (AC3 5.1)", and the file's own where they are short and say
+/// something more, as in "English · SDH".
+pub fn track(stream: &Stream) -> String {
+    let name = stream.display_title.clone().unwrap_or_else(|| "Unknown".to_owned());
+    let own = stream.title.as_deref().map(str::trim).filter(|own| {
+        let said = name.to_lowercase().contains(&own.to_lowercase());
+        !own.is_empty() && !said && own.chars().count() <= LONGEST_TRACK_TITLE
+    });
+    match own {
+        Some(own) => format!("{name} · {own}"),
+        None => name,
+    }
+}
+
 fn resolution(lines: &str) -> String {
     match lines {
         "4k" => "4K".to_owned(),
@@ -127,6 +155,7 @@ mod tests {
         }));
         assert_eq!(badges(&film), ["4K", "HDR10", "Dolby Digital Plus 5.1"]);
         assert_eq!(file_facts(&film), "HEVC · 6.8 GB");
+        assert_eq!(version(&film), "4K · HEVC · 6.8 GB");
     }
 
     #[test]
@@ -161,6 +190,22 @@ mod tests {
         assert_eq!(ranges(&hlg), ["HLG"]);
         let standard = video(serde_json::json!({ "id": 1, "streamType": 1, "colorTrc": "bt709" }));
         assert!(ranges(&standard).is_empty());
+    }
+
+    #[test]
+    fn a_track_adds_what_the_file_calls_it_when_that_is_a_name() {
+        let named = |display: &str, title: Option<&str>| {
+            let stream: Stream = serde_json::from_value(serde_json::json!({
+                "id": 1, "streamType": 3, "displayTitle": display, "title": title,
+            }))
+            .unwrap();
+            track(&stream)
+        };
+        assert_eq!(named("English", None), "English");
+        assert_eq!(named("English", Some("SDH")), "English · SDH");
+        assert_eq!(named("English (SDH)", Some("sdh")), "English (SDH)");
+        let sentence = "Compatibility Track / Dolby Digital Audio / 5.1 / 48 kHz";
+        assert_eq!(named("English (AC3 5.1)", Some(sentence)), "English (AC3 5.1)");
     }
 
     #[test]

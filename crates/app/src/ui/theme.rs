@@ -185,6 +185,10 @@ pub const HERO_SHADOW_OPACITY: f32 = 0.5;
 pub const HERO_SHADOW_RADIUS: f64 = 24.0;
 pub const HERO_SHADOW_DROP: f64 = 12.0;
 pub const FACT_BADGE_BORDER_OPACITY: f64 = 0.4;
+/// The menus of a detail page that choose what plays: each under a
+/// caption this wide, and itself no wider than this.
+pub const CHOICE_CAPTION_WIDTH: f64 = 72.0;
+pub const CHOICE_MENU_MAX_WIDTH: f64 = 320.0;
 /// A genre on a detail page: a capsule that leads to the others like it.
 pub const CHIP_HEIGHT: f64 = 24.0;
 pub const CHIP_PADDING: f64 = 10.0;

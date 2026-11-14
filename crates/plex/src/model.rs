@@ -281,6 +281,8 @@ pub struct Stream {
     pub kind: StreamKind,
     /// A description for menus, such as "English (EAC3 5.1)".
     pub display_title: Option<String>,
+    /// What the file itself calls the track, such as "SDH" or "Commentary".
+    pub title: Option<String>,
     /// Whether this is the track the user last chose for this file.
     #[serde(default)]
     pub selected: bool,

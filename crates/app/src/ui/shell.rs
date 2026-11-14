@@ -127,6 +127,8 @@ struct Shell {
     /// Set for a snapshot of a screen that is still waiting: screens are
     /// then built and never loaded.
     holds_loads: Cell<bool>,
+    /// Set for a snapshot, which must leave the server as it found it.
+    read_only: Cell<bool>,
     /// What is kept on this Mac, and what is on its way to it.
     downloads: Rc<Downloads>,
     reach: Cell<Reach>,
@@ -486,6 +488,7 @@ impl Shell {
                 holds_loads: Cell::new(false),
                 downloads,
                 reach: Cell::new(Reach::Unknown),
+                read_only: Cell::new(false),
             }
         })
     }
@@ -677,6 +680,7 @@ impl Shell {
 
         let tweaks = snapshot.map(|snapshot| snapshot.tweaks.clone()).unwrap_or_default();
         self.holds_loads.set(tweaks.unanswered);
+        self.read_only.set(snapshot.is_some());
         match snapshot.map(|snapshot| &snapshot.subject) {
             Some(Subject::Library(index)) => match sections.get(*index) {
                 Some(section) => self.go(Route::Library(section.clone(), tweaks.listing)),
@@ -1413,6 +1417,11 @@ impl Shell {
                 Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
                 Action::ToggleDownload(item) => shell.toggle_download(&item.rating_key),
+                Action::ChooseStreams { part, audio, subtitles } => {
+                    shell.change(move |server| async move {
+                        server.choose_streams(&part, audio, subtitles).await
+                    });
+                }
                 Action::OpenShow(episode) => {
                     let season = episode.parent_rating_key.clone();
                     shell.open_show_of(&episode, Opening { season, ..Opening::default() });
@@ -1473,16 +1482,24 @@ impl Shell {
         });
     }
 
-    /// Marks `item` as watched or not on the server, then brings the
-    /// screen up to date with what that changed.
+    /// Marks `item` as watched or not on the server.
     fn mark(self: &Rc<Self>, item: &Item, watched: bool) {
-        let Some(session) = self.session() else {
+        let key = item.rating_key.clone();
+        self.change(move |server| async move { server.set_watched(&key, watched).await });
+    }
+
+    /// Makes a change on the server, then brings the screen up to date
+    /// with what that changed. A snapshot changes nothing.
+    fn change<F>(self: &Rc<Self>, change: impl FnOnce(MediaServer) -> F)
+    where
+        F: Future<Output = plex::Result<()>> + Send + 'static,
+    {
+        let Some(session) = self.session().filter(|_| !self.read_only.get()) else {
             return;
         };
-        let (server, key) = (session.server.clone(), item.rating_key.clone());
-        let mark = async move { server.set_watched(&key, watched).await };
         let (shell, moves) = (Rc::clone(self), self.moves.get());
-        self.background.run(self.main_thread, mark, move |marked| match marked {
+        let change = change(session.server.clone());
+        self.background.run(self.main_thread, change, move |changed| match changed {
             Ok(()) => shell.refresh(),
             Err(error) => shell.fail(moves, &error),
         });
