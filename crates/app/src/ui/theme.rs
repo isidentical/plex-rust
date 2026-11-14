@@ -123,6 +123,8 @@ pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
 pub const HERO_TEXT_WIDTH: f64 = 640.0;
 pub const HERO_TITLE_LINES: isize = 3;
 pub const HERO_SUMMARY_LINES: isize = 4;
+/// The popover that holds a summary too long for the page.
+pub const SUMMARY_POPOVER_WIDTH: f64 = 420.0;
 pub const HERO_SHADOW_OPACITY: f32 = 0.5;
 pub const HERO_SHADOW_RADIUS: f64 = 24.0;
 pub const HERO_SHADOW_DROP: f64 = 12.0;

@@ -3,20 +3,21 @@
 //! episodes season by season, for an episode the rest of its season, and
 //! for all of them the cast and whatever the server finds related.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
-use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::rc::{Allocated, Retained};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityLinkRole, NSButton, NSCellImagePosition, NSColor,
-    NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
-    NSLayoutPriorityDefaultLow, NSPopUpButton, NSStackView, NSStackViewGravity,
-    NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSAccessibility, NSAccessibilityLinkRole, NSAttributedStringNSExtendedStringDrawing, NSButton,
+    NSCellImagePosition, NSColor, NSControlSize, NSLayoutAttribute, NSLayoutConstraint,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSPopUpButton, NSPopover,
+    NSPopoverBehavior, NSStackView, NSStackViewGravity,
+    NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSArray, NSPoint, NSRect, NSString, ns_string};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
 use plex::library::{appearances, next_up};
 use plex::model::{Hub, Item, Kind, Media, RatingKey, Role, StreamKind};
 
@@ -101,6 +102,8 @@ struct Hero {
     watched: Pill,
     remaining: Retained<NSTextField>,
     summary: Retained<NSTextField>,
+    /// Under a summary that is cut short. Leads to all of it.
+    more: Retained<HoverView>,
     directors: Retained<NSTextField>,
     seasons: Retained<NSPopUpButton>,
     season_size: Retained<NSTextField>,
@@ -514,6 +517,20 @@ impl Hero {
         seasons.setControlSize(NSControlSize::Large);
         seasons.setAccessibilityLabel(Some(ns_string!("Season")));
 
+        let summary = label::paragraph(
+            theme::FONT_HEADLINE,
+            Weight::Regular,
+            &primary,
+            theme::HERO_SUMMARY_LINES,
+            main_thread,
+        );
+        let (headed, read) = (title.clone(), summary.clone());
+        let (more, more_label) = text_link(move || read_in_full(&headed, &read), main_thread);
+        more_label.setFont(Some(&label::font(theme::FONT_BODY, Weight::Semibold)));
+        label::set(&more_label, "More");
+        more.setAccessibilityLabel(Some(ns_string!("Read the whole summary")));
+        more.setHidden(true);
+
         let hero = Self {
             view: NSView::new(main_thread),
             poster,
@@ -531,13 +548,8 @@ impl Hero {
             play,
             watched,
             remaining,
-            summary: label::paragraph(
-                theme::FONT_HEADLINE,
-                Weight::Regular,
-                &primary,
-                theme::HERO_SUMMARY_LINES,
-                main_thread,
-            ),
+            summary,
+            more,
             directors: line(theme::FONT_BODY, Weight::Regular, &secondary),
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
@@ -551,17 +563,22 @@ impl Hero {
     /// show the season picker in a strip along the bottom, where the
     /// episode list begins.
     fn place(&self, buttons: &NSStackView, main_thread: MainThreadMarker) {
-        let column: [&NSView; 8] = [
+        let (summary, more) = (self.summary.clone(), self.more.clone());
+        let column = Column::new(main_thread, move || offer_more(&summary, &more));
+        let lines: [&NSView; 9] = [
             &self.eyebrow,
             &self.title,
             &self.facts,
             &self.badges,
             buttons,
             &self.summary,
+            &self.more,
             &self.genres,
             &self.directors,
         ];
-        let column = NSStackView::stackViewWithViews(&NSArray::from_slice(&column), main_thread);
+        for line in lines {
+            column.addArrangedSubview(line);
+        }
         column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         column.setAlignment(NSLayoutAttribute::Leading);
         column.setSpacing(theme::SPACE_M);
@@ -569,6 +586,7 @@ impl Hero {
         column.setCustomSpacing_afterView(theme::SPACE_S, &self.title);
         column.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
         column.setCustomSpacing_afterView(theme::SPACE_L, buttons);
+        column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
         column.setCustomSpacing_afterView(theme::SPACE_XS, &self.genres);
         column.setTranslatesAutoresizingMaskIntoConstraints(false);
 
@@ -677,6 +695,116 @@ impl Hero {
         self.poster.show(poster, theme::HERO_POSTER_REQUEST, None, images);
         self.poster.set_progress(item.progress());
     }
+}
+
+define_class!(
+    // SAFETY: NSStackView may be subclassed, and `Column` does not
+    // implement `Drop`.
+    #[unsafe(super(NSStackView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustDetailColumn"]
+    #[ivars = OnceCell<Box<dyn Fn()>>]
+    struct Column;
+
+    impl Column {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
+            let this = this.set_ivars(OnceCell::new());
+            // SAFETY: forwards the designated initializer unchanged.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), layout] };
+            if let Some(on_layout) = self.ivars().get() {
+                on_layout();
+            }
+        }
+    }
+);
+
+impl Column {
+    /// A stack that calls `on_layout` each time it has placed its lines,
+    /// which is when it is known how much room each one got.
+    fn new(main_thread: MainThreadMarker, on_layout: impl Fn() + 'static) -> Retained<Self> {
+        let column: Retained<Self> =
+            // SAFETY: `initWithFrame:` is NSView's designated initializer.
+            unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
+        // Cannot fail: the cell was created empty by the initializer.
+        let _ = column.ivars().set(Box::new(on_layout));
+        column
+    }
+}
+
+/// Shows the link to the whole summary when the summary is cut short: by
+/// its limit of lines, or by the room the column had left for it. The
+/// room counts the link's own line, so that showing the link cannot be
+/// what cuts the summary short.
+fn offer_more(summary: &NSTextField, more: &NSView) {
+    let shown = summary.frame().size;
+    if summary.isHidden() || shown.width <= 0.0 {
+        return more.setHidden(true);
+    }
+    let unbounded = NSSize::new(shown.width, f64::MAX);
+    // The label's own measure stops at its limit of lines. That of the
+    // text, wrapped to the same width, does not.
+    let limit = summary.sizeThatFits(unbounded).height;
+    let wrapped = NSStringDrawingOptions::UsesLineFragmentOrigin;
+    let whole = summary.attributedStringValue();
+    let whole = whole.boundingRectWithSize_options_context(unbounded, wrapped, None).size.height;
+    let room = match more.isHidden() {
+        true => shown.height,
+        false => shown.height + theme::SPACE_S + more.frame().size.height,
+    };
+    // Half a point of slack: sizes come back rounded to the pixel.
+    let cut_short = whole > limit.min(room) + 0.5;
+    if more.isHidden() == cut_short {
+        more.setHidden(!cut_short);
+    }
+}
+
+/// Opens the whole of `summary` under it, headed by `title`, in a popover
+/// that goes away with a click anywhere else.
+fn read_in_full(title: &NSTextField, summary: &NSTextField) {
+    let controller = NSViewController::new(summary.mtm());
+    controller.setView(&whole_summary(title, summary));
+    let popover = NSPopover::new(summary.mtm());
+    popover.setContentViewController(Some(&controller));
+    popover.setBehavior(NSPopoverBehavior::Transient);
+    // Below the text it continues. AppKit keeps the popover while it is
+    // shown.
+    popover.showRelativeToRect_ofView_preferredEdge(summary.bounds(), summary, NSRectEdge::MinY);
+}
+
+/// The text of `summary` in full under the text of `title`, as tall as
+/// that takes.
+fn whole_summary(title: &NSTextField, summary: &NSTextField) -> Retained<NSView> {
+    let main_thread = summary.mtm();
+    let primary = NSColor::labelColor();
+    let heading = label::line(theme::FONT_HEADLINE, Weight::Semibold, &primary, main_thread);
+    heading.setStringValue(&title.stringValue());
+    let body = label::paragraph(theme::FONT_BODY, Weight::Regular, &primary, 0, main_thread);
+    body.setStringValue(&summary.stringValue());
+    // So that a line of it can be copied.
+    body.setSelectable(true);
+
+    let page = NSView::new(main_thread);
+    page.addSubview(&heading);
+    page.addSubview(&body);
+    let inset = theme::SPACE_L;
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        page.widthAnchor().constraintEqualToConstant(theme::SUMMARY_POPOVER_WIDTH),
+        heading.topAnchor().constraintEqualToAnchor_constant(&page.topAnchor(), inset),
+        heading.leadingAnchor().constraintEqualToAnchor_constant(&page.leadingAnchor(), inset),
+        heading.trailingAnchor().constraintEqualToAnchor_constant(&page.trailingAnchor(), -inset),
+        body.topAnchor().constraintEqualToAnchor_constant(&heading.bottomAnchor(), theme::SPACE_S),
+        body.leadingAnchor().constraintEqualToAnchor(&heading.leadingAnchor()),
+        body.trailingAnchor().constraintEqualToAnchor(&heading.trailingAnchor()),
+        body.bottomAnchor().constraintEqualToAnchor_constant(&page.bottomAnchor(), -inset),
+    ]));
+    page
 }
 
 /// A button drawn as a capsule of our own, so that it looks the same in a
