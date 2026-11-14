@@ -1,23 +1,24 @@
 //! One episode as a row in a season's list: a frame on the left, its
 //! number, title, length and summary beside it.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint,
-    NSNibName, NSTextField, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
+    NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
+    NSView,
 };
-use objc2_foundation::{NSArray, NSBundle, NSPoint};
-use plex::model::Item;
+use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
+use plex::model::{Item, RatingKey};
 
 use super::artwork::{self, ArtView};
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
-use super::poster;
+use super::poster::{self, Card};
 use super::text;
 use super::theme;
 use crate::images::Images;
@@ -29,6 +30,8 @@ pub struct Views {
     summary: Retained<NSTextField>,
     /// Lights up the whole row under the pointer.
     wash: Retained<NSView>,
+    /// The episode the row shows.
+    shown: RefCell<Option<RatingKey>>,
 }
 
 define_class!(
@@ -60,6 +63,10 @@ define_class!(
             let hovered = Rc::clone(&views);
             let row = HoverView::new(self.mtm(), move |over| hovered.set_hovered(over));
             views.place_in(&row);
+            // VoiceOver reads a row as one button, not as loose pieces.
+            row.setAccessibilityElement(true);
+            // SAFETY: the role is a constant that AppKit provides.
+            row.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
             self.setView(&row);
             // Cannot fail: AppKit loads a controller's view once.
             let _ = self.ivars().set(views);
@@ -103,12 +110,19 @@ impl EpisodeItem {
         label::set(&views.title, &title);
         label::set(&views.facts, &facts(episode));
         label::set(&views.summary, episode.summary.as_deref().unwrap_or_default());
-        views.set_hovered(false);
-        views.art.reset();
+        // A row taken over by another episode starts at rest. One that is
+        // only brought up to date keeps the pointer's highlight.
+        let was = views.shown.replace(Some(episode.rating_key.clone()));
+        if was.as_ref() != Some(&episode.rating_key) {
+            views.set_hovered(false);
+            views.art.reset();
+        }
         views.art.set_playable(true);
         views.art.set_progress(episode.progress());
         views.art.set_badge(poster::badge(episode));
-        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, images);
+        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, None, images);
+        let spoken = poster::spoken(&Card::Item(episode.clone()), &title, &facts(episode), false);
+        self.view().setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
 
     /// Whether `point`, in the window's coordinates, is on the play glyph.
@@ -151,6 +165,7 @@ impl Views {
                 main_thread,
             ),
             wash,
+            shown: RefCell::new(None),
         }
     }
 

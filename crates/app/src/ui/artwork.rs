@@ -8,7 +8,7 @@ use std::rc::Rc;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAnimationContext, NSColor, NSImage, NSImageSymbolConfiguration, NSImageView,
+    NSAccessibility, NSAnimationContext, NSColor, NSImage, NSImageSymbolConfiguration, NSImageView,
     NSLayoutConstraint, NSTextField, NSView,
 };
 use objc2_core_foundation::{CGAffineTransform, CGSize};
@@ -41,6 +41,8 @@ pub struct ArtView {
     /// Darkens the picture under the play glyph.
     scrim: Retained<NSView>,
     play: Retained<NSImageView>,
+    /// Stands in for a picture there is none of.
+    placeholder: Retained<NSImageView>,
     track: Retained<NSView>,
     fill: Retained<NSView>,
     fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
@@ -55,6 +57,7 @@ pub struct ArtView {
     hovered: Cell<bool>,
     pressed: Cell<bool>,
     focused: Cell<bool>,
+    current: Cell<bool>,
 }
 
 impl ArtView {
@@ -74,6 +77,17 @@ impl ArtView {
             layer.setBackgroundColor(Some(&placeholder.CGColor()));
         }
         layout::cover(&root, &picture);
+
+        let placeholder = NSImageView::new(main_thread);
+        placeholder.setContentTintColor(Some(&theme::white(theme::PLACEHOLDER_GLYPH_OPACITY)));
+        placeholder.setTranslatesAutoresizingMaskIntoConstraints(false);
+        placeholder.setHidden(true);
+        placeholder.setAccessibilityElement(false);
+        picture.addSubview(&placeholder);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            placeholder.centerXAnchor().constraintEqualToAnchor(&picture.centerXAnchor()),
+            placeholder.centerYAnchor().constraintEqualToAnchor(&picture.centerYAnchor()),
+        ]));
 
         let scrim = layered(main_thread);
         fill_with(&scrim, &theme::black(theme::HOVER_SCRIM_OPACITY));
@@ -138,6 +152,7 @@ impl ArtView {
             picture,
             scrim,
             play,
+            placeholder,
             track,
             fill,
             fill_width: RefCell::new(None),
@@ -149,6 +164,7 @@ impl ArtView {
             hovered: Cell::new(false),
             pressed: Cell::new(false),
             focused: Cell::new(false),
+            current: Cell::new(false),
         };
         // A cell that is drawn before it is given an item shows nothing
         // but its empty frame.
@@ -164,8 +180,24 @@ impl ArtView {
 
     /// Shows the artwork at server path `path`, requested for a box of
     /// `size` points. A picture already in memory appears at once. One that
-    /// has to be fetched fades in when it arrives.
-    pub fn show(&self, path: Option<&str>, size: (u32, u32), images: &Rc<Images>) {
+    /// has to be fetched fades in when it arrives. Without a path, the
+    /// SF Symbol `placeholder` stands in, if one is given.
+    pub fn show(
+        &self,
+        path: Option<&str>,
+        size: (u32, u32),
+        placeholder: Option<&str>,
+        images: &Rc<Images>,
+    ) {
+        let glyph = placeholder.filter(|_| path.is_none());
+        let glyph = glyph.and_then(|name| symbol(name, theme::PORTRAIT_GLYPH_SIZE));
+        self.placeholder.setImage(glyph.as_deref());
+        self.placeholder.setHidden(glyph.is_none());
+        // The same picture is already here or on its way. Asking again
+        // would fetch and decode it a second time.
+        if path.is_some() && self.wanted.borrow().as_deref() == path {
+            return;
+        }
         let (width, height) = (size.0 * theme::RETINA_SCALE, size.1 * theme::RETINA_SCALE);
         *self.wanted.borrow_mut() = path.map(str::to_owned);
         let ready = path.and_then(|path| images.cached(path, width, height));
@@ -189,6 +221,19 @@ impl ArtView {
             }
             set_contents(&picture, Some(artwork));
         });
+    }
+
+    /// Rounds the corners of the picture by `radius` points.
+    pub fn set_radius(&self, radius: f64) {
+        if let Some(layer) = self.picture.layer() {
+            layer.setCornerRadius(radius);
+        }
+    }
+
+    /// Marks the artwork as standing for what the page is about.
+    pub fn set_current(&self, current: bool) {
+        self.current.set(current);
+        self.restyle();
     }
 
     /// Draws how much was watched, from 0 to 1. Zero hides the bar.
@@ -234,11 +279,12 @@ impl ArtView {
         self.restyle();
     }
 
-    /// Puts the artwork back to rest, for a cell about to show another item.
+    /// Takes the pointer's marks off the artwork, for a cell about to show
+    /// another item. Where the keyboard is stays as the collection view
+    /// last said, which tells every cell it hands out.
     pub fn reset(&self) {
         self.hovered.set(false);
         self.pressed.set(false);
-        self.focused.set(false);
         self.restyle();
     }
 
@@ -264,6 +310,7 @@ impl ArtView {
         let (hovered, pressed, focused) =
             (self.hovered.get(), self.pressed.get(), self.focused.get());
         let scale = match (pressed, hovered) {
+            _ if theme::reduces_motion() => 1.0,
             (true, _) => theme::PRESS_SCALE,
             (false, true) => theme::HOVER_SCALE,
             (false, false) => 1.0,
@@ -275,15 +322,16 @@ impl ArtView {
             layer.setShadowOffset(CGSize { width: 0.0, height: -theme::HOVER_SHADOW_DROP });
         }
         if let Some(layer) = self.picture.layer() {
-            let (color, width) = match (focused, hovered) {
-                (true, _) => (NSColor::controlAccentColor(), theme::FOCUS_RING_WIDTH),
-                (false, true) => (
-                    theme::white(theme::ARTWORK_HOVER_OUTLINE_OPACITY),
-                    theme::ARTWORK_OUTLINE_WIDTH,
-                ),
-                (false, false) => {
-                    (theme::white(theme::ARTWORK_OUTLINE_OPACITY), theme::ARTWORK_OUTLINE_WIDTH)
+            let hairline = theme::ARTWORK_OUTLINE_WIDTH;
+            let (color, width) = match (focused, self.current.get(), hovered) {
+                (true, _, _) => (NSColor::controlAccentColor(), theme::FOCUS_RING_WIDTH),
+                (false, true, _) => {
+                    (theme::white(theme::CURRENT_OUTLINE_OPACITY), theme::CURRENT_OUTLINE_WIDTH)
                 }
+                (false, false, true) => {
+                    (theme::white(theme::ARTWORK_HOVER_OUTLINE_OPACITY), hairline)
+                }
+                (false, false, false) => (theme::white(theme::artwork_outline_opacity()), hairline),
             };
             layer.setBorderColor(Some(&color.CGColor()));
             layer.setBorderWidth(width);
@@ -348,6 +396,8 @@ fn play_glyph(main_thread: MainThreadMarker) -> Retained<NSImageView> {
     glyph.setImage(symbol("play.circle.fill", theme::PLAY_GLYPH_SIZE).as_deref());
     glyph.setContentTintColor(Some(&NSColor::whiteColor()));
     glyph.setTranslatesAutoresizingMaskIntoConstraints(false);
+    // The card it is on speaks for it.
+    glyph.setAccessibilityElement(false);
     glyph
 }
 

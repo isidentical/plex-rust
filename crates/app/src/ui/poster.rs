@@ -1,17 +1,17 @@
-//! One library item as a card in a grid or shelf: its artwork with two
-//! lines of text under it.
+//! One thing in a grid or shelf as a card: artwork with two lines of text
+//! under it.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint,
-    NSNibName, NSTextField,
+    NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
+    NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
 };
-use objc2_foundation::{NSArray, NSBundle, NSPoint};
-use plex::model::{Item, Kind};
+use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
+use plex::model::{Item, Kind, Role};
 
 use super::artwork::{ArtView, Badge};
 use super::hover::HoverView;
@@ -20,13 +20,49 @@ use super::text;
 use super::theme;
 use crate::images::Images;
 
-/// The proportions of a card's artwork.
+/// What a card stands for.
+// Nearly every card is an item, so boxing the item to even out the sizes
+// would cost an allocation per card to save space on a handful of people.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Card {
+    Item(Item),
+    /// A member of the cast.
+    Person(Role),
+}
+
+impl Card {
+    /// Whether `other` stands for the same thing, whatever else changed
+    /// about it, such as how far it was watched.
+    pub fn is_same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Item(item), Self::Item(other)) => item.rating_key == other.rating_key,
+            (Self::Person(person), Self::Person(other)) => person == other,
+            _ => false,
+        }
+    }
+
+    pub fn item(&self) -> Option<&Item> {
+        match self {
+            Self::Item(item) => Some(item),
+            Self::Person(_) => None,
+        }
+    }
+}
+
+/// The proportions of a card's artwork, and with them what the card says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// Upright, for films, shows and seasons.
     Poster,
-    /// Wide, for a frame of an episode or a film's backdrop.
+    /// Wide, for something to carry on with: a frame of an episode under
+    /// its show's name, or a film's backdrop.
     Landscape,
+    /// Wide, for an episode among the others of its season: a frame under
+    /// the episode's own number and title.
+    Still,
+    /// A round photo of a person.
+    Portrait,
 }
 
 impl Shape {
@@ -35,6 +71,8 @@ impl Shape {
         match self {
             Self::Poster => theme::POSTER_WIDTH,
             Self::Landscape => theme::LANDSCAPE_WIDTH,
+            Self::Still => theme::STILL_WIDTH,
+            Self::Portrait => theme::PORTRAIT_WIDTH,
         }
     }
 
@@ -42,7 +80,8 @@ impl Shape {
     pub fn height(self, width: f64) -> f64 {
         let aspect = match self {
             Self::Poster => theme::POSTER_ASPECT,
-            Self::Landscape => theme::LANDSCAPE_ASPECT,
+            Self::Landscape | Self::Still => theme::LANDSCAPE_ASPECT,
+            Self::Portrait => 1.0,
         };
         (width * aspect).round() + theme::CAPTIONS_HEIGHT
     }
@@ -51,7 +90,17 @@ impl Shape {
     fn request(self) -> (u32, u32) {
         match self {
             Self::Poster => theme::POSTER_REQUEST,
-            Self::Landscape => theme::LANDSCAPE_REQUEST,
+            Self::Landscape | Self::Still => theme::LANDSCAPE_REQUEST,
+            Self::Portrait => theme::PORTRAIT_REQUEST,
+        }
+    }
+
+    /// How round the corners of the artwork are. A portrait is a circle,
+    /// and only ever shown at its shelf width.
+    fn radius(self) -> f64 {
+        match self {
+            Self::Portrait => theme::PORTRAIT_WIDTH / 2.0,
+            Self::Poster | Self::Landscape | Self::Still => theme::RADIUS_M,
         }
     }
 }
@@ -60,6 +109,9 @@ pub struct Views {
     art: ArtView,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
+    /// What the card shows, to tell a new look at the same thing from
+    /// another thing taking the card over.
+    shown: RefCell<Option<Card>>,
 }
 
 define_class!(
@@ -92,6 +144,11 @@ define_class!(
             let hovered = Rc::clone(&views);
             let card = HoverView::new(self.mtm(), move |over| hovered.art.set_hovered(over));
             views.place_in(&card);
+            // VoiceOver reads a card as one button, not as a picture and
+            // two loose pieces of text.
+            card.setAccessibilityElement(true);
+            // SAFETY: the role is a constant that AppKit provides.
+            card.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
             self.setView(&card);
             // Cannot fail: AppKit loads a controller's view once.
             let _ = self.ivars().set(views);
@@ -122,21 +179,43 @@ define_class!(
 impl PosterItem {
     pub const IDENTIFIER: &str = "poster";
 
-    /// Fills the card with `item`, drawn in `shape`.
-    pub fn show(&self, item: &Item, shape: Shape, images: &Rc<Images>) {
+    /// Fills the card with `card`, drawn in `shape`. `is_current` marks it
+    /// as the one the page is about, among others like it.
+    pub fn show(&self, card: &Card, shape: Shape, is_current: bool, images: &Rc<Images>) {
         // Asking for the view makes AppKit call `loadView` if it has not.
-        let _ = self.view();
+        let view = self.view();
         let Some(views) = self.ivars().get() else {
             return;
         };
-        let (title, subtitle) = captions(item, shape);
+        // A card taken over by something else starts at rest. One that is
+        // only brought up to date keeps the pointer's highlight.
+        let was = views.shown.replace(Some(card.clone()));
+        if !was.is_some_and(|was| was.is_same(card)) {
+            views.art.reset();
+        }
+        views.art.set_radius(shape.radius());
+        views.art.set_current(is_current);
+        let (title, subtitle) = match card {
+            Card::Item(item) => {
+                views.art.set_playable(is_playable(item));
+                views.art.set_progress(item.progress());
+                views.art.set_badge(badge(item));
+                views.art.show(artwork_path(item, shape), shape.request(), None, images);
+                captions(item, shape)
+            }
+            Card::Person(person) => {
+                views.art.set_playable(false);
+                views.art.set_progress(0.0);
+                views.art.set_badge(Badge::None);
+                let photo = person.thumb.as_deref();
+                views.art.show(photo, shape.request(), Some("person.fill"), images);
+                (person.tag.clone(), person.role.clone().unwrap_or_default())
+            }
+        };
         label::set(&views.title, &title);
         label::set(&views.subtitle, &subtitle);
-        views.art.reset();
-        views.art.set_playable(is_playable(item));
-        views.art.set_progress(item.progress());
-        views.art.set_badge(badge(item));
-        views.art.show(artwork_path(item, shape), shape.request(), images);
+        let spoken = spoken(card, &title, &subtitle, is_current);
+        view.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
 
     /// Whether `point`, in the window's coordinates, is on the play glyph.
@@ -147,13 +226,14 @@ impl PosterItem {
 
 /// Whether `item` is a file to play, not a show or season to look inside.
 pub fn is_playable(item: &Item) -> bool {
-    matches!(item.kind, Kind::Movie | Kind::Episode)
+    matches!(item.kind, Kind::Movie | Kind::Episode | Kind::Clip)
 }
 
 /// What marks `item` as having something left to watch.
 pub fn badge(item: &Item) -> Badge {
-    if item.view_offset.is_some() {
-        // The progress bar says it.
+    if item.view_offset.is_some() || item.kind == Kind::Clip {
+        // The progress bar says it, and a trailer is not there to be
+        // ticked off.
         return Badge::None;
     }
     match (item.leaf_count, item.viewed_leaf_count) {
@@ -164,6 +244,30 @@ pub fn badge(item: &Item) -> Badge {
     }
 }
 
+/// What VoiceOver says for a card: its captions and its watched state.
+pub fn spoken(card: &Card, title: &str, subtitle: &str, is_current: bool) -> String {
+    let mut parts: Vec<String> = vec![title.to_owned()];
+    if !subtitle.is_empty() {
+        parts.push(subtitle.to_owned());
+    }
+    if is_current {
+        parts.push("this episode".to_owned());
+    }
+    if let Card::Item(item) = card {
+        match badge(item) {
+            Badge::Unwatched => parts.push("not watched".to_owned()),
+            Badge::Left(episodes) => {
+                parts.push(format!("{} not watched", text::count(episodes, "episode")));
+            }
+            Badge::None => {}
+        }
+        if item.view_offset.is_some() {
+            parts.push(format!("{:.0} percent watched", item.progress() * 100.0));
+        }
+    }
+    parts.join(", ")
+}
+
 /// On a poster, an episode stands for its show, since its own artwork is a
 /// wide frame. A wide card shows that frame, or a film's backdrop.
 fn artwork_path(item: &Item, shape: Shape) -> Option<&str> {
@@ -171,28 +275,36 @@ fn artwork_path(item: &Item, shape: Shape) -> Option<&str> {
         (Kind::Episode, Shape::Poster) => {
             item.grandparent_thumb.as_deref().or(item.thumb.as_deref())
         }
-        (Kind::Episode, Shape::Landscape) => item.thumb.as_deref(),
-        (_, Shape::Landscape) => item.art.as_deref().or(item.thumb.as_deref()),
-        (_, Shape::Poster) => item.thumb.as_deref(),
+        (Kind::Episode | Kind::Clip, _) => item.thumb.as_deref(),
+        (_, Shape::Landscape | Shape::Still) => item.art.as_deref().or(item.thumb.as_deref()),
+        (_, Shape::Poster | Shape::Portrait) => item.thumb.as_deref(),
     }
 }
 
 /// The two lines under the artwork.
 fn captions(item: &Item, shape: Shape) -> (String, String) {
     let year = || item.year.map(|year| year.to_string()).unwrap_or_default();
+    let length = || item.duration.map(|length| text::length(length.into()));
+    let show = || item.grandparent_title.clone().unwrap_or_else(|| item.title.clone());
     match (item.kind, shape) {
-        (Kind::Episode, Shape::Poster) => (
-            item.grandparent_title.clone().unwrap_or_else(|| item.title.clone()),
-            text::episode_code(item).unwrap_or_default(),
-        ),
+        (Kind::Episode, Shape::Still) => {
+            let title = match item.index {
+                Some(number) => format!("{number}. {}", item.title),
+                None => item.title.clone(),
+            };
+            (title, text::remaining(item).or_else(length).unwrap_or_default())
+        }
         (Kind::Episode, Shape::Landscape) => {
             let mut second: Vec<String> = Vec::new();
             second.extend(text::episode_code(item));
             second.push(text::remaining(item).unwrap_or_else(|| item.title.clone()));
-            (
-                item.grandparent_title.clone().unwrap_or_else(|| item.title.clone()),
-                second.join(" · "),
-            )
+            (show(), second.join(" · "))
+        }
+        (Kind::Episode, _) => (show(), text::episode_code(item).unwrap_or_default()),
+        (Kind::Clip, _) => {
+            let mut second = vec![text::extra(item.subtype.as_deref()).to_owned()];
+            second.extend(length());
+            (item.title.clone(), second.join(" · "))
         }
         (Kind::Season, _) => match &item.parent_title {
             Some(show) => (show.clone(), item.title.clone()),
@@ -205,6 +317,7 @@ fn captions(item: &Item, shape: Shape) -> (String, String) {
 
 impl Views {
     fn new(main_thread: MainThreadMarker) -> Self {
+        let secondary = NSColor::secondaryLabelColor();
         Self {
             art: ArtView::new(main_thread, theme::RADIUS_M),
             title: label::line(
@@ -213,12 +326,8 @@ impl Views {
                 &NSColor::labelColor(),
                 main_thread,
             ),
-            subtitle: label::line(
-                theme::FONT_CAPTION,
-                Weight::Regular,
-                &NSColor::secondaryLabelColor(),
-                main_thread,
-            ),
+            subtitle: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
+            shown: RefCell::new(None),
         }
     }
 
@@ -243,5 +352,41 @@ impl Views {
             subtitle.leadingAnchor().constraintEqualToAnchor(&card.leadingAnchor()),
             subtitle.trailingAnchor().constraintEqualToAnchor(&card.trailingAnchor()),
         ]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(json: serde_json::Value) -> Item {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_episode_is_captioned_by_where_it_is_shown() {
+        let episode = item(serde_json::json!({
+            "ratingKey": "1", "type": "episode", "title": "Pilot", "index": 6, "parentIndex": 2,
+            "grandparentTitle": "Show", "duration": 1_260_000, "viewOffset": 600_000,
+        }));
+        let (show, code) = (String::from("Show"), String::from("S2 · E6"));
+        assert_eq!(captions(&episode, Shape::Poster), (show.clone(), code));
+        assert_eq!(captions(&episode, Shape::Landscape), (show, "S2 · E6 · 11 min left".into()));
+        assert_eq!(captions(&episode, Shape::Still), ("6. Pilot".into(), "11 min left".into()));
+    }
+
+    #[test]
+    fn a_card_is_spoken_with_what_is_left_to_watch() {
+        let show = item(serde_json::json!({
+            "ratingKey": "1", "type": "show", "title": "Show", "year": 2014,
+            "leafCount": 10, "viewedLeafCount": 7,
+        }));
+        let card = Card::Item(show);
+        assert_eq!(spoken(&card, "Show", "2014", false), "Show, 2014, 3 episodes not watched");
+        let film = item(serde_json::json!({
+            "ratingKey": "1", "type": "movie", "title": "Film",
+            "duration": 100, "viewOffset": 25, "viewCount": 1,
+        }));
+        assert_eq!(spoken(&Card::Item(film), "Film", "", false), "Film, 25 percent watched");
     }
 }

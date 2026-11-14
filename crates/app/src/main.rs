@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
 use crate::ui::player::input::Key;
-use crate::ui::shell::{Snapshot, Subject, Tweaks};
+use crate::ui::shell::{Link, Snapshot, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
@@ -31,9 +31,11 @@ usage: plex-rust
        plex-rust snapshot library <index> <png-path> [<tweak>...]
        plex-rust snapshot item <rating-key> <png-path> [<tweak>...]
        plex-rust snapshot search <query> <png-path> [<tweak>...]
+       plex-rust snapshot list <server-path> <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path>
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
-         tweaks: narrow, hover, link, scroll=<points>, unwatched,
+         tweaks: narrow, hover, link, season, scroll=<points>,
+                 across=<points>, unwatched,
                  sort=title|added|released|rating|watched
        plex-rust login
        plex-rust servers [<address>]
@@ -69,6 +71,9 @@ fn run(args: &[&str]) -> Result<()> {
         ["snapshot", "search", query, path, tweaks @ ..] => {
             snapshot(Subject::Search((*query).to_owned()), path, tweaks)
         }
+        ["snapshot", "list", list, path, tweaks @ ..] => {
+            snapshot(Subject::List((*list).to_owned()), path, tweaks)
+        }
         ["snapshot", "signin", path] => snapshot(Subject::SignIn, path, &[]),
         ["snapshot", "play", key, path, keys @ ..] => {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
@@ -100,10 +105,14 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
         match tweak.split_once('=') {
             None if *tweak == "narrow" => parsed.narrow = true,
             None if *tweak == "hover" => parsed.hover = true,
-            None if *tweak == "link" => parsed.follow_link = true,
+            None if *tweak == "link" => parsed.follow = Some(Link::Show),
+            None if *tweak == "season" => parsed.follow = Some(Link::Season),
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             Some(("scroll", points)) => {
                 parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
+            }
+            Some(("across", points)) => {
+                parsed.across = points.parse().map_err(|_| Error::Usage(USAGE))?;
             }
             Some(("sort", "title")) => parsed.listing.sort = Sort::Title,
             Some(("sort", "added")) => parsed.listing.sort = Sort::DateAdded,

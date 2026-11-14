@@ -1,7 +1,8 @@
-//! A scrolling collection of library items, used for every screen that
-//! lists them.
+//! A scrolling collection of cards, used for every screen that lists
+//! things: shelves that scroll sideways, grids, and lists of episodes.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::ops::Range;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -20,25 +21,28 @@ use objc2_app_kit::{
     NSCollectionLayoutSectionOrthogonalScrollingBehavior, NSCollectionLayoutSize,
     NSCollectionLayoutSpacing, NSCollectionView, NSCollectionViewCompositionalLayout,
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
-    NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewSupplementaryElementKind,
-    NSColor, NSEvent, NSEventType, NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem,
-    NSRectAlignment, NSScrollView, NSTextField, NSView,
+    NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewScrollPosition,
+    NSCollectionViewSupplementaryElementKind, NSColor, NSEvent, NSEventType,
+    NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem, NSRectAlignment, NSScrollView,
+    NSTextField, NSView, NSViewBoundsDidChangeNotification,
 };
 use objc2_foundation::{
-    NSArray, NSIndexPath, NSInteger, NSMutableIndexSet, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSSet, NSString, ns_string,
+    NSArray, NSIndexPath, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
+    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSet, NSString,
+    ns_string,
 };
-use plex::model::Item;
+use plex::model::{Item, Kind, RatingKey, Role};
 
 use super::episode::EpisodeItem;
+use super::heading;
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
-use super::poster::{self, PosterItem, Shape};
+use super::poster::{self, Card, PosterItem, Shape};
 use super::theme;
 use crate::images::Images;
 
-/// How the items of one shelf are arranged.
+/// How the cards of one shelf are arranged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
     /// One row of cards, scrolling sideways.
@@ -49,15 +53,28 @@ pub enum Style {
     List,
 }
 
-/// A titled group of items. An empty title means no heading.
+/// A titled group of cards. An empty title means no heading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shelf {
     pub title: String,
     pub style: Style,
-    pub items: Vec<Item>,
+    pub cards: Vec<Card>,
+    /// Server path of the whole list this shelf is the start of. With it,
+    /// the heading is a link to that list.
+    pub more: Option<String>,
+    /// The item the page is about, which is marked among the others.
+    pub current: Option<RatingKey>,
 }
 
-/// The shape of a shelf whose items are not known yet.
+impl Shelf {
+    /// A shelf of library items that leads nowhere further.
+    pub fn of(title: impl Into<String>, style: Style, items: Vec<Item>) -> Self {
+        let cards = items.into_iter().map(Card::Item).collect();
+        Self { title: title.into(), style, cards, more: None, current: None }
+    }
+}
+
+/// The shape of a shelf whose cards are not known yet.
 #[derive(Debug, Clone)]
 pub struct Outline {
     pub title: &'static str,
@@ -65,18 +82,27 @@ pub struct Outline {
     pub count: usize,
 }
 
-/// What the viewer asked to do with an item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the viewer asked for.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    Open,
-    Play,
-    SetWatched(bool),
-    /// Go from an episode to its show, opened on the episode's season.
-    OpenShow,
+    Open(Item),
+    Play(Item),
+    SetWatched(Item, bool),
+    /// Go from this episode to its show, with the episode's season chosen.
+    OpenShow(Item),
+    /// Go from this episode to its season: the list it is in.
+    OpenSeason(Item),
+    /// Show what else this member of the cast is in.
+    OpenPerson(Role),
+    /// Show the whole list at this server path, under this title.
+    OpenList {
+        title: String,
+        path: String,
+    },
 }
 
-/// Hears what the viewer asked to do, and with which item.
-pub type OnAction = dyn Fn(&Item, Action);
+/// Hears what the viewer asked for.
+pub type OnAction = dyn Fn(Action);
 
 /// A view shown above the shelves, scrolling with them.
 pub struct Header {
@@ -85,7 +111,7 @@ pub struct Header {
 }
 
 /// What the collection shows: grey outlines until the first answer, then
-/// the items.
+/// the shelves.
 enum Content {
     Outlines(Vec<Outline>),
     Shelves(Vec<Shelf>),
@@ -99,10 +125,10 @@ impl Content {
         }
     }
 
-    fn item_count(&self, shelf: usize) -> usize {
+    fn card_count(&self, shelf: usize) -> usize {
         match self {
             Self::Outlines(outlines) => outlines.get(shelf).map_or(0, |outline| outline.count),
-            Self::Shelves(shelves) => shelves.get(shelf).map_or(0, |shelf| shelf.items.len()),
+            Self::Shelves(shelves) => shelves.get(shelf).map_or(0, |shelf| shelf.cards.len()),
         }
     }
 
@@ -120,15 +146,31 @@ impl Content {
         }
     }
 
-    fn item(&self, shelf: usize, item: usize) -> Option<&Item> {
+    fn shelf(&self, shelf: usize) -> Option<&Shelf> {
         match self {
             Self::Outlines(_) => None,
-            Self::Shelves(shelves) => shelves.get(shelf)?.items.get(item),
+            Self::Shelves(shelves) => shelves.get(shelf),
         }
+    }
+
+    fn card(&self, shelf: usize, card: usize) -> Option<&Card> {
+        self.shelf(shelf)?.cards.get(card)
+    }
+
+    /// Where the card for the item with `key` is.
+    fn find(&self, key: &RatingKey) -> Option<Retained<NSIndexPath>> {
+        let Self::Shelves(shelves) = self else {
+            return None;
+        };
+        let is_it = |card: &Card| card.item().is_some_and(|item| &item.rating_key == key);
+        shelves.iter().enumerate().find_map(|(shelf, held)| {
+            let card = held.cards.iter().position(is_it)?;
+            Some(NSIndexPath::indexPathForItem_inSection(card.cast_signed(), shelf.cast_signed()))
+        })
     }
 }
 
-/// When the item this close to the end of a grid is drawn, more are needed.
+/// When the card this close to the end of a grid is drawn, more are needed.
 const NEAR_END: usize = 30;
 
 const HEADING: &str = "heading";
@@ -149,7 +191,7 @@ pub struct Ivars {
     images: Rc<Images>,
     on_action: Box<OnAction>,
     on_near_end: Box<dyn Fn()>,
-    /// Set from asking for more items until they arrive, so that one page
+    /// Set from asking for more cards until they arrive, so that one page
     /// is not asked for twice.
     awaiting_more: Cell<bool>,
     /// The item a context menu is open on.
@@ -174,9 +216,9 @@ define_class!(
         }
 
         #[unsafe(method(collectionView:numberOfItemsInSection:))]
-        fn item_count(&self, _collection: &NSCollectionView, shelf: NSInteger) -> NSInteger {
+        fn card_count(&self, _collection: &NSCollectionView, shelf: NSInteger) -> NSInteger {
             let shelf = usize::try_from(shelf).unwrap_or(usize::MAX);
-            self.ivars().content.borrow().item_count(shelf).cast_signed()
+            self.ivars().content.borrow().card_count(shelf).cast_signed()
         }
 
         #[unsafe(method_id(collectionView:itemForRepresentedObjectAtIndexPath:))]
@@ -213,7 +255,7 @@ define_class!(
             );
             match (&self.ivars().header, is_page_header) {
                 (Some(header), true) => layout::fill(&view, &header.view),
-                _ => self.title(&view, index_path),
+                _ => self.fill_heading(&view, index_path),
             }
             view
         }
@@ -236,24 +278,27 @@ define_class!(
             let on_play = collection
                 .itemAtIndexPath(&index_path)
                 .is_some_and(|cell| is_on_play(&cell, click.locationInWindow()));
-            self.act(&index_path, if on_play { Action::Play } else { Action::Open });
+            self.open(&index_path, on_play);
         }
     }
 
     impl Posters {
         #[unsafe(method(menuOpen:))]
         fn menu_open(&self, _sender: Option<&AnyObject>) {
-            self.act_on_menu_item(|_| Action::Open);
+            self.act_on_menu_item(Action::Open);
         }
 
         #[unsafe(method(menuPlay:))]
         fn menu_play(&self, _sender: Option<&AnyObject>) {
-            self.act_on_menu_item(|_| Action::Play);
+            self.act_on_menu_item(Action::Play);
         }
 
         #[unsafe(method(menuToggleWatched:))]
         fn menu_toggle_watched(&self, _sender: Option<&AnyObject>) {
-            self.act_on_menu_item(|item| Action::SetWatched(!item.is_watched()));
+            self.act_on_menu_item(|item| {
+                let watched = !item.is_watched();
+                Action::SetWatched(item, watched)
+            });
         }
     }
 );
@@ -261,16 +306,17 @@ define_class!(
 impl Posters {
     /// `outlines` is what to draw until [`show`](Self::show) is first
     /// called, and `nothing` what to say if it is then called with no
-    /// items. `on_action` is called when the viewer clicks an item or picks
-    /// from its menu. `on_near_end` is called when a grid is scrolled close
-    /// to its last item, as the cue to [`append`](Self::append) more.
+    /// cards. `on_action` is called when the viewer clicks a card or a
+    /// heading, or picks from a card's menu. `on_near_end` is called when a
+    /// grid is scrolled close to its last card, as the cue to
+    /// [`append`](Self::append) more.
     pub fn new(
         main_thread: MainThreadMarker,
         images: Rc<Images>,
         header: Option<Header>,
         outlines: Vec<Outline>,
         nothing: &str,
-        on_action: impl Fn(&Item, Action) + 'static,
+        on_action: impl Fn(Action) + 'static,
         on_near_end: impl Fn() + 'static,
     ) -> Retained<Self> {
         let content = Rc::new(RefCell::new(Content::Outlines(outlines)));
@@ -311,13 +357,23 @@ impl Posters {
         scroll.setDocumentView(Some(&collection));
         scroll.setHasVerticalScroller(true);
         scroll.setDrawsBackground(false);
+        // The collection hears of every scroll through these, to keep the
+        // pointer's highlight on the card under the pointer.
+        scroll.contentView().setPostsBoundsChangedNotifications(true);
+        // SAFETY: the selector is one `ItemsView` implements, taking the
+        // notification. The centre drops an observer that is freed.
+        unsafe {
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &collection,
+                sel!(scrolled:),
+                Some(NSViewBoundsDidChangeNotification),
+                None,
+            );
+        }
 
-        let nothing_label = label::line(
-            theme::FONT_HEADLINE,
-            Weight::Regular,
-            &NSColor::secondaryLabelColor(),
-            main_thread,
-        );
+        let secondary = NSColor::secondaryLabelColor();
+        let nothing_label =
+            label::line(theme::FONT_HEADLINE, Weight::Regular, &secondary, main_thread);
         label::set(&nothing_label, nothing);
         nothing_label.setHidden(true);
         scroll.addSubview(&nothing_label);
@@ -365,27 +421,35 @@ impl Posters {
         }
     }
 
-    /// Replaces everything shown, disturbing as little as it can. When the
-    /// shelves are the same ones, only those whose items changed are laid
-    /// out again, and the cells of the others are filled where they are,
-    /// so nothing moves and nothing flashes.
+    /// Replaces everything shown, disturbing as little as it can. While
+    /// the shelves stay the ones they were, only those whose cards changed
+    /// are laid out again, shelves that are new are added below, and the
+    /// cards of the others are brought up to date where they are: nothing
+    /// moves and nothing flashes.
     pub fn show(&self, shelves: Vec<Shelf>) {
         let ivars = self.ivars();
         ivars.awaiting_more.set(false);
-        ivars.nothing.setHidden(shelves.iter().any(|shelf| !shelf.items.is_empty()));
-        let new = Content::Shelves(shelves);
-        let changed = changed_shelves(&ivars.content.borrow(), &new);
-        *ivars.content.borrow_mut() = new;
-        let Some(changed) = changed else {
+        ivars.nothing.setHidden(shelves.iter().any(|shelf| !shelf.cards.is_empty()));
+        let changes = changes(&ivars.content.borrow(), &shelves);
+        let Some(changes) = changes else {
+            *ivars.content.borrow_mut() = Content::Shelves(shelves);
             ivars.collection.reloadData();
             return;
         };
-        if !changed.is_empty() {
-            let sections = NSMutableIndexSet::new();
-            for shelf in changed {
-                sections.addIndex(shelf);
-            }
-            ivars.collection.reloadSections(&sections);
+
+        // The collection view counts its shelves and cards lazily. Asking
+        // it now makes it count before they change: counting afterwards, it
+        // would take the new numbers for the old ones and refuse the update.
+        let _ = ivars.collection.numberOfSections();
+        *ivars.content.borrow_mut() = Content::Shelves(shelves);
+        if !changes.is_empty() {
+            let collection = ivars.collection.clone();
+            let update = RcBlock::new(move || {
+                collection.reloadSections(&index_set(&changes.reloaded));
+                collection.deleteSections(&index_range(&changes.removed));
+                collection.insertSections(&index_range(&changes.added));
+            });
+            ivars.collection.performBatchUpdates_completionHandler(Some(&update), None);
         }
         for cell in ivars.collection.visibleItems() {
             if let Some(index_path) = ivars.collection.indexPathForItem(&cell) {
@@ -407,19 +471,18 @@ impl Posters {
         let Some(last) = ivars.content.borrow().shelf_count().checked_sub(1) else {
             return;
         };
-        // The collection view counts its items lazily. Asking it now makes
-        // it count before the list grows: counting afterwards, it would
-        // find the new items already there and refuse to insert them.
+        // As in `show`: the collection view has to count before the list
+        // grows.
         let _ = ivars.collection.numberOfItemsInSection(last.cast_signed());
         let added: Vec<Retained<NSIndexPath>> = (start..start + items.len())
-            .map(|item| {
-                NSIndexPath::indexPathForItem_inSection(item.cast_signed(), last.cast_signed())
+            .map(|card| {
+                NSIndexPath::indexPathForItem_inSection(card.cast_signed(), last.cast_signed())
             })
             .collect();
         if let Content::Shelves(shelves) = &mut *ivars.content.borrow_mut()
             && let Some(shelf) = shelves.last_mut()
         {
-            shelf.items.extend(items);
+            shelf.cards.extend(items.into_iter().map(Card::Item));
         }
         // Inserting leaves the cells on screen and the scroll position
         // alone, which reloading everything would not.
@@ -427,21 +490,71 @@ impl Posters {
         ivars.awaiting_more.set(false);
     }
 
-    /// How many items are shown, across all shelves.
+    /// How many cards are shown, across all shelves.
     pub fn len(&self) -> usize {
         let content = self.ivars().content.borrow();
         match &*content {
             Content::Outlines(_) => 0,
-            Content::Shelves(shelves) => shelves.iter().map(|shelf| shelf.items.len()).sum(),
+            Content::Shelves(shelves) => shelves.iter().map(|shelf| shelf.cards.len()).sum(),
         }
     }
 
-    /// Scrolls so that the content `y` points down is at the top.
+    /// Scrolls so that the content `y` points down is at the top of what
+    /// can be seen, which is under the toolbar.
     pub fn scroll_to(&self, y: f64) {
-        self.ivars().collection.scrollPoint(NSPoint { x: 0.0, y });
+        self.lay_out();
+        let under_toolbar = self.ivars().scroll.contentInsets().top;
+        self.ivars().collection.scrollPoint(NSPoint { x: 0.0, y: y - under_toolbar });
     }
 
-    /// Puts the pointer's highlight on the first item, for a snapshot.
+    /// Gives everything its place now. What was just shown has no place
+    /// to scroll to until then, and a screen that was just put in the
+    /// window has no size, which only the window can give it.
+    fn lay_out(&self) {
+        if let Some(window) = self.ivars().scroll.window() {
+            window.layoutIfNeeded();
+        }
+        self.ivars().collection.layoutSubtreeIfNeeded();
+    }
+
+    /// Puts the keyboard on the card for the item with `key`, scrolling
+    /// up or down no further than it takes to bring the card into view.
+    pub fn select(&self, key: &RatingKey) {
+        let Some(index_path) = self.ivars().content.borrow().find(key) else {
+            return;
+        };
+        self.ivars().collection.selectItemsAtIndexPaths_scrollPosition(
+            &NSSet::from_retained_slice(&[index_path]),
+            NSCollectionViewScrollPosition::NearestVerticalEdge,
+        );
+    }
+
+    /// Scrolls the shelf that holds the item with `key` sideways until its
+    /// card is in the middle.
+    pub fn reveal(&self, key: &RatingKey) {
+        let Some(index_path) = self.ivars().content.borrow().find(key) else {
+            return;
+        };
+        self.lay_out();
+        self.ivars().collection.scrollToItemsAtIndexPaths_scrollPosition(
+            &NSSet::from_retained_slice(&[index_path]),
+            NSCollectionViewScrollPosition::CenteredHorizontally,
+        );
+        self.fill_scrolled_shelves();
+    }
+
+    /// A shelf scrolled by the program, not by the viewer, does not fetch
+    /// the cards that came into view by itself. Laying the collection out
+    /// again does.
+    fn fill_scrolled_shelves(&self) {
+        let collection = &self.ivars().collection;
+        if let Some(layout) = collection.collectionViewLayout() {
+            layout.invalidateLayout();
+        }
+        collection.layoutSubtreeIfNeeded();
+    }
+
+    /// Puts the pointer's highlight on the first card, for a snapshot.
     pub fn hover_first(&self) {
         let first = NSIndexPath::indexPathForItem_inSection(0, 0);
         if let Some(cell) = self.ivars().collection.itemAtIndexPath(&first)
@@ -451,28 +564,42 @@ impl Posters {
         }
     }
 
-    fn item_at(&self, index_path: &NSIndexPath) -> Option<Item> {
-        let (shelf, item) = position(index_path);
-        self.ivars().content.borrow().item(shelf, item).cloned()
-    }
-
-    /// Tells the owner what the viewer wants done with the item at
-    /// `index_path`.
-    fn act(&self, index_path: &NSIndexPath, action: Action) {
-        // What the handler shows next may replace this collection, which
-        // would free it while this method is still running.
-        let _alive = self.retain();
-        // Cloned so the handler is free to change what is shown.
-        if let Some(item) = self.item_at(index_path) {
-            (self.ivars().on_action)(&item, action);
+    /// Scrolls the first shelf `x` points sideways, for a snapshot.
+    pub fn scroll_first_shelf_to(&self, x: f64) {
+        if let Some(shelf) = first_scroller_in(&self.ivars().collection) {
+            let clip = shelf.contentView();
+            clip.scrollToPoint(NSPoint { x, y: clip.bounds().origin.y });
+            shelf.reflectScrolledClipView(&clip);
+            self.fill_scrolled_shelves();
         }
     }
 
-    fn act_on_menu_item(&self, action: impl Fn(&Item) -> Action) {
+    /// Tells the owner what the viewer asked for.
+    fn act(&self, action: Action) {
+        // What the handler shows next may replace this collection, which
+        // would free it while this method is still running.
         let _alive = self.retain();
+        (self.ivars().on_action)(action);
+    }
+
+    /// Does what a click or the Return key does to the card at
+    /// `index_path`. `on_play` says the click was on the play glyph.
+    fn open(&self, index_path: &NSIndexPath, on_play: bool) {
+        let (shelf, card) = position(index_path);
+        // Cloned so the handler is free to change what is shown.
+        let card = self.ivars().content.borrow().card(shelf, card).cloned();
+        match card {
+            Some(Card::Item(item)) if on_play => self.act(Action::Play(item)),
+            Some(Card::Item(item)) => self.act(Action::Open(item)),
+            Some(Card::Person(person)) => self.act(Action::OpenPerson(person)),
+            None => {}
+        }
+    }
+
+    fn act_on_menu_item(&self, action: impl Fn(Item) -> Action) {
         let item = self.ivars().menu_item.borrow_mut().take();
         if let Some(item) = item {
-            (self.ivars().on_action)(&item, action(&item));
+            self.act(action(item));
         }
     }
 
@@ -480,64 +607,54 @@ impl Posters {
         let ivars = self.ivars();
         let (shelf, index) = position(index_path);
         let content = ivars.content.borrow();
-        let (Some(style), item) = (content.style(shelf), content.item(shelf, index)) else {
+        let (Some(held), Some(card)) = (content.shelf(shelf), content.card(shelf, index)) else {
+            // An outline: a cell with nothing in it yet, and nothing after
+            // it to ask for.
             return;
         };
-        match (style, item) {
-            (Style::List, Some(item)) => {
+        let is_current =
+            card.item().is_some_and(|item| held.current.as_ref() == Some(&item.rating_key));
+        match (held.style, card) {
+            (Style::List, Card::Item(item)) => {
                 if let Some(cell) = cell.downcast_ref::<EpisodeItem>() {
                     cell.show(item, &ivars.images);
                 }
             }
-            (Style::Shelf(shape) | Style::Grid(shape), Some(item)) => {
+            (Style::Shelf(shape) | Style::Grid(shape), card) => {
                 if let Some(cell) = cell.downcast_ref::<PosterItem>() {
-                    cell.show(item, shape, &ivars.images);
+                    cell.show(card, shape, is_current, &ivars.images);
                 }
             }
-            // An outline: a cell with nothing in it yet, and nothing after
-            // it to ask for.
-            (_, None) => return,
+            // A list is of episodes only.
+            (Style::List, Card::Person(_)) => {}
         }
 
-        let is_grid = matches!(style, Style::Grid(_));
-        let left = content.item_count(shelf).saturating_sub(index);
+        let is_grid = matches!(held.style, Style::Grid(_));
+        let left = held.cards.len().saturating_sub(index);
         drop(content);
         if is_grid && left <= NEAR_END && !ivars.awaiting_more.replace(true) {
             (ivars.on_near_end)();
         }
     }
 
-    fn title(&self, view: &NSView, index_path: &NSIndexPath) {
-        // The collection view hands back a view it made earlier, with the
-        // label this put in it then, or a new, empty one.
-        let reused = view.subviews().firstObject();
-        let label = match reused.and_then(|label| label.downcast::<NSTextField>().ok()) {
-            Some(label) => label,
-            None => {
-                let label = label::line(
-                    theme::FONT_TITLE,
-                    Weight::Bold,
-                    &NSColor::labelColor(),
-                    self.mtm(),
-                );
-                view.addSubview(&label);
-                // At the bottom of its strip, close to the shelf it names.
-                label
-                    .leadingAnchor()
-                    .constraintEqualToAnchor(&view.leadingAnchor())
-                    .setActive(true);
-                label
-                    .bottomAnchor()
-                    .constraintEqualToAnchor_constant(&view.bottomAnchor(), -theme::SPACE_XS)
-                    .setActive(true);
-                label
-            }
-        };
+    fn fill_heading(&self, strip: &NSView, index_path: &NSIndexPath) {
         let (shelf, _) = position(index_path);
-        label::set(&label, self.ivars().content.borrow().title(shelf));
+        let content = self.ivars().content.borrow();
+        let title = content.title(shelf).to_owned();
+        let more = content.shelf(shelf).and_then(|shelf| shelf.more.clone());
+        drop(content);
+        let on_more = more.map(|path| -> Box<dyn Fn()> {
+            let (posters, title) = (Weak::new(self), title.clone());
+            Box::new(move || {
+                if let Some(posters) = posters.load() {
+                    posters.act(Action::OpenList { title: title.clone(), path: path.clone() });
+                }
+            })
+        });
+        heading::fill(strip, &title, on_more, self.mtm());
     }
 
-    /// Return and Space open the item the keyboard is on.
+    /// Return and Space open the card the keyboard is on.
     fn key_pressed(&self, event: &NSEvent) -> bool {
         if !matches!(event.keyCode(), KEY_RETURN | KEY_SPACE) {
             return false;
@@ -545,7 +662,7 @@ impl Posters {
         let Some(index_path) = self.ivars().collection.selectionIndexPaths().anyObject() else {
             return false;
         };
-        self.act(&index_path, Action::Open);
+        self.open(&index_path, false);
         true
     }
 
@@ -554,7 +671,8 @@ impl Posters {
         let collection = &self.ivars().collection;
         let point = collection.convertPoint_fromView(event.locationInWindow(), None);
         let index_path = collection.indexPathForItemAtPoint(point)?;
-        let item = self.item_at(&index_path)?;
+        let (shelf, card) = position(&index_path);
+        let item = self.ivars().content.borrow().card(shelf, card)?.item()?.clone();
 
         let menu = NSMenu::new(self.mtm());
         let add = |title: &str, action| {
@@ -575,10 +693,13 @@ impl Posters {
         if poster::is_playable(&item) {
             add("Play", sel!(menuPlay:));
         }
-        add("Open", sel!(menuOpen:));
-        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-        let toggle = if item.is_watched() { "Mark as Unwatched" } else { "Mark as Watched" };
-        add(toggle, sel!(menuToggleWatched:));
+        // A trailer has no page to open and no place in what was watched.
+        if item.kind != Kind::Clip {
+            add("Open", sel!(menuOpen:));
+            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+            let toggle = if item.is_watched() { "Mark as Unwatched" } else { "Mark as Watched" };
+            add(toggle, sel!(menuToggleWatched:));
+        }
         *self.ivars().menu_item.borrow_mut() = Some(item);
         Some(menu)
     }
@@ -598,26 +719,72 @@ fn is_on_play(cell: &NSCollectionViewItem, point: NSPoint) -> bool {
     }
 }
 
-/// Which shelves of `new` hold other items, or the same in another order,
-/// than the shelf in that place in `old`. `None` when the shelves
-/// themselves differ, in number, title or arrangement, or when `old` was
-/// only outlines: then nothing on screen can stay.
-fn changed_shelves(old: &Content, new: &Content) -> Option<Vec<usize>> {
-    let (Content::Shelves(old), Content::Shelves(new)) = (old, new) else {
+fn index_set(indexes: &[usize]) -> Retained<NSMutableIndexSet> {
+    let set = NSMutableIndexSet::new();
+    for index in indexes {
+        set.addIndex(*index);
+    }
+    set
+}
+
+fn index_range(range: &Range<usize>) -> Retained<NSIndexSet> {
+    NSIndexSet::indexSetWithIndexesInRange(NSRange::new(range.start, range.len()))
+}
+
+/// The first scroll view inside `view`, searching depth first. Inside a
+/// collection those are the shelves that scroll sideways.
+fn first_scroller_in(view: &NSView) -> Option<Retained<NSScrollView>> {
+    view.subviews().iter().find_map(|child| match child.downcast::<NSScrollView>() {
+        Ok(scroller) => Some(scroller),
+        Err(child) => first_scroller_in(&child),
+    })
+}
+
+/// What turns the shelves on screen into other ones without starting over.
+#[derive(Debug, PartialEq)]
+struct Changes {
+    /// Shelves that stay but hold other cards, or the same in another
+    /// order, or lead somewhere else.
+    reloaded: Vec<usize>,
+    /// Shelves past the end of the new ones.
+    removed: Range<usize>,
+    /// Shelves past the end of the old ones.
+    added: Range<usize>,
+}
+
+impl Changes {
+    fn is_empty(&self) -> bool {
+        self.reloaded.is_empty() && self.removed.is_empty() && self.added.is_empty()
+    }
+}
+
+/// How to get from `old` to `new`. `None` when a shelf that both have
+/// differs in title or arrangement, or when `old` was only outlines: then
+/// nothing on screen can stay.
+fn changes(old: &Content, new: &[Shelf]) -> Option<Changes> {
+    let Content::Shelves(old) = old else {
         return None;
     };
     let same_shelf =
         |(old, new): (&Shelf, &Shelf)| old.title == new.title && old.style == new.style;
-    if old.len() != new.len() || !old.iter().zip(new).all(same_shelf) {
+    if !old.iter().zip(new).all(same_shelf) {
         return None;
     }
-    let same_items = |old: &Shelf, new: &Shelf| {
-        let mut pairs = old.items.iter().zip(&new.items);
-        old.items.len() == new.items.len()
-            && pairs.all(|(old, new)| old.rating_key == new.rating_key)
+    let same_cards = |old: &Shelf, new: &Shelf| {
+        let mut pairs = old.cards.iter().zip(&new.cards);
+        old.cards.len() == new.cards.len()
+            && old.more == new.more
+            && pairs.all(|(old, new)| old.is_same(new))
     };
-    let pairs = old.iter().zip(new).enumerate();
-    Some(pairs.filter(|(_, (old, new))| !same_items(old, new)).map(|(shelf, _)| shelf).collect())
+    let shared = old.iter().zip(new).enumerate();
+    Some(Changes {
+        reloaded: shared
+            .filter(|(_, (old, new))| !same_cards(old, new))
+            .map(|(at, _)| at)
+            .collect(),
+        removed: new.len().min(old.len())..old.len(),
+        added: old.len().min(new.len())..new.len(),
+    })
 }
 
 /// How many cards fit across `available` points when each is at least
@@ -655,15 +822,37 @@ define_class!(
             let () = unsafe { msg_send![super(self), keyDown: event] };
         }
 
-        /// Scrolling moves the cards under a pointer that stays where it
-        /// is, so the highlight has to move to the card now under it.
-        #[unsafe(method(scrollWheel:))]
-        fn scroll_wheel(&self, event: &NSEvent) {
-            // SAFETY: forwards the event unchanged.
-            let () = unsafe { msg_send![super(self), scrollWheel: event] };
+        /// Each shelf that scrolls sideways sits in a scroll view that the
+        /// layout makes, and that paints the window's colour behind its
+        /// cards: a dark band across a page that has colours of its own.
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), layout] };
+            for view in self.subviews() {
+                if let Ok(shelf) = view.downcast::<NSScrollView>() {
+                    shelf.setDrawsBackground(false);
+                }
+            }
+        }
+
+        /// Some view scrolled. If it was this collection, up and down, or
+        /// one of its shelves, sideways, the cards moved under a pointer
+        /// that stayed where it was, and the highlight has to move to the
+        /// card now under it. AppKit reports entering and leaving only when
+        /// the pointer moves.
+        #[unsafe(method(scrolled:))]
+        fn scrolled(&self, notification: &NSNotification) {
+            let moved = notification.object().and_then(|view| view.downcast::<NSView>().ok());
+            let is_ours =
+                moved.is_some_and(|view| view.isDescendantOf(self) || self.isDescendantOf(&view));
+            let (true, Some(window)) = (is_ours, self.window()) else {
+                return;
+            };
+            let pointer = window.mouseLocationOutsideOfEventStream();
             for cell in self.visibleItems() {
                 if let Some(view) = cell.view().downcast_ref::<HoverView>() {
-                    view.follow(event.locationInWindow());
+                    view.follow(pointer);
                 }
             }
         }
@@ -737,7 +926,7 @@ fn boundary_item(
     )
 }
 
-/// The space around a shelf's items, as `NSDirectionalEdgeInsets` lays it
+/// The space around a shelf's cards, as `NSDirectionalEdgeInsets` lays it
 /// out. AppKit's headers call the type that, but the method that takes it
 /// was compiled under the name `CVCDirectionalEdgeInsets`, and a debug
 /// build of objc2 refuses to send a struct under any other name. So this
@@ -850,29 +1039,42 @@ mod tests {
             let json = serde_json::json!({ "ratingKey": key, "type": "movie", "title": "Title" });
             serde_json::from_value(json).unwrap()
         };
-        Shelf {
-            title: title.to_owned(),
-            style: Style::Shelf(Shape::Poster),
-            items: keys.iter().map(item).collect(),
-        }
+        Shelf::of(title, Style::Shelf(Shape::Poster), keys.iter().map(item).collect())
+    }
+
+    fn reloaded(old: &Content, new: &[Shelf]) -> Option<Vec<usize>> {
+        changes(old, new).map(|changes| changes.reloaded)
     }
 
     #[test]
-    fn only_shelves_with_other_items_are_laid_out_again() {
-        let shown = |shelves: Vec<Shelf>| Content::Shelves(shelves);
-        let old = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3"])]);
+    fn only_shelves_with_other_cards_are_laid_out_again() {
+        let old = Content::Shelves(vec![shelf("a", &["1", "2"]), shelf("b", &["3"])]);
 
-        let same = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3"])]);
-        assert_eq!(changed_shelves(&old, &same), Some(vec![]));
-        let reordered = shown(vec![shelf("a", &["2", "1"]), shelf("b", &["3"])]);
-        assert_eq!(changed_shelves(&old, &reordered), Some(vec![0]));
-        let longer = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3", "4"])]);
-        assert_eq!(changed_shelves(&old, &longer), Some(vec![1]));
+        let same = [shelf("a", &["1", "2"]), shelf("b", &["3"])];
+        assert!(changes(&old, &same).unwrap().is_empty());
+        let reordered = [shelf("a", &["2", "1"]), shelf("b", &["3"])];
+        assert_eq!(reloaded(&old, &reordered), Some(vec![0]));
+        let longer = [shelf("a", &["1", "2"]), shelf("b", &["3", "4"])];
+        assert_eq!(reloaded(&old, &longer), Some(vec![1]));
+        let mut leads_on = same.clone();
+        leads_on[1].more = Some("/path".to_owned());
+        assert_eq!(reloaded(&old, &leads_on), Some(vec![1]));
 
-        let renamed = shown(vec![shelf("a", &["1", "2"]), shelf("c", &["3"])]);
-        assert_eq!(changed_shelves(&old, &renamed), None);
-        assert_eq!(changed_shelves(&old, &shown(vec![shelf("a", &["1", "2"])])), None);
-        assert_eq!(changed_shelves(&Content::Outlines(Vec::new()), &same), None);
+        let renamed = [shelf("a", &["1", "2"]), shelf("c", &["3"])];
+        assert_eq!(changes(&old, &renamed), None);
+        assert_eq!(changes(&Content::Outlines(Vec::new()), &same), None);
+    }
+
+    #[test]
+    fn shelves_are_added_and_removed_at_the_end() {
+        let old = Content::Shelves(vec![shelf("a", &["1"]), shelf("b", &["2"])]);
+
+        let more = [shelf("a", &["1"]), shelf("b", &["2"]), shelf("c", &["3"])];
+        let expected = Changes { reloaded: vec![], removed: 2..2, added: 2..3 };
+        assert_eq!(changes(&old, &more), Some(expected));
+        let fewer = [shelf("a", &["9"])];
+        let expected = Changes { reloaded: vec![0], removed: 1..2, added: 1..1 };
+        assert_eq!(changes(&old, &fewer), Some(expected));
     }
 
     #[test]

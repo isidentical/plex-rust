@@ -1,8 +1,10 @@
 //! What the app remembers between launches.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use plex::library::{Listing, Sort};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -29,24 +31,102 @@ impl Default for Settings {
 impl Settings {
     /// Reads the settings, or the defaults if none were ever saved.
     pub fn load() -> Result<Self> {
-        let path = path()?;
-        match fs::read_to_string(&path) {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|source| Error::Settings { path, source })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(source) => Err(Error::File { path, source }),
-        }
+        Ok(read("settings.json")?.unwrap_or_default())
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = path()?;
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|source| Error::Settings { path: path.clone(), source })?;
-        fs::write(&path, json).map_err(|source| Error::File { path, source })
+        write("settings.json", self)
     }
 }
 
-fn path() -> Result<PathBuf> {
-    Ok(crate::account::support_directory()?.join("settings.json"))
+/// How the viewer last listed each library: in which order, and whether
+/// only what is left to watch. Keyed by the library's key on the server.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Listings(BTreeMap<String, SavedListing>);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SavedListing {
+    /// The order by its title, such as "Date Added".
+    sort: String,
+    unwatched_only: bool,
+}
+
+impl Listings {
+    /// Reads the listings, or none if none were ever saved.
+    pub fn load() -> Result<Self> {
+        Ok(read("listings.json")?.unwrap_or_default())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        write("listings.json", self)
+    }
+
+    /// How the library with `key` was last listed. A library never listed
+    /// any other way, or in an order this version no longer has, is listed
+    /// the default way.
+    pub fn of(&self, key: &str) -> Listing {
+        let Some(saved) = self.0.get(key) else {
+            return Listing::default();
+        };
+        let sort = Sort::ALL.into_iter().find(|sort| sort.title() == saved.sort);
+        Listing { sort: sort.unwrap_or_default(), unwatched_only: saved.unwatched_only }
+    }
+
+    pub fn set(&mut self, key: &str, listing: Listing) {
+        let saved = SavedListing {
+            sort: listing.sort.title().to_owned(),
+            unwatched_only: listing.unwatched_only,
+        };
+        self.0.insert(key.to_owned(), saved);
+    }
+}
+
+fn path(name: &str) -> Result<PathBuf> {
+    Ok(crate::account::support_directory()?.join(name))
+}
+
+/// Reads the file called `name` in the app's folder. `None` if there is
+/// no such file.
+fn read<T: for<'de> Deserialize<'de>>(name: &str) -> Result<Option<T>> {
+    let path = path(name)?;
+    match fs::read_to_string(&path) {
+        Ok(json) => {
+            let value = serde_json::from_str(&json);
+            value.map(Some).map_err(|source| Error::Settings { path, source })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::File { path, source }),
+    }
+}
+
+fn write(name: &str, value: &impl Serialize) -> Result<()> {
+    let path = path(name)?;
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|source| Error::Settings { path: path.clone(), source })?;
+    fs::write(&path, json).map_err(|source| Error::File { path, source })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_library_is_listed_the_way_it_was_left() {
+        let mut listings = Listings::default();
+        let left = Listing { sort: Sort::DateAdded, unwatched_only: true };
+        listings.set("2", left);
+
+        let json = serde_json::to_string(&listings).unwrap();
+        let read: Listings = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.of("2"), left);
+        assert_eq!(read.of("1"), Listing::default());
+    }
+
+    #[test]
+    fn an_order_that_no_longer_exists_falls_back_to_the_default() {
+        let json = r#"{ "1": { "sort": "Popularity", "unwatched_only": true } }"#;
+        let read: Listings = serde_json::from_str(json).unwrap();
+        assert_eq!(read.of("1"), Listing { sort: Sort::Title, unwatched_only: true });
+    }
 }

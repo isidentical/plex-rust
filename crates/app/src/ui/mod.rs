@@ -5,6 +5,7 @@ mod backdrop;
 mod callback;
 mod detail;
 mod episode;
+mod heading;
 mod hover;
 mod label;
 mod layout;

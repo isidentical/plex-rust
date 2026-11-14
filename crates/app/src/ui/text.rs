@@ -32,6 +32,19 @@ pub fn count(number: u32, one: &str) -> String {
     if number == 1 { format!("1 {one}") } else { format!("{number} {one}s") }
 }
 
+/// What kind of extra the server's `subtype` names.
+pub fn extra(subtype: Option<&str>) -> &'static str {
+    match subtype {
+        Some("trailer") => "Trailer",
+        Some("behindTheScenes") => "Behind the Scenes",
+        Some("deletedScene") => "Deleted Scene",
+        Some("featurette") => "Featurette",
+        Some("interview") => "Interview",
+        Some("sceneOrSample") => "Scene",
+        _ => "Extra",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

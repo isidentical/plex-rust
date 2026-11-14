@@ -84,6 +84,8 @@ pub struct Item {
     #[serde(rename = "type")]
     pub kind: Kind,
     pub title: String,
+    /// For an extra, what it is: `trailer`, `behindTheScenes` and so on.
+    pub subtype: Option<String>,
     pub summary: Option<String>,
     /// The line from the poster, such as "In space no one can hear you".
     pub tagline: Option<String>,

@@ -1,7 +1,7 @@
 //! Sizes, spacing and colours. No other file holds a literal measurement.
 
 use objc2::rc::Retained;
-use objc2_app_kit::NSColor;
+use objc2_app_kit::{NSColor, NSWorkspace};
 use objc2_foundation::NSSize;
 
 pub const WINDOW_SIZE: NSSize = NSSize { width: 1280.0, height: 800.0 };
@@ -55,6 +55,14 @@ pub const LANDSCAPE_WIDTH: f64 = 288.0;
 /// width, so that resizing the window never downloads them again.
 pub const POSTER_REQUEST: (u32, u32) = (200, 300);
 pub const LANDSCAPE_REQUEST: (u32, u32) = (320, 180);
+/// An episode among the others of its season, in a shelf.
+pub const STILL_WIDTH: f64 = 240.0;
+/// A member of the cast, in a shelf.
+pub const PORTRAIT_WIDTH: f64 = 112.0;
+pub const PORTRAIT_REQUEST: (u32, u32) = (112, 112);
+/// The glyph that stands in for a missing photo.
+pub const PORTRAIT_GLYPH_SIZE: f64 = 44.0;
+pub const PLACEHOLDER_GLYPH_OPACITY: f64 = 0.25;
 
 /// The two lines of text under a card's artwork, with the gaps around them.
 pub const CAPTIONS_HEIGHT: f64 = 46.0;
@@ -83,6 +91,9 @@ pub const ARTWORK_OUTLINE_OPACITY: f64 = 0.10;
 pub const ARTWORK_HOVER_OUTLINE_OPACITY: f64 = 0.35;
 pub const ARTWORK_PLACEHOLDER_OPACITY: f64 = 0.06;
 pub const FOCUS_RING_WIDTH: f64 = 3.0;
+/// Around the card for the episode a page is about.
+pub const CURRENT_OUTLINE_WIDTH: f64 = 2.0;
+pub const CURRENT_OUTLINE_OPACITY: f64 = 0.9;
 
 pub const PROGRESS_BAR_HEIGHT: f64 = 4.0;
 pub const PROGRESS_BAR_INSET: f64 = SPACE_S;
@@ -97,7 +108,14 @@ pub const BADGE_BACKGROUND_OPACITY: f64 = 0.7;
 pub const SCREEN_FADE: f64 = 0.15;
 
 /// The top of a detail page: artwork on the left, text beside it.
-pub const HERO_HEIGHT: f64 = 424.0;
+pub const HERO_HEIGHT: f64 = 380.0;
+/// The strip under a show's header that holds its season picker.
+pub const SEASON_BAR_HEIGHT: f64 = 52.0;
+/// The buttons of a detail page, drawn as capsules.
+pub const PILL_HEIGHT: f64 = 36.0;
+pub const PILL_PADDING: f64 = SPACE_L;
+/// How strongly white is laid under a button that is not the main one.
+pub const PILL_WASH_OPACITY: f64 = 0.16;
 pub const HERO_POSTER_WIDTH: f64 = 232.0;
 pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
 pub const HERO_TEXT_WIDTH: f64 = 640.0;
@@ -124,6 +142,23 @@ pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
 /// A message in the middle of an empty screen.
 pub const NOTICE_SYMBOL_SIZE: f64 = 44.0;
 pub const NOTICE_WIDTH: f64 = 420.0;
+
+/// Whether the viewer asked the system for less movement. Then nothing
+/// grows or slides, and one screen replaces the other without a fade.
+pub fn reduces_motion() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// Whether the viewer asked the system for more contrast. Then outlines
+/// are stronger and artwork behind text is fainter.
+pub fn increases_contrast() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+}
+
+/// How strong the hairline around artwork at rest is.
+pub fn artwork_outline_opacity() -> f64 {
+    if increases_contrast() { ARTWORK_HOVER_OUTLINE_OPACITY } else { ARTWORK_OUTLINE_OPACITY }
+}
 
 /// Behind every screen that has no colours of its own. The window's own
 /// colour, which the shelves' sideways scrollers also draw.

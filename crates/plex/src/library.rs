@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Hub, Item, Kind, RatingKey, Section};
+use crate::model::{Hub, Item, Kind, RatingKey, Role, Section};
 use crate::server::MediaServer;
 
 /// One page of a longer list.
@@ -202,6 +202,13 @@ impl MediaServer {
         let Items { items, .. } = self.get(&path, &[]).await?;
         Ok(items)
     }
+}
+
+/// Server path of the list of everything in library `section` that
+/// `person` is in. `None` for a cast member the server gave no number,
+/// which is every one in a listing: only an item fetched in full has them.
+pub fn appearances(section: u32, person: &Role) -> Option<String> {
+    Some(format!("/library/sections/{section}/all?actor={}", person.id?))
 }
 
 /// The episode to offer when the viewer asks to play a show, given all its

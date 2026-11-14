@@ -24,7 +24,8 @@ use plex::model::{Hub, Item, Kind, RatingKey, Section};
 use plex::{Client, MediaServer, Token};
 
 use super::callback::Callback;
-use super::detail::Detail;
+pub use super::detail::Link;
+use super::detail::{Detail, Opening};
 use super::layout;
 use super::library_bar::LibraryBar;
 use super::menus::{self, Commands};
@@ -41,13 +42,16 @@ use crate::account;
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
-use crate::settings::Settings;
+use crate::settings::{Listings, Settings};
 
 /// How many items each shelf of the home screen starts with.
 const SHELF_LENGTH: u32 = 20;
 
 /// How many items of a library are fetched at a time.
 const PAGE_SIZE: u32 = 100;
+
+/// How many items each row related to a film or show starts with.
+const RELATED_LENGTH: u32 = 20;
 
 /// How many results a search shows of each kind.
 const SEARCH_LIMIT: u32 = 30;
@@ -99,6 +103,8 @@ struct Shell {
     opening_player: Cell<bool>,
     /// Speed and volume, kept from one item to the next and across launches.
     settings: Cell<Settings>,
+    /// How each library was last listed, kept across launches.
+    listings: RefCell<Listings>,
 }
 
 /// What exists only while a server is known.
@@ -114,8 +120,14 @@ struct Session {
 enum Route {
     Home,
     Library(Section, Listing),
-    /// The page of an item. For a show, optionally the season to open on.
-    Item(Box<Item>, Option<RatingKey>),
+    /// The whole of a list the server names by a path: all of a shelf, or
+    /// everything a member of a cast is in.
+    List {
+        title: String,
+        path: String,
+    },
+    /// The page of an item. For a show, with how it opens.
+    Item(Box<Item>, Opening),
     Search(String),
 }
 
@@ -129,7 +141,7 @@ struct Entry {
 #[derive(Clone)]
 enum Screen {
     Posters(Retained<Posters>),
-    Detail(Retained<Detail>),
+    Detail(Rc<Detail>),
 }
 
 impl Screen {
@@ -155,6 +167,37 @@ impl Screen {
     }
 }
 
+/// A list that is fetched a page at a time as the viewer scrolls.
+#[derive(Clone)]
+enum Paged {
+    Library(Section, Listing),
+    /// The list at this server path.
+    Path(String),
+}
+
+impl Paged {
+    /// The page that starts at index `start`.
+    async fn page(self, server: MediaServer, start: u32) -> plex::Result<Page> {
+        match self {
+            Self::Library(section, listing) => {
+                server.section_items(&section, listing, start, PAGE_SIZE).await
+            }
+            Self::Path(path) => server.list(&path, start, PAGE_SIZE).await,
+        }
+    }
+}
+
+/// What a screen does when the server does not answer one of its
+/// questions and nothing remembered stands in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unanswered {
+    /// The screen is nothing without the answer, and gives way to the
+    /// error.
+    ShowsTheError,
+    /// The screen does without. The error is logged.
+    GoesWithout,
+}
+
 /// What a snapshot shows.
 #[derive(Clone)]
 pub enum Subject {
@@ -168,6 +211,8 @@ pub enum Subject {
     Play(String, Vec<Key>),
     /// The results of searching for this.
     Search(String),
+    /// The whole list at this server path, as a shelf's heading leads to.
+    List(String),
     /// The screen a signed-out viewer starts on.
     SignIn,
 }
@@ -179,10 +224,12 @@ pub struct Tweaks {
     pub narrow: bool,
     /// The pointer over the first item.
     pub hover: bool,
-    /// On an episode's page, its link to the show followed.
-    pub follow_link: bool,
+    /// On an episode's page, this link followed.
+    pub follow: Option<Link>,
     /// Scrolled this many points down.
     pub scroll: f64,
+    /// The first shelf scrolled this many points sideways.
+    pub across: f64,
     /// For a library, which items and in what order.
     pub listing: Listing,
 }
@@ -211,7 +258,8 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
     let dark = unsafe { NSAppearanceNameDarkAqua };
     app.setAppearance(NSAppearance::appearanceNamed(dark).as_deref());
 
-    let shell = Shell::new(main_thread, Rc::clone(&background), Settings::load()?);
+    let shell =
+        Shell::new(main_thread, Rc::clone(&background), Settings::load()?, Listings::load()?);
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
@@ -249,6 +297,7 @@ impl Shell {
         main_thread: MainThreadMarker,
         background: Rc<Background>,
         settings: Settings,
+        listings: Listings,
     ) -> Rc<Self> {
         let content = NSView::new(main_thread);
         // The fade from one screen to the next is drawn by its layer.
@@ -273,6 +322,7 @@ impl Shell {
             playing: RefCell::new(None),
             opening_player: Cell::new(false),
             settings: Cell::new(settings),
+            listings: RefCell::new(listings),
         });
 
         let selected = Rc::downgrade(&shell);
@@ -450,7 +500,9 @@ impl Shell {
                 Some(section) => self.go(Route::Library(section.clone(), tweaks.listing)),
                 None => self.go(Route::Home),
             },
-            Some(Subject::Item(key)) => self.fetch(RatingKey::new(key.as_str()), Self::open),
+            Some(Subject::Item(key)) => {
+                self.fetch(RatingKey::new(key.as_str()), |shell, item| shell.open(item));
+            }
             Some(Subject::Play(key, keys)) => {
                 let keys = keys.clone();
                 self.fetch(RatingKey::new(key.as_str()), move |shell, item| {
@@ -463,6 +515,9 @@ impl Shell {
                     toolbar.set_search_text(query);
                 }
                 self.go(Route::Search(query.clone()));
+            }
+            Some(Subject::List(path)) => {
+                self.go(Route::List { title: "List".to_owned(), path: path.clone() });
             }
             Some(Subject::Home | Subject::SignIn) | None => self.go(Route::Home),
         }
@@ -619,7 +674,9 @@ impl Shell {
     fn go_to(self: &Rc<Self>, destination: &Destination) {
         let route = match destination {
             Destination::Home => Route::Home,
-            Destination::Section(section) => Route::Library(section.clone(), Listing::default()),
+            Destination::Section(section) => {
+                Route::Library(section.clone(), self.listings.borrow().of(&section.key))
+            }
         };
         // Selecting the row of the place already on screen, as `display`
         // does to keep the sidebar in step, must not go there again.
@@ -677,7 +734,8 @@ impl Shell {
         let (screen, reload) = match &route {
             Route::Home => self.home(&session),
             Route::Library(section, listing) => self.library(&session, section, *listing),
-            Route::Item(item, season) => self.item_page(&session, item, season.clone()),
+            Route::List { title, path } => self.list(&session, &route, title, path),
+            Route::Item(item, opening) => self.item_page(&session, item, opening),
             Route::Search(query) => self.search_results(&session, query),
         };
         reload();
@@ -693,6 +751,7 @@ impl Shell {
         let shown = posters.clone();
         let reload = self.loader(
             session,
+            Unanswered::ShowsTheError,
             |server| async move { server.home(SHELF_LENGTH).await },
             move |hubs: &Vec<Hub>| shown.show(home_shelves(hubs)),
         );
@@ -705,53 +764,89 @@ impl Shell {
         section: &Section,
         listing: Listing,
     ) -> (Screen, Rc<dyn Fn()>) {
-        let (reordered, of) = (Rc::downgrade(self), section.clone());
+        let (relisted, of) = (Rc::downgrade(self), section.clone());
         let noun = if section.kind == Kind::Show { "show" } else { "film" };
         let bar = LibraryBar::new(self.main_thread, listing, noun, move |listing| {
-            if let Some(shell) = reordered.upgrade() {
-                shell.replace(Route::Library(of.clone(), listing));
+            if let Some(shell) = relisted.upgrade() {
+                shell.relist(&of, listing);
             }
         });
         let header = Header { view: bar.view().retain(), height: theme::LIBRARY_BAR_HEIGHT };
-        let outlines = vec![Outline { title: "", style: Style::Grid(Shape::Poster), count: 24 }];
-        let (more, of) = (Rc::downgrade(self), section.clone());
         let nothing = if listing.unwatched_only { "Nothing left to watch" } else { "Nothing here" };
-        let posters = self.posters(session, Some(header), outlines, nothing, move || {
+        let route = Route::Library(section.clone(), listing);
+        let source = Paged::Library(section.clone(), listing);
+        // The bar lives as long as this closure, which the entry keeps.
+        self.grid(session, route, source, Some(header), "", nothing, move |total| {
+            bar.set_total(total);
+        })
+    }
+
+    /// Lists a library another way from now on, and shows it that way.
+    fn relist(self: &Rc<Self>, section: &Section, listing: Listing) {
+        self.listings.borrow_mut().set(&section.key, listing);
+        if let Err(error) = self.listings.borrow().save() {
+            eprintln!("plex-rust: {}", with_causes(&error));
+        }
+        self.replace(Route::Library(section.clone(), listing));
+    }
+
+    fn list(
+        self: &Rc<Self>,
+        session: &Session,
+        route: &Route,
+        title: &str,
+        path: &str,
+    ) -> (Screen, Rc<dyn Fn()>) {
+        let source = Paged::Path(path.to_owned());
+        self.grid(session, route.clone(), source, None, title, "Nothing here", |_| {})
+    }
+
+    /// A grid of posters under the heading `title` that shows `source` a
+    /// page at a time, as the screen for `route`. `on_total` hears how
+    /// many items the whole list has.
+    #[allow(clippy::too_many_arguments)]
+    fn grid(
+        self: &Rc<Self>,
+        session: &Session,
+        route: Route,
+        source: Paged,
+        header: Option<Header>,
+        title: &str,
+        nothing: &str,
+        on_total: impl Fn(u32) + 'static,
+    ) -> (Screen, Rc<dyn Fn()>) {
+        let outlines = vec![Outline { title: "", style: Style::Grid(Shape::Poster), count: 24 }];
+        let (more, more_of) = (Rc::downgrade(self), source.clone());
+        let posters = self.posters(session, header, outlines, nothing, move || {
             if let Some(shell) = more.upgrade() {
-                shell.load_page(&of, listing);
+                shell.load_page(&route, more_of.clone());
             }
         });
 
-        let (shown, section) = (posters.clone(), section.clone());
+        let (shown, title) = (posters.clone(), title.to_owned());
         let reload = self.loader(
             session,
-            move |server| {
-                let section = section.clone();
-                async move { server.section_items(&section, listing, 0, PAGE_SIZE).await }
-            },
-            // The bar lives as long as this closure, which the entry keeps.
+            Unanswered::ShowsTheError,
+            move |server| source.clone().page(server, 0),
             move |page: &Page| {
-                bar.set_total(page.total);
-                let (title, style) = (String::new(), Style::Grid(Shape::Poster));
-                shown.show(vec![Shelf { title, style, items: page.items.clone() }]);
+                on_total(page.total);
+                let style = Style::Grid(Shape::Poster);
+                shown.show(vec![Shelf::of(title.clone(), style, page.items.clone())]);
             },
         );
         (Screen::Posters(posters), reload)
     }
 
-    /// Fetches the next page of a library and adds it to the grid, if that
-    /// library is still the one on screen.
-    fn load_page(self: &Rc<Self>, section: &Section, listing: Listing) {
-        let route = Route::Library(section.clone(), listing);
-        let on_screen = self.current(|entry| (entry.route == route).then(|| entry.screen.clone()));
+    /// Fetches the next page of `source` and adds it to the grid, if the
+    /// grid for `route` is still the one on screen.
+    fn load_page(self: &Rc<Self>, route: &Route, source: Paged) {
+        let on_screen = self.current(|entry| (entry.route == *route).then(|| entry.screen.clone()));
         let (Some(session), Some(Some(Screen::Posters(posters)))) = (self.session(), on_screen)
         else {
             return;
         };
         let start = posters.len();
-        let from = u32::try_from(start).unwrap_or(u32::MAX);
-        let (server, section) = (session.server.clone(), section.clone());
-        let load = async move { server.section_items(&section, listing, from, PAGE_SIZE).await };
+        let load = source.page(session.server.clone(), u32::try_from(start).unwrap_or(u32::MAX));
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |page| match page {
             Ok(page) => posters.append(start, page.items),
@@ -763,37 +858,66 @@ impl Shell {
         self: &Rc<Self>,
         session: &Session,
         item: &Item,
-        season: Option<RatingKey>,
+        opening: &Opening,
     ) -> (Screen, Rc<dyn Fn()>) {
-        let detail = Detail::new(self.main_thread, &session.images, season, self.actions());
+        let detail = Detail::new(
+            self.main_thread,
+            &session.images,
+            item.kind,
+            opening.clone(),
+            self.actions(),
+        );
         // What the list the viewer came from knew is enough to draw the
         // page at once. The full item follows.
         detail.show(item);
 
-        let (shown, key) = (detail.clone(), item.rating_key.clone());
-        let load_item = self.loader(
+        let (shown, key) = (Rc::clone(&detail), item.rating_key.clone());
+        let mut loads = vec![self.loader(
             session,
+            Unanswered::ShowsTheError,
             move |server| {
                 let key = key.clone();
                 async move { server.item(&key).await }
             },
             move |item: &Item| shown.show(item),
-        );
-        let load_episodes = (item.kind == Kind::Show).then(|| {
-            let (shown, key) = (detail.clone(), item.rating_key.clone());
-            self.loader(
+        )];
+
+        // What goes under the header. The page stands without any of it.
+        let shown = Rc::clone(&detail);
+        let show_episodes = move |episodes: &Vec<Item>| shown.show_episodes(episodes.clone());
+        match (item.kind, item.parent_rating_key.clone()) {
+            (Kind::Show, _) => {
+                let show = item.rating_key.clone();
+                let ask = move |server: MediaServer| {
+                    let show = show.clone();
+                    async move { server.episodes(&show).await }
+                };
+                loads.push(self.loader(session, Unanswered::GoesWithout, ask, show_episodes));
+            }
+            (Kind::Episode, Some(season)) => {
+                let ask = move |server: MediaServer| {
+                    let season = season.clone();
+                    async move { server.children(&season).await }
+                };
+                loads.push(self.loader(session, Unanswered::GoesWithout, ask, show_episodes));
+            }
+            _ => {}
+        }
+        if matches!(item.kind, Kind::Movie | Kind::Show) {
+            let (shown, key) = (Rc::clone(&detail), item.rating_key.clone());
+            loads.push(self.loader(
                 session,
+                Unanswered::GoesWithout,
                 move |server| {
                     let key = key.clone();
-                    async move { server.episodes(&key).await }
+                    async move { server.related(&key, RELATED_LENGTH).await }
                 },
-                move |episodes: &Vec<Item>| shown.show_episodes(episodes.clone()),
-            )
-        });
+                move |related: &Vec<Hub>| shown.show_related(related.clone()),
+            ));
+        }
         let reload = Rc::new(move || {
-            load_item();
-            if let Some(load_episodes) = &load_episodes {
-                load_episodes();
+            for load in &loads {
+                load();
             }
         });
         (Screen::Detail(detail), reload)
@@ -805,6 +929,7 @@ impl Shell {
         let (shown, query) = (posters.clone(), query.to_owned());
         let reload = self.loader(
             session,
+            Unanswered::ShowsTheError,
             move |server| {
                 let query = query.clone();
                 async move { server.search(&query, SEARCH_LIMIT).await }
@@ -861,6 +986,7 @@ impl Shell {
     fn loader<T, F>(
         self: &Rc<Self>,
         session: &Session,
+        unanswered: Unanswered,
         ask: impl Fn(MediaServer) -> F + 'static,
         show: impl Fn(&T) + 'static,
     ) -> Rc<dyn Fn()>
@@ -868,91 +994,109 @@ impl Shell {
         T: PartialEq + Send + 'static,
         F: Future<Output = plex::Result<T>> + Send + 'static,
     {
+        // The answer on screen, from whichever run of the closure.
         let shown: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));
-        let present = Rc::new(move |answer: T| {
-            if shown.borrow().as_ref() != Some(&answer) {
-                show(&answer);
-                *shown.borrow_mut() = Some(answer);
-            }
-        });
-        // Set once anything is on screen, so that a failure to refresh it
-        // is not shown in its place.
-        let has_shown = Rc::new(Cell::new(false));
+        let show = Rc::new(show);
         let (shell, server) = (Rc::downgrade(self), session.server.clone());
         Rc::new(move || {
             let Some(shell) = shell.upgrade() else {
                 return;
             };
-            // Set once the server's own answer is on screen, so that a late
-            // answer from last time cannot replace it.
-            let is_current = Rc::new(Cell::new(false));
-            if !has_shown.get() {
-                let (present, current, has_shown) =
-                    (Rc::clone(&present), Rc::clone(&is_current), Rc::clone(&has_shown));
+            // Set once the server has answered, so that a late answer from
+            // last time cannot replace its answer.
+            let answered = Rc::new(Cell::new(false));
+            if shown.borrow().is_none() {
+                let (shown, show, answered) =
+                    (Rc::clone(&shown), Rc::clone(&show), Rc::clone(&answered));
                 let remembered = ask(server.remembered());
                 shell.background.run(shell.main_thread, remembered, move |answer| {
-                    if let (Ok(answer), false) = (answer, current.get()) {
-                        present(answer);
-                        has_shown.set(true);
+                    if let (Ok(answer), false) = (answer, answered.get()) {
+                        show(&answer);
+                        *shown.borrow_mut() = Some(answer);
                     }
                 });
             }
 
-            let (present, has_shown) = (Rc::clone(&present), Rc::clone(&has_shown));
+            let (shown, show) = (Rc::clone(&shown), Rc::clone(&show));
             let (failed, moves) = (Rc::clone(&shell), shell.moves.get());
             let fresh = ask(server.clone());
-            shell.background.run(shell.main_thread, fresh, move |answer| match answer {
-                Ok(answer) => {
-                    is_current.set(true);
-                    present(answer);
-                    has_shown.set(true);
+            shell.background.run(shell.main_thread, fresh, move |answer| {
+                answered.set(true);
+                let has_shown = shown.borrow().is_some();
+                match answer {
+                    Ok(answer) if shown.borrow().as_ref() == Some(&answer) => {}
+                    Ok(answer) => {
+                        show(&answer);
+                        *shown.borrow_mut() = Some(answer);
+                    }
+                    // What is on screen from last time is better than an
+                    // error.
+                    Err(error) if has_shown || unanswered == Unanswered::GoesWithout => {
+                        eprintln!("plex-rust: {}", with_causes(&error));
+                    }
+                    Err(error) => failed.fail(moves, &error),
                 }
-                // What is on screen from last time is better than an error.
-                Err(error) if has_shown.get() => eprintln!("plex-rust: {}", with_causes(&error)),
-                Err(error) => failed.fail(moves, &error),
             });
         })
     }
 
     // What the viewer does with an item.
 
-    fn actions(self: &Rc<Self>) -> impl Fn(&Item, Action) + 'static {
+    fn actions(self: &Rc<Self>) -> impl Fn(Action) + 'static {
         let shell = Rc::downgrade(self);
-        move |item, action| {
+        move |action| {
             let Some(shell) = shell.upgrade() else {
                 return;
             };
             match action {
-                Action::Open => shell.open(item),
-                Action::Play => shell.play(item, Purpose::Watching),
-                Action::SetWatched(watched) => shell.set_watched(item, watched),
-                Action::OpenShow => shell.open_show_of(item),
+                Action::Open(item) => shell.open(&item),
+                Action::Play(item) => shell.play(&item, Purpose::Watching),
+                Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
+                Action::OpenShow(episode) => {
+                    let season = episode.parent_rating_key.clone();
+                    shell.open_show_of(&episode, Opening { season, ..Opening::default() });
+                }
+                Action::OpenSeason(episode) => {
+                    let opening = Opening {
+                        season: episode.parent_rating_key.clone(),
+                        at_episodes: true,
+                        episode: Some(episode.rating_key.clone()),
+                    };
+                    shell.open_show_of(&episode, opening);
+                }
+                Action::OpenList { title, path } => shell.go(Route::List { title, path }),
+                // Only a detail page lists people, and it turns this into
+                // the list of what the person is in before it gets here.
+                Action::OpenPerson(_) => {}
             }
         }
     }
 
-    /// Goes to the page of `item`. A season has no page of its own: it is
-    /// its show's page, opened on that season.
+    /// Goes to the page of `item`. A season's page is its show's page,
+    /// scrolled down to that season's episodes. A trailer has no page and
+    /// plays.
     fn open(self: &Rc<Self>, item: &Item) {
         match (item.kind, &item.parent_rating_key) {
+            (Kind::Clip, _) => self.play(item, Purpose::Watching),
             (Kind::Season, Some(show)) => {
-                let season = item.rating_key.clone();
-                self.fetch(show.clone(), move |shell, show| {
-                    shell.go(Route::Item(Box::new(show.clone()), Some(season)));
-                });
+                let season = Some(item.rating_key.clone());
+                let opening = Opening { season, at_episodes: true, episode: None };
+                self.open_show(show.clone(), opening);
             }
-            _ => self.go(Route::Item(Box::new(item.clone()), None)),
+            _ => self.go(Route::Item(Box::new(item.clone()), Opening::default())),
         }
     }
 
-    /// Goes from an episode to its show, opened on the episode's season.
-    fn open_show_of(self: &Rc<Self>, episode: &Item) {
-        let Some(show) = episode.grandparent_rating_key.clone() else {
-            return;
-        };
-        let season = episode.parent_rating_key.clone();
+    /// Goes from an episode to its show, opened as `opening` says.
+    fn open_show_of(self: &Rc<Self>, episode: &Item, opening: Opening) {
+        if let Some(show) = episode.grandparent_rating_key.clone() {
+            self.open_show(show, opening);
+        }
+    }
+
+    fn open_show(self: &Rc<Self>, show: RatingKey, opening: Opening) {
         self.fetch(show, move |shell, show| {
-            shell.go(Route::Item(Box::new(show.clone()), season));
+            shell.go(Route::Item(Box::new(show.clone()), opening));
         });
     }
 
@@ -1243,8 +1387,11 @@ impl Shell {
                 if let (true, Screen::Posters(posters)) = (snapshot.tweaks.hover, screen) {
                     posters.hover_first();
                 }
-                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.follow_link, screen) {
-                    detail.follow_show_link();
+                if let (true, Screen::Posters(posters)) = (snapshot.tweaks.across > 0.0, screen) {
+                    posters.scroll_first_shelf_to(snapshot.tweaks.across);
+                }
+                if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
+                    detail.follow_link(link);
                 }
             }
             let settle = async { tokio::time::sleep(SNAPSHOT_TWEAKS_SETTLE).await };
@@ -1280,6 +1427,7 @@ fn title(route: &Route) -> &str {
     match route {
         Route::Home => "Home",
         Route::Library(section, _) => &section.title,
+        Route::List { title, .. } => title,
         Route::Item(item, _) => &item.title,
         Route::Search(_) => "Search",
     }
@@ -1290,7 +1438,7 @@ fn destination_of(route: &Route) -> Option<Destination> {
     match route {
         Route::Home => Some(Destination::Home),
         Route::Library(section, _) => Some(Destination::Section(section.clone())),
-        Route::Item(..) | Route::Search(_) => None,
+        Route::List { .. } | Route::Item(..) | Route::Search(_) => None,
     }
 }
 
@@ -1306,7 +1454,10 @@ fn home_shelves(hubs: &[Hub]) -> Vec<Shelf> {
         .map(|hub| {
             let wide = matches!(hub.identifier.as_str(), CONTINUE | ON_DECK);
             let shape = if wide { Shape::Landscape } else { Shape::Poster };
-            Shelf { title: hub.title.clone(), style: Style::Shelf(shape), items: hub.items.clone() }
+            let mut shelf = Shelf::of(hub.title.clone(), Style::Shelf(shape), hub.items.clone());
+            // The heading leads to all of what the shelf starts.
+            shelf.more = hub.more.clone();
+            shelf
         })
         .collect()
 }
@@ -1317,7 +1468,7 @@ fn search_shelves(hubs: &[Hub]) -> Vec<Shelf> {
         .map(|hub| {
             let episodes = hub.items.first().is_some_and(|item| item.kind == Kind::Episode);
             let shape = if episodes { Shape::Landscape } else { Shape::Poster };
-            Shelf { title: hub.title.clone(), style: Style::Shelf(shape), items: hub.items.clone() }
+            Shelf::of(hub.title.clone(), Style::Shelf(shape), hub.items.clone())
         })
         .collect()
 }
