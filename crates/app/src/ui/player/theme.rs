@@ -18,7 +18,7 @@ pub const SHADE_ALPHA_MIDWAY: f64 = 0.6;
 
 /// How far a symbol sits inside the edge of its chip. Rows of chips hang
 /// over the margin by this much, so that what is seen lines up with it.
-pub const CHIP_INSET: f64 = 9.0;
+pub const CHIP_INSET: f64 = 10.0;
 /// Space between the controls and the bottom edge of the window.
 pub const BOTTOM_MARGIN: f64 = 12.0;
 /// Space between the title bar, or the top of the screen, and the controls.
@@ -26,23 +26,29 @@ pub const TOP_GAP: f64 = 8.0;
 
 pub const ROW_SPACING: f64 = 4.0;
 pub const CONTROL_SPACING: f64 = 4.0;
+/// Between the buttons that move through the film, which are the ones
+/// reached for most and so get the most room.
+pub const TRANSPORT_SPACING: f64 = 10.0;
 pub const GROUP_SPACING: f64 = 16.0;
 
 /// Width and height of a control that holds one symbol, and the height of
 /// one that holds text. Apple asks for at least 28 points to click on; the
 /// best players give more.
-pub const CHIP_SIZE: f64 = 38.0;
+pub const CHIP_SIZE: f64 = 42.0;
 /// Width of the play and pause button, which fits the wider of its two
 /// symbols with the same padding as any chip.
-pub const TOGGLE_WIDTH: f64 = 46.0;
-pub const CHIP_RADIUS: f64 = 9.0;
+pub const TOGGLE_WIDTH: f64 = 56.0;
+pub const CHIP_RADIUS: f64 = 10.0;
 pub const CHIP_PADDING: f64 = 12.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
 /// The height of a chip that only says something.
 pub const CAPTION_HEIGHT: f64 = 28.0;
-pub const SYMBOL_SIZE: f64 = 16.0;
+pub const SYMBOL_SIZE: f64 = 18.0;
 /// The play and pause symbol, which is the control used most.
-pub const MAIN_SYMBOL_SIZE: f64 = 22.0;
+pub const MAIN_SYMBOL_SIZE: f64 = 28.0;
+
+/// The way out, which has a corner to itself and is drawn to be found.
+pub const BACK_SYMBOL_SIZE: f64 = 22.0;
 
 pub const FONT_SIZE: f64 = 13.0;
 pub const TITLE_FONT_SIZE: f64 = 16.0;

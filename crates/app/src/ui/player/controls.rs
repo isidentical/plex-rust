@@ -94,7 +94,7 @@ impl Controls {
             spinner: NSProgressIndicator::new(main_thread),
             notice: Chip::new(main_thread, Style::Caption),
         };
-        controls.back.set_symbol("chevron.left", theme::MAIN_SYMBOL_SIZE);
+        controls.back.set_symbol("chevron.left", theme::BACK_SYMBOL_SIZE);
         controls.toggle.set_symbol("pause.fill", theme::MAIN_SYMBOL_SIZE);
         let tooltip = |text| Some(NSString::from_str(text));
         controls.remaining.setToolTip(tooltip("Time left or full length").as_deref());
@@ -163,7 +163,7 @@ impl Controls {
         let sound = row(&sound, spacing, main_thread);
         let transport: [&NSView; 5] =
             [&self.previous, &self.rewind, &self.toggle, &self.forward, &self.next];
-        let transport = row(&transport, spacing, main_thread);
+        let transport = row(&transport, theme::TRANSPORT_SPACING, main_thread);
         let choices: [&NSView; 4] = [&self.speed, &self.audio, &self.subtitles, &self.full_screen];
         let choices = row(&choices, spacing, main_thread);
 
