@@ -12,15 +12,17 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Playback speed in tenths of normal: 15 is one and a half times.
-    pub speed: u32,
+    /// Playback speed in hundredths of normal: 125 is one and a quarter.
+    /// Not called `speed`, which older files hold in tenths and which is
+    /// now ignored.
+    pub speed_percent: u32,
     /// Volume out of 100.
     pub volume: f64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { speed: 10, volume: 100.0 }
+        Self { speed_percent: 100, volume: 100.0 }
     }
 }
 

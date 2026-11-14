@@ -8,6 +8,7 @@ mod layout;
 mod pane;
 mod season;
 mod slider;
+mod speed;
 mod theme;
 mod tracks;
 
@@ -37,6 +38,7 @@ use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
 use self::season::Neighbours;
 use self::slider::{Grip, Pointed};
+use self::speed::Speed;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::settings::Settings;
@@ -75,14 +77,6 @@ const RESTART_AFTER: Duration = Duration::from_secs(5);
 /// How much the up and down arrow keys change the volume, out of 100.
 const VOLUME_STEP: f64 = 5.0;
 
-/// Playback speed is kept in tenths so that steps of 0.1 stay exact.
-const NORMAL_SPEED: u32 = 10;
-const SLOWEST_SPEED: u32 = 1;
-const FASTEST_SPEED: u32 = 40;
-
-/// The speeds the speed menu offers, in tenths. The keys reach the rest.
-const SPEED_CHOICES: [u32; 9] = [5, 8, 10, 12, 15, 17, 20, 25, 30];
-
 /// Why the player is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
@@ -118,8 +112,7 @@ pub struct Ivars {
     chrome: RefCell<Option<Chrome>>,
     ticks_of_notice_left: Cell<u32>,
     notice_shown: Cell<bool>,
-    /// In tenths: 15 is one and a half times normal speed.
-    speed: Cell<u32>,
+    speed: Cell<Speed>,
     controls_shown: Cell<bool>,
     /// Whether the pointer was last seen on the controls. They stay for as
     /// long as it rests there.
@@ -172,11 +165,13 @@ define_class!(
             self.remember_track(TrackKind::Subtitles);
         }
 
-        /// Here the tag is the speed in tenths.
+        /// Here the tag is the speed in hundredths. The menu only makes
+        /// tags out of speeds, so one that is not a speed cannot arrive.
         #[unsafe(method(speedChosen:))]
         fn speed_chosen(&self, item: &NSMenuItem) {
-            let speed = u32::try_from(item.tag()).unwrap_or(NORMAL_SPEED);
-            self.or_log(self.set_speed(speed));
+            if let Ok(percent) = u32::try_from(item.tag()) {
+                self.or_log(self.set_speed(Speed::from_percent(percent)));
+            }
         }
 
         #[unsafe(method(tick:))]
@@ -205,8 +200,8 @@ impl PlayerScreen {
 
         let player = Player::new()?;
         player.set_muted(purpose == Purpose::Check)?;
-        let speed = settings.speed.clamp(SLOWEST_SPEED, FASTEST_SPEED);
-        player.set_speed(f64::from(speed) / 10.0)?;
+        let speed = Speed::from_percent(settings.speed_percent);
+        player.set_speed(speed.factor())?;
         player.set_volume(settings.volume.clamp(0.0, controls::FULL_VOLUME))?;
 
         let root = InputView::new(main_thread);
@@ -291,11 +286,13 @@ impl PlayerScreen {
         if self.ivars().purpose == Purpose::Check {
             return Ok(None);
         }
-        Ok(Some(Settings { speed: self.speed(), volume: self.ivars().player.volume()? }))
+        Ok(Some(Settings {
+            speed_percent: self.speed().percent(),
+            volume: self.ivars().player.volume()?,
+        }))
     }
 
-    /// The playback speed in tenths of normal speed.
-    fn speed(&self) -> u32 {
+    fn speed(&self) -> Speed {
         self.ivars().speed.get()
     }
 
@@ -495,9 +492,9 @@ impl PlayerScreen {
             Key::Up => self.change_volume(VOLUME_STEP),
             Key::Down => self.change_volume(-VOLUME_STEP),
             Key::Character('m') => self.toggle_mute(),
-            Key::Character('s') => self.set_speed(self.speed().saturating_sub(1)),
-            Key::Character('d') => self.set_speed(self.speed() + 1),
-            Key::Character('r') => self.set_speed(NORMAL_SPEED),
+            Key::Character('s') => self.set_speed(self.speed().slower()),
+            Key::Character('d') => self.set_speed(self.speed().faster()),
+            Key::Character('r') => self.set_speed(Speed::NORMAL),
             Key::Character('a') => self.next_track(TrackKind::Audio),
             Key::Character('c') => self.next_track(TrackKind::Subtitles),
             Key::Return => self.skip_marker(),
@@ -744,18 +741,16 @@ impl PlayerScreen {
         Ok(())
     }
 
-    /// Sets the speed to `speed` tenths, kept within what stays watchable.
-    fn set_speed(&self, speed: u32) -> player::Result<()> {
-        let speed = speed.clamp(SLOWEST_SPEED, FASTEST_SPEED);
-        self.ivars().player.set_speed(f64::from(speed) / 10.0)?;
+    fn set_speed(&self, speed: Speed) -> player::Result<()> {
+        self.ivars().player.set_speed(speed.factor())?;
         self.ivars().speed.set(speed);
         self.show_speed();
-        self.notify(&speed_text(speed));
+        self.notify(&format!("Speed {speed}"));
         Ok(())
     }
 
     fn show_speed(&self) {
-        self.ivars().controls.speed.set_title(&speed_text(self.speed()));
+        self.ivars().controls.speed.set_title(&self.speed().to_string());
     }
 
     /// The file being played, as the server describes it.
@@ -857,12 +852,14 @@ impl PlayerScreen {
 
     /// Pops up a menu of playback speeds over the speed button.
     fn offer_speeds(&self) {
-        let choices: Vec<Choice> = SPEED_CHOICES
-            .iter()
+        let current = self.speed();
+        let choices: Vec<Choice> = current
+            .choices()
+            .into_iter()
             .map(|speed| Choice {
-                title: speed_text(*speed),
-                tag: *speed as isize,
-                chosen: *speed == self.speed(),
+                title: speed.to_string(),
+                tag: speed.percent() as isize,
+                chosen: speed == current,
             })
             .collect();
         self.offer(&choices, sel!(speedChosen:), &self.ivars().controls.speed);
@@ -1190,11 +1187,6 @@ fn log_unsaved(sent: plex::Result<()>) {
     if let Err(error) = sent {
         eprintln!("plex-rust: progress was not saved: {}", with_causes(&error));
     }
-}
-
-/// `1.5×` for 15 tenths.
-fn speed_text(speed: u32) -> String {
-    format!("{}.{}×", speed / 10, speed % 10)
 }
 
 /// `1:02:03`, or `2:03` under an hour.
