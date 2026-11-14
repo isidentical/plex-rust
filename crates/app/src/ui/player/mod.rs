@@ -6,6 +6,7 @@ mod controls;
 pub mod input;
 mod layout;
 mod pane;
+mod season;
 mod slider;
 mod theme;
 mod tracks;
@@ -34,6 +35,7 @@ use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
+use self::season::Neighbours;
 use self::slider::{Grip, Pointed};
 use crate::background::Background;
 use crate::error::{Result, with_causes};
@@ -65,6 +67,10 @@ const SHORT_JUMP: f64 = 3.0;
 
 /// How far they jump with Shift held, and how far the buttons jump.
 const LONG_JUMP: f64 = 10.0;
+
+/// This far into an episode, going back means going back to its start.
+/// Before that it means the episode before, as in every player.
+const RESTART_AFTER: Duration = Duration::from_secs(5);
 
 /// How much the up and down arrow keys change the volume, out of 100.
 const VOLUME_STEP: f64 = 5.0;
@@ -124,6 +130,9 @@ pub struct Ivars {
     /// length, and not what is left of it.
     shows_length: Cell<bool>,
     chapters: RefCell<Vec<Chapter>>,
+    /// The episodes before and after this one in its season. `None` for a
+    /// film, and for an episode until the server has listed its season.
+    neighbours: RefCell<Option<Neighbours>>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -224,6 +233,7 @@ impl PlayerScreen {
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
+            neighbours: RefCell::new(None),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             duration: Cell::new(None),
@@ -262,6 +272,7 @@ impl PlayerScreen {
         };
         *screen.ivars().timer.borrow_mut() = Some(timer);
         screen.follow_events(main_thread);
+        screen.find_neighbours();
         Ok(screen)
     }
 
@@ -374,8 +385,8 @@ impl PlayerScreen {
         self.on_click(&controls.forward, |screen| {
             screen.or_log(screen.jump(LONG_JUMP, Press::First))
         });
-        self.on_click(&controls.previous, |screen| screen.close(Outcome::Previous));
-        self.on_click(&controls.next, |screen| screen.close(Outcome::Finished));
+        self.on_click(&controls.previous, |screen| screen.or_log(screen.go_to_previous()));
+        self.on_click(&controls.next, |screen| screen.go_to_next());
         self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
         self.on_click(&controls.remaining, |screen| {
             let shows_length = &screen.ivars().shows_length;
@@ -495,13 +506,10 @@ impl PlayerScreen {
                 Ok(())
             }
             Key::Character('n') if is_episode => {
-                self.close(Outcome::Finished);
+                self.go_to_next();
                 return true;
             }
-            Key::Character('p') if is_episode => {
-                self.close(Outcome::Previous);
-                return true;
-            }
+            Key::Character('p') if is_episode => self.go_to_previous(),
             Key::Escape => {
                 // Escape leaves full screen first, as it does everywhere.
                 if self.is_full_screen() {
@@ -584,6 +592,65 @@ impl PlayerScreen {
             self.show_controls(false);
         }
         Ok(())
+    }
+
+    /// Asks the server for the season of the episode being played, to know
+    /// what comes before and after it.
+    fn find_neighbours(&self) {
+        let ivars = self.ivars();
+        let (Kind::Episode, Some(season), Some(number)) =
+            (ivars.item.kind, ivars.item.parent_rating_key.clone(), ivars.item.index)
+        else {
+            return;
+        };
+        let server = ivars.server.clone();
+        let load = async move { server.children(&season).await };
+        let screen = Weak::new(self);
+        ivars.background.run(self.mtm(), load, move |episodes| {
+            let Some(screen) = screen.load() else {
+                return;
+            };
+            match episodes {
+                Ok(episodes) => screen.set_neighbours(Neighbours::of(episodes, number)),
+                // Next and Previous then work as they do before the answer
+                // has come: the shell looks the season up when asked.
+                Err(error) => eprintln!("plex-rust: season not listed: {}", with_causes(&error)),
+            }
+        });
+    }
+
+    fn set_neighbours(&self, neighbours: Neighbours) {
+        self.ivars().controls.next.set_enabled(neighbours.next.is_some());
+        *self.ivars().neighbours.borrow_mut() = Some(neighbours);
+    }
+
+    /// Goes back to the start of the episode, or to the episode before it
+    /// when this one has hardly begun. With no episode before it, the
+    /// start is the only place to go back to.
+    fn go_to_previous(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let position = ivars.player.position()?.unwrap_or_default();
+        let is_first =
+            ivars.neighbours.borrow().as_ref().is_some_and(|known| known.previous.is_none());
+        if position <= RESTART_AFTER && !is_first {
+            self.close(Outcome::Previous);
+            return Ok(());
+        }
+        ivars.player.seek(Duration::ZERO)?;
+        self.notify("From the start");
+        Ok(())
+    }
+
+    /// Goes to the next episode, unless the season is known to end here.
+    fn go_to_next(&self) {
+        let is_last =
+            self.ivars().neighbours.borrow().as_ref().is_some_and(|known| known.next.is_none());
+        if is_last {
+            self.notify("Last episode of the season");
+            self.show_controls(true);
+            return;
+        }
+        self.close(Outcome::Finished);
     }
 
     /// Jumps `seconds` forward, or back if negative.

@@ -57,6 +57,9 @@ pub const FADE_IN: f64 = 0.12;
 /// Seconds they take to go away.
 pub const FADE_OUT: f64 = 0.35;
 
+/// How much is left of a control that can do nothing right now.
+pub const DISABLED_ALPHA: f64 = 0.35;
+
 pub fn text() -> Retained<NSColor> {
     NSColor::whiteColor()
 }

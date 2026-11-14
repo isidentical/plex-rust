@@ -36,6 +36,7 @@ pub struct Ivars {
     symbol: Cell<&'static str>,
     hovered: Cell<bool>,
     pressed: Cell<bool>,
+    enabled: Cell<bool>,
     on_click: OnceCell<Box<dyn Fn()>>,
 }
 
@@ -55,7 +56,7 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             // SAFETY: forwards the argument to the superclass unchanged.
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            let is_target = self.ivars().style != Style::Caption;
+            let is_target = self.ivars().style != Style::Caption && self.ivars().enabled.get();
             hit.filter(|_| is_target).map(|_| Retained::into_super(self.retain()))
         }
 
@@ -134,6 +135,7 @@ impl Chip {
             symbol: Cell::new(""),
             hovered: Cell::new(false),
             pressed: Cell::new(false),
+            enabled: Cell::new(true),
             on_click: OnceCell::new(),
         });
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
@@ -180,6 +182,14 @@ impl Chip {
         let image = image.and_then(|image| image.imageWithSymbolConfiguration(&size));
         ivars.icon.setImage(image.as_deref());
         ivars.icon.setHidden(false);
+    }
+
+    /// A chip that is not enabled is dimmed and takes no clicks. For a
+    /// button that has nothing to do right now.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.ivars().enabled.set(enabled);
+        self.setAlphaValue(if enabled { 1.0 } else { theme::DISABLED_ALPHA });
+        self.setNeedsDisplay(true);
     }
 
     pub fn set_title(&self, title: &str) {
@@ -252,7 +262,8 @@ impl Chip {
     /// The colour behind the content right now, if any.
     fn fill(&self) -> Option<Retained<NSColor>> {
         let ivars = self.ivars();
-        match (ivars.style, ivars.pressed.get(), ivars.hovered.get()) {
+        let lit = ivars.enabled.get();
+        match (ivars.style, lit && ivars.pressed.get(), lit && ivars.hovered.get()) {
             (Style::Caption, ..) => Some(theme::backdrop()),
             (Style::Solid, true, _) => Some(theme::solid_pressed()),
             (Style::Solid, false, true) => Some(theme::solid_hovered()),
