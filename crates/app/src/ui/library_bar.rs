@@ -6,8 +6,8 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSButtonType, NSColor, NSControlStateValueOn, NSLayoutConstraint, NSPopUpButton,
-    NSTextField, NSView,
+    NSAccessibility, NSButton, NSButtonType, NSColor, NSControlStateValueOn, NSLayoutConstraint,
+    NSPopUpButton, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
 use plex::library::{Listing, Sort};
@@ -45,6 +45,9 @@ impl LibraryBar {
         order.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
         let chosen = Sort::ALL.iter().position(|sort| *sort == listing.sort).unwrap_or(0);
         order.selectItemAtIndex(chosen.cast_signed());
+        // The menu shows only the order in use, such as "Title", which
+        // does not say what it is the title of.
+        order.setAccessibilityLabel(Some(ns_string!("Sort by")));
 
         // SAFETY: the target and action are set below, once they exist.
         let unwatched = unsafe {

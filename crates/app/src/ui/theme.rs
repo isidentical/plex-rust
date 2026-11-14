@@ -161,6 +161,11 @@ pub fn artwork_outline_opacity() -> f64 {
     if increases_contrast() { ARTWORK_HOVER_OUTLINE_OPACITY } else { ARTWORK_OUTLINE_OPACITY }
 }
 
+/// How strongly a detail page's backdrop shows behind its text.
+pub fn backdrop_opacity() -> f32 {
+    if increases_contrast() { BACKDROP_OPACITY / 2.0 } else { BACKDROP_OPACITY }
+}
+
 /// Behind every screen that has no colours of its own. The window's own
 /// colour, which the shelves' sideways scrollers also draw.
 pub fn page_background() -> Retained<NSColor> {

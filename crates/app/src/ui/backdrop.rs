@@ -130,7 +130,7 @@ impl Layers {
         // SAFETY: the gravity is a constant that Core Animation provides.
         art.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
         art.setMasksToBounds(true);
-        art.setOpacity(theme::BACKDROP_OPACITY);
+        art.setOpacity(theme::backdrop_opacity());
         // SAFETY: a mask is a layer with no parent, which these are.
         unsafe {
             upper.setMask(Some(&upper_mask));
