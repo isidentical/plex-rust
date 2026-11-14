@@ -3,6 +3,7 @@
 mod artwork;
 mod backdrop;
 mod callback;
+mod confirm;
 mod detail;
 mod downloads;
 mod episode;

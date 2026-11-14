@@ -24,6 +24,7 @@ use plex::model::{Hub, Item, Kind, RatingKey, Section};
 use plex::{Client, MediaServer, Token};
 
 use super::callback::Callback;
+use super::confirm;
 pub use super::detail::Link;
 use super::detail::{Detail, Opening};
 use super::downloads::{Act, DownloadList};
@@ -1459,9 +1460,21 @@ impl Shell {
         });
     }
 
+    /// Marks `item` as watched or not, asking first when it stands for
+    /// many episodes.
+    fn set_watched(self: &Rc<Self>, item: &Item, watched: bool) {
+        if !matches!(item.kind, Kind::Show | Kind::Season) {
+            return self.mark(item, watched);
+        }
+        let (shell, marked) = (Rc::clone(self), item.clone());
+        confirm::marking_every_episode(&self.window, item, watched, move || {
+            shell.mark(&marked, watched);
+        });
+    }
+
     /// Marks `item` as watched or not on the server, then brings the
     /// screen up to date with what that changed.
-    fn set_watched(self: &Rc<Self>, item: &Item, watched: bool) {
+    fn mark(self: &Rc<Self>, item: &Item, watched: bool) {
         let Some(session) = self.session() else {
             return;
         };
