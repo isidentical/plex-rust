@@ -14,6 +14,10 @@ use serde_json::{Value, json};
 /// interrupts a picture that is moving and a sound that is playing.
 const SETTLE: Duration = Duration::from_millis(700);
 
+/// Frames that mpv hands over within this long of a restart were waiting
+/// for it and say nothing about the picture moving: one refresh at 60 Hz.
+const HANDED_AT_ONCE: Duration = Duration::from_millis(17);
+
 /// When a press that has not finished counts as failed.
 const GIVE_UP: Duration = Duration::from_secs(5);
 
@@ -55,7 +59,7 @@ struct Stall {
     restarted: Option<Duration>,
     /// Until sound was handed to the audio device.
     audio: Option<Duration>,
-    /// Until the position moved on from where the jump landed.
+    /// Until the picture moved on from the frame the jump landed on.
     moving: Option<Duration>,
     /// Where the jump landed.
     landed: Option<f64>,
@@ -67,24 +71,32 @@ impl Stall {
     }
 
     fn note(&mut self, moment: Moment, pressed: Instant, player: &Player) -> player::Result<()> {
-        let now = Some(pressed.elapsed());
+        let now = pressed.elapsed();
         match moment {
             Moment::Restarted => {
-                self.restarted = now;
+                self.restarted = Some(now);
                 self.landed = player.position()?.map(|position| position.as_secs_f64());
             }
             // A press that interrupts an unfinished jump restarts the sound
             // it had not started yet. Only the last start counts.
-            Moment::AudioStarted => self.audio = now,
+            Moment::AudioStarted => self.audio = Some(now),
             Moment::Position(position) => {
-                if self.moving.is_none() && self.landed.is_some_and(|landed| position > landed) {
-                    self.moving = now;
+                let (Some(restarted), Some(landed)) = (self.restarted, self.landed) else {
+                    return Ok(());
+                };
+                // mpv moves the position on when it hands a frame over for
+                // display. It hands over one or two at once when it
+                // restarts, and from then on each one as the frame before
+                // it is due, so the first that comes later than that is the
+                // picture moving.
+                if self.moving.is_none() && position > landed && now > restarted + HANDED_AT_ONCE {
+                    self.moving = Some(now);
                 }
             }
             // Whatever finished before mpv took up this press belongs to
             // an earlier one.
             Moment::Seeking => *self = Self::default(),
-            Moment::Shutdown => {}
+            Moment::PictureShown | Moment::Shutdown => {}
         }
         Ok(())
     }
@@ -102,14 +114,15 @@ pub fn started(probe: &mut Probe, loading: Instant) -> Option<Duration> {
     }
 }
 
-/// Lets playback run for `time`, returning how many jumps finished in it.
+/// Lets playback run for `time`, returning how many jumps got as far as
+/// showing their picture in it.
 pub fn idle(probe: &mut Probe, time: Duration) -> u32 {
     let until = Instant::now() + time;
-    let mut restarts = 0;
+    let mut pictures = 0;
     while let Some(moment) = probe.wait(until.saturating_duration_since(Instant::now())) {
-        restarts += u32::from(moment == Moment::Restarted);
+        pictures += u32::from(moment == Moment::PictureShown);
     }
-    restarts
+    pictures
 }
 
 /// Runs the script and reports each step.

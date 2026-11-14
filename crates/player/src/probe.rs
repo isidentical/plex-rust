@@ -9,9 +9,14 @@ use libmpv2_sys as sys;
 use crate::core::Player;
 use crate::error::{Error, Result, check};
 
-/// The line mpv logs when it hands the first sound after a start or a seek
-/// to the audio device (`audio_start_ao` in mpv's player/audio.c). mpv has
-/// no event or property for that moment.
+// mpv has no event or property for the next two moments, only log lines.
+
+/// Logged when the first picture after a start or a seek has been drawn
+/// (`write_video` in mpv's player/video.c).
+const PICTURE_SHOWN: &CStr = c"first video frame after restart shown\n";
+
+/// Logged when the first sound after a start or a seek is handed to the
+/// audio device (`audio_start_ao` in mpv's player/audio.c).
 const AUDIO_STARTED: &CStr = c"starting audio playback\n";
 
 /// A second listener on a [`Player`]. It sees the steps of a seek, which
@@ -38,8 +43,11 @@ impl Drop for Probe {
 pub enum Moment {
     /// mpv began a seek and dropped the picture and sound it had queued.
     Seeking,
-    /// The first picture at the new position is ready and playback goes on.
-    /// This is mpv's `PLAYBACK_RESTART`, which also follows a load.
+    /// The first picture at the new position is on screen. A seek that is
+    /// overtaken by the next one gets this far and no further.
+    PictureShown,
+    /// Picture and sound are ready at the new position and playback goes
+    /// on. This is mpv's `PLAYBACK_RESTART`, which also follows a load.
     Restarted,
     /// Sound was handed to the audio device again.
     AudioStarted,
@@ -90,7 +98,11 @@ impl Probe {
                     // mpv_event_log_message.
                     let line = unsafe { &*event.data.cast::<sys::mpv_event_log_message>() };
                     // SAFETY: `text` is a valid NUL-terminated string.
-                    if unsafe { CStr::from_ptr(line.text) } == AUDIO_STARTED {
+                    let text = unsafe { CStr::from_ptr(line.text) };
+                    if text == PICTURE_SHOWN {
+                        return Some(Moment::PictureShown);
+                    }
+                    if text == AUDIO_STARTED {
                         return Some(Moment::AudioStarted);
                     }
                 }
