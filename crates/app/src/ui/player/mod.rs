@@ -198,6 +198,7 @@ pub struct Ivars {
     /// The file's length, kept for when mpv no longer knows it.
     duration: Cell<Option<Duration>>,
     background: Rc<Background>,
+    images: Rc<Images>,
     server: MediaServer,
     /// Lets the server tell this playback from another of the same item.
     session: String,
@@ -309,6 +310,7 @@ impl PlayerScreen {
             ticks: Cell::new(0),
             duration: Cell::new(None),
             background,
+            images: Rc::clone(images),
             server,
             session: NSUUID::UUID().UUIDString().to_string(),
             purpose,
@@ -609,10 +611,7 @@ impl PlayerScreen {
         self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
         self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
         self.on_click(&controls.up_next.play, |screen| screen.go_to_next());
-        self.on_click(&controls.up_next.cancel, |screen| {
-            screen.ivars().up_next.set(UpNext::Cancelled);
-            screen.ivars().controls.up_next.hide();
-        });
+        self.on_click(&controls.up_next.cancel, Self::turn_down_next_episode);
 
         let (scrubbed, pointed, volume) = (Weak::new(self), Weak::new(self), Weak::new(self));
         controls.scrubber.listen(
@@ -729,8 +728,11 @@ impl PlayerScreen {
             }
             Key::Character('p') if is_episode => self.go_to_previous(),
             Key::Escape => {
-                // Escape leaves full screen first, as it does everywhere.
-                if self.is_full_screen() {
+                // Escape puts away what is on top first: the offer of the
+                // next episode, then full screen, as it does everywhere.
+                if self.ivars().up_next.get() == UpNext::Counting {
+                    self.turn_down_next_episode();
+                } else if self.is_full_screen() {
                     self.toggle_full_screen();
                 } else {
                     self.close(Outcome::Closed);
@@ -868,7 +870,7 @@ impl PlayerScreen {
         let neighbours =
             episodes.as_ref().map(|episodes| library::neighbours(episodes, &item.rating_key));
         if let Some(next) = neighbours.as_ref().and_then(|known| known.next.as_ref()) {
-            ivars.controls.up_next.offer(next);
+            ivars.controls.up_next.offer(next, &item, &ivars.images);
         }
         *ivars.neighbours.borrow_mut() = neighbours;
         self.show_neighbours();
@@ -1312,6 +1314,12 @@ impl PlayerScreen {
         let left = (takeover - position).as_secs_f64() / self.speed().factor();
         // Shown in whole seconds, counted so that 0 is never seen.
         ivars.controls.up_next.show(left.ceil() as u64);
+    }
+
+    /// Takes the offer of the next episode away for the rest of this one.
+    fn turn_down_next_episode(&self) {
+        self.ivars().up_next.set(UpNext::Cancelled);
+        self.ivars().controls.up_next.hide();
     }
 
     /// Shows or hides the skip button to match `position`.

@@ -118,7 +118,7 @@ impl Controls {
             subtitles: button("captions.bubble", "Subtitles", "C"),
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
-            up_next: UpNext::new(main_thread),
+            up_next: UpNext::new(main_thread, material),
             spinner: NSProgressIndicator::new(main_thread),
             badge: Badge::new(main_thread, material),
         };
@@ -372,7 +372,7 @@ pub fn medium() -> NSFontWeight {
     unsafe { NSFontWeightMedium }
 }
 
-fn regular() -> NSFontWeight {
+pub fn regular() -> NSFontWeight {
     // SAFETY: the weight is a constant that AppKit provides.
     unsafe { NSFontWeightRegular }
 }
