@@ -1,16 +1,18 @@
 //! The card that offers the next episode as this one ends.
 
+use std::cell::Cell;
+
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSEvent, NSLayoutAttribute, NSStackView, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSAccessibility, NSAccessibilityGroupRole, NSBezierPath, NSEvent, NSLayoutAttribute,
+    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString};
 use plex::model::Item;
 
 use super::chip::{Chip, Style};
-use super::controls::{label, medium};
+use super::controls::{label, medium, semibold};
 use super::layout::{add, pin, row};
 use super::theme;
 
@@ -41,6 +43,8 @@ define_class!(
 pub struct UpNext {
     card: Retained<Card>,
     countdown: Retained<NSTextField>,
+    /// The number of the episode on offer, once one is.
+    number: Cell<Option<u32>>,
     pub play: Retained<Chip>,
     pub cancel: Retained<Chip>,
 }
@@ -51,14 +55,25 @@ impl UpNext {
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         let card: Retained<Card> =
             unsafe { msg_send![Card::alloc(main_thread), initWithFrame: NSRect::ZERO] };
+        let countdown = label(main_thread, theme::FONT_SIZE, medium(), &theme::secondary_text());
         let this = Self {
             card,
-            countdown: line(main_thread, &theme::secondary_text()),
+            countdown,
+            number: Cell::new(None),
             play: Chip::new(main_thread, Style::Solid),
-            cancel: Chip::new(main_thread, Style::Plain),
+            cancel: Chip::new(main_thread, Style::Quiet),
         };
+        this.play.set_symbol("play.fill", theme::FONT_SIZE);
         this.play.set_title("Play Now");
+        this.play.setToolTip(Some(&NSString::from_str("Play the next episode now (Return)")));
         this.cancel.set_title("Cancel");
+        this.cancel.setToolTip(Some(&NSString::from_str("Stay on this episode")));
+        // VoiceOver meets the card as one thing called Up Next, with the
+        // two lines and the two buttons inside it.
+        this.card.setAccessibilityElement(true);
+        // SAFETY: the role is a constant that AppKit provides.
+        this.card.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
+        this.card.setAccessibilityLabel(Some(&NSString::from_str("Up Next")));
         this.card.setHidden(true);
         this
     }
@@ -70,15 +85,17 @@ impl UpNext {
     /// Fills the card in for `episode` and lays it out. Called once, when
     /// the episode that follows is known.
     pub fn offer(&self, main_thread: MainThreadMarker, episode: &Item) {
-        let title = line(main_thread, &theme::text());
-        title.setStringValue(&NSString::from_str(&name(episode)));
-        let buttons: [&NSView; 2] = [&self.cancel, &self.play];
-        let buttons = row(&buttons, theme::CONTROL_SPACING, main_thread);
+        let title = label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text());
+        title.setStringValue(&NSString::from_str(&episode.title));
+        self.number.set(episode.index);
+        // The one to press comes first, where reading starts.
+        let buttons: [&NSView; 2] = [&self.play, &self.cancel];
+        let buttons = row(&buttons, theme::CARD_BUTTON_SPACING, main_thread);
         let lines: [&NSView; 3] = [&self.countdown, &title, &buttons];
         let lines = NSStackView::stackViewWithViews(&NSArray::from_slice(&lines), main_thread);
         lines.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        lines.setAlignment(NSLayoutAttribute::Trailing);
-        lines.setSpacing(theme::TITLE_SPACING);
+        lines.setAlignment(NSLayoutAttribute::Leading);
+        lines.setSpacing(theme::CARD_LINE_SPACING);
         lines.setCustomSpacing_afterView(theme::CARD_PADDING, &title);
 
         let padding = theme::CARD_PADDING;
@@ -100,27 +117,17 @@ impl UpNext {
 
     /// Shows the card, saying the episode starts in `seconds`.
     pub fn show(&self, seconds: u64) {
-        self.countdown.setStringValue(&NSString::from_str(&format!("Up Next in {seconds}")));
+        // The number goes here and not before the title, which then has
+        // the card's whole width and is seldom cut short.
+        let line = match self.number.get() {
+            Some(number) => format!("Episode {number} starts in {seconds} s"),
+            None => format!("Up Next in {seconds} s"),
+        };
+        self.countdown.setStringValue(&NSString::from_str(&line));
         self.card.setHidden(false);
     }
 
     pub fn hide(&self) {
         self.card.setHidden(true);
     }
-}
-
-/// `S1 E2 · Earth Skills`, or only the title of an episode with no number.
-fn name(episode: &Item) -> String {
-    match (episode.parent_index, episode.index) {
-        (Some(season), Some(number)) => format!("S{season} E{number} \u{b7} {}", episode.title),
-        _ => episode.title.clone(),
-    }
-}
-
-/// One line of the card's text, set against its right edge like the
-/// buttons under it.
-fn line(main_thread: MainThreadMarker, color: &NSColor) -> Retained<NSTextField> {
-    let line = label(main_thread, theme::FONT_SIZE, medium(), color);
-    line.setAlignment(NSTextAlignment::Right);
-    line
 }

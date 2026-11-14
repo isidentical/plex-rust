@@ -25,6 +25,8 @@ pub enum Style {
     Plain,
     /// A button on a light fill, readable over any picture.
     Solid,
+    /// A button on a faint fill, for the lesser of two choices on a card.
+    Quiet,
     /// Text on a dark fill that cannot be clicked: clicks pass through it.
     Caption,
 }
@@ -121,7 +123,7 @@ define_class!(
 impl Chip {
     pub fn new(main_thread: MainThreadMarker, style: Style) -> Retained<Self> {
         let color = match style {
-            Style::Plain | Style::Caption => theme::text(),
+            Style::Plain | Style::Quiet | Style::Caption => theme::text(),
             Style::Solid => theme::text_on_solid(),
         };
         let icon = NSImageView::new(main_thread);
@@ -264,7 +266,7 @@ impl Chip {
         self.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         let height = match ivars.style {
-            Style::Plain | Style::Solid => theme::CHIP_SIZE,
+            Style::Plain | Style::Solid | Style::Quiet => theme::CHIP_SIZE,
             Style::Caption => theme::CAPTION_HEIGHT,
         };
         let padded = content.widthAnchor();
@@ -322,6 +324,9 @@ impl Chip {
             (Style::Solid, true, _) => Some(theme::solid_pressed()),
             (Style::Solid, false, true) => Some(theme::solid_hovered()),
             (Style::Solid, false, false) => Some(theme::solid()),
+            (Style::Quiet, true, _) => Some(theme::pressed()),
+            (Style::Quiet, false, true) => Some(theme::quiet_hovered()),
+            (Style::Quiet, false, false) => Some(theme::hovered()),
             (Style::Plain, true, _) => Some(theme::pressed()),
             (Style::Plain, false, true) => Some(theme::hovered()),
             (Style::Plain, false, false) => None,

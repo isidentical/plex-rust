@@ -103,6 +103,7 @@ impl Controls {
             .speed
             .setToolTip(tooltip("Playback speed (S slower, D faster, R normal)").as_deref());
         controls.speed.set_name("Playback speed");
+        controls.skip.setToolTip(tooltip("Skip (Return)").as_deref());
         let is_episode = item.kind == Kind::Episode;
         controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);
@@ -309,7 +310,7 @@ fn regular() -> NSFontWeight {
     unsafe { NSFontWeightRegular }
 }
 
-fn semibold() -> NSFontWeight {
+pub fn semibold() -> NSFontWeight {
     // SAFETY: the weight is a constant that AppKit provides.
     unsafe { NSFontWeightSemibold }
 }

@@ -79,8 +79,10 @@ pub const BUBBLE_GAP: f64 = 2.0;
 /// Space between the scrubber and the Skip Intro button above it.
 pub const SKIP_GAP: f64 = 16.0;
 
-pub const CARD_RADIUS: f64 = 14.0;
-pub const CARD_PADDING: f64 = 12.0;
+pub const CARD_RADIUS: f64 = 16.0;
+pub const CARD_PADDING: f64 = 16.0;
+pub const CARD_LINE_SPACING: f64 = 2.0;
+pub const CARD_BUTTON_SPACING: f64 = 8.0;
 /// A longer episode title than fits in this ends in an ellipsis.
 pub const CARD_MAX_WIDTH: f64 = 360.0;
 
@@ -103,6 +105,11 @@ pub fn secondary_text() -> Retained<NSColor> {
 /// Behind a control the pointer is over.
 pub fn hovered() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(1.0, 0.16)
+}
+
+/// Behind a quiet button the pointer is over.
+pub fn quiet_hovered() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(1.0, 0.22)
 }
 
 /// Behind a control that is being pressed.
