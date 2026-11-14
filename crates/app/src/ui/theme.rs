@@ -93,6 +93,9 @@ pub const ARTWORK_OUTLINE_OPACITY: f64 = 0.10;
 pub const ARTWORK_HOVER_OUTLINE_OPACITY: f64 = 0.35;
 pub const ARTWORK_PLACEHOLDER_OPACITY: f64 = 0.06;
 pub const FOCUS_RING_WIDTH: f64 = 3.0;
+/// How far outside the artwork the outer edge of the focus ring is, which
+/// leaves a gap between the two.
+pub const FOCUS_RING_OUTSET: f64 = 5.0;
 /// Around the card for the episode a page is about.
 pub const CURRENT_OUTLINE_WIDTH: f64 = 2.0;
 pub const CURRENT_OUTLINE_OPACITY: f64 = 0.9;

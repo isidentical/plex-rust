@@ -36,6 +36,9 @@ pub enum Badge {
 pub struct ArtView {
     /// Carries the lift: the scale and the shadow.
     root: Retained<NSView>,
+    /// Drawn around the picture, a little outside it, while the keyboard
+    /// is on it.
+    ring: Retained<NSView>,
     /// Clipped to rounded corners. Its layer shows the picture.
     picture: Retained<NSView>,
     /// Darkens the picture under the play glyph.
@@ -65,7 +68,6 @@ impl ArtView {
         let root = layered(main_thread);
         let picture = layered(main_thread);
         if let Some(layer) = picture.layer() {
-            layer.setCornerRadius(radius);
             // SAFETY: both are constants that Core Animation provides.
             unsafe {
                 layer.setCornerCurve(kCACornerCurveContinuous);
@@ -76,6 +78,22 @@ impl ArtView {
             let placeholder = theme::white(theme::ARTWORK_PLACEHOLDER_OPACITY);
             layer.setBackgroundColor(Some(&placeholder.CGColor()));
         }
+        let ring = layered(main_thread);
+        ring.setHidden(true);
+        if let Some(layer) = ring.layer() {
+            layer.setBorderWidth(theme::FOCUS_RING_WIDTH);
+            layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
+            // SAFETY: the curve is a constant that Core Animation provides.
+            unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
+        }
+        root.addSubview(&ring);
+        let outset = theme::FOCUS_RING_OUTSET;
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            ring.leadingAnchor().constraintEqualToAnchor_constant(&root.leadingAnchor(), -outset),
+            ring.trailingAnchor().constraintEqualToAnchor_constant(&root.trailingAnchor(), outset),
+            ring.topAnchor().constraintEqualToAnchor_constant(&root.topAnchor(), -outset),
+            ring.bottomAnchor().constraintEqualToAnchor_constant(&root.bottomAnchor(), outset),
+        ]));
         layout::cover(&root, &picture);
 
         let placeholder = NSImageView::new(main_thread);
@@ -149,6 +167,7 @@ impl ArtView {
 
         let art = Self {
             root,
+            ring,
             picture,
             scrim,
             play,
@@ -168,6 +187,7 @@ impl ArtView {
         };
         // A cell that is drawn before it is given an item shows nothing
         // but its empty frame.
+        art.set_radius(radius);
         art.set_progress(0.0);
         art.set_badge(Badge::None);
         art.restyle();
@@ -227,6 +247,9 @@ impl ArtView {
     pub fn set_radius(&self, radius: f64) {
         if let Some(layer) = self.picture.layer() {
             layer.setCornerRadius(radius);
+        }
+        if let Some(layer) = self.ring.layer() {
+            layer.setCornerRadius(radius + theme::FOCUS_RING_OUTSET);
         }
     }
 
@@ -323,19 +346,17 @@ impl ArtView {
         }
         if let Some(layer) = self.picture.layer() {
             let hairline = theme::ARTWORK_OUTLINE_WIDTH;
-            let (color, width) = match (focused, self.current.get(), hovered) {
-                (true, _, _) => (NSColor::controlAccentColor(), theme::FOCUS_RING_WIDTH),
-                (false, true, _) => {
+            let (color, width) = match (self.current.get(), hovered) {
+                (true, _) => {
                     (theme::white(theme::CURRENT_OUTLINE_OPACITY), theme::CURRENT_OUTLINE_WIDTH)
                 }
-                (false, false, true) => {
-                    (theme::white(theme::ARTWORK_HOVER_OUTLINE_OPACITY), hairline)
-                }
-                (false, false, false) => (theme::white(theme::artwork_outline_opacity()), hairline),
+                (false, true) => (theme::white(theme::ARTWORK_HOVER_OUTLINE_OPACITY), hairline),
+                (false, false) => (theme::white(theme::artwork_outline_opacity()), hairline),
             };
             layer.setBorderColor(Some(&color.CGColor()));
             layer.setBorderWidth(width);
         }
+        self.ring.setHidden(!focused);
         let glyph_shown = hovered && self.playable.get();
         self.scrim.setAlphaValue(if glyph_shown { 1.0 } else { 0.0 });
     }
