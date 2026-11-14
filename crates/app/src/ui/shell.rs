@@ -165,6 +165,9 @@ struct Shell {
     keeps_place: Cell<bool>,
     /// The place on screen, for the writes that keep it.
     place: Arc<Mutex<Option<Place>>>,
+    /// What Home held at the last launch, read along with the libraries
+    /// so that the first Home of this one is built with it.
+    saved_home: RefCell<Option<Vec<Hub>>>,
     /// Set for a snapshot, which must leave the server as it found it.
     read_only: Cell<bool>,
     /// What is kept on this Mac, and what is on its way to it.
@@ -570,6 +573,7 @@ impl Shell {
                 read_only: Cell::new(false),
                 keeps_place: Cell::new(false),
                 place: Arc::default(),
+                saved_home: RefCell::new(None),
             }
         })
     }
@@ -602,9 +606,15 @@ impl Shell {
         if let Some(kept) = saved.clone() {
             let (shell, subject, place) = (Rc::clone(self), subject.clone(), place.clone());
             let remembered = kept.server.remembered();
-            let ask = async move { remembered.sections().await };
-            self.background.run(self.main_thread, ask, move |sections| {
+            // Home is read in the same go. Asked for only once its screen
+            // is built, it arrives after the screen has been drawn empty.
+            let ask = async move {
+                let sections = remembered.sections().await;
+                (sections, remembered.home(SHELF_LENGTH).await.ok())
+            };
+            self.background.run(self.main_thread, ask, move |(sections, home)| {
                 if let (Ok(sections), None) = (sections, shell.session()) {
+                    *shell.saved_home.borrow_mut() = home;
                     shell.connected(kept, sections, subject.as_ref());
                     // The server can fail to answer before the disk has.
                     // Then what was downloaded comes before the place the
@@ -1296,7 +1306,10 @@ impl Shell {
         posters.set_header_keys(hero.keys());
         posters.let_header_reach(hero.reach());
         let shown = posters.clone();
-        let reload = self.loader(
+        // A snapshot of the screen still waiting is built with nothing.
+        let saved = self.saved_home.borrow_mut().take().filter(|_| !self.holds_loads.get());
+        let reload = self.loader_from(
+            saved,
             session,
             Unanswered::ShowsTheError,
             |server| async move { server.home(SHELF_LENGTH).await },
@@ -1645,8 +1658,30 @@ impl Shell {
         T: PartialEq + Send + 'static,
         F: Future<Output = plex::Result<T>> + Send + 'static,
     {
+        self.loader_from(None, session, unanswered, ask, show)
+    }
+
+    /// A [`loader`](Self::loader) that starts with `saved`, the answer
+    /// from last time, already in hand: it is shown here and now, before
+    /// the screen is in the window, and only the server is asked.
+    fn loader_from<T, F>(
+        self: &Rc<Self>,
+        saved: Option<T>,
+        session: &Session,
+        unanswered: Unanswered,
+        ask: impl Fn(MediaServer) -> F + 'static,
+        show: impl Fn(&T) + 'static,
+    ) -> Rc<dyn Fn()>
+    where
+        T: PartialEq + Send + 'static,
+        F: Future<Output = plex::Result<T>> + Send + 'static,
+    {
+        if let Some(saved) = &saved {
+            show(saved);
+            timing::mark("saved answer in the screen as built");
+        }
         // The answer on screen, from whichever run of the closure.
-        let shown: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));
+        let shown: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(saved));
         let show = Rc::new(show);
         let (shell, server) = (Rc::downgrade(self), session.server.clone());
         Rc::new(move || {
