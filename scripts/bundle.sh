@@ -16,7 +16,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/target/release/plex-rust" "$app/Contents/MacOS/plex-rust"
 
-# An .icns holds the icon at every size macOS asks for.
+# An .icns holds the icon at every size macOS asks for. The icon is pixel
+# art, and sips keeps its squares reasonably crisp at whole fractions.
 iconset=$(mktemp -d)/plex-rust.iconset
 mkdir "$iconset"
 for size in 16 32 128 256 512; do
