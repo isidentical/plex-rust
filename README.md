@@ -50,17 +50,17 @@ A secondary click on an item offers to play it or mark it.
 | Key | Action |
 | --- | --- |
 | Space, K, click on the picture | Pause and resume |
-| Left, Right | Back and forward 3 seconds |
-| Shift with Left, Right | Back and forward 10 seconds |
+| Left, Right | Back and forward 3 seconds. Held, they scan |
+| Shift with Left, Right | Back and forward 10 seconds, as the buttons do |
 | Up, Down | Volume |
 | M | Mute |
 | S, D | Slower and faster by 0.1x |
 | R | Normal speed |
 | A | Next audio track |
 | C | Next subtitle track, then off |
-| Return | Skip the intro or credits |
+| Return | Skip the intro or credits, or play the next episode once it is offered |
 | N | Next episode |
-| P | Previous episode |
+| P | Start of the episode. Pressed again there, the previous episode |
 | F, double click | Full screen |
 | Escape | Leave full screen, then the player |
 
