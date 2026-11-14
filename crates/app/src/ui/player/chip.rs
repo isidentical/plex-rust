@@ -154,10 +154,8 @@ impl Chip {
         label.setTextColor(Some(&color));
         // Digits of equal width keep a time or a speed from changing the
         // chip's width as it counts.
-        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            theme::FONT_SIZE,
-            medium(),
-        )));
+        let size = if style.is_button() { theme::CONTROL_FONT_SIZE } else { theme::FONT_SIZE };
+        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(size, medium())));
         label.setHidden(true);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {

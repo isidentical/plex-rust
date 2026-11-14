@@ -108,7 +108,7 @@ impl Controls {
                 theme::VOLUME_STEP,
                 Reading::Share,
             ),
-            elapsed: label(main_thread, theme::FONT_SIZE, regular(), &theme::text()),
+            elapsed: label(main_thread, theme::CONTROL_FONT_SIZE, medium(), &theme::text()),
             remaining: Chip::new(main_thread, Style::Plain),
             bubble_x: bubble.centerXAnchor().constraintEqualToAnchor(&scrubber.leadingAnchor()),
             bubble,

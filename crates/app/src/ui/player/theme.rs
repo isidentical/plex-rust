@@ -65,6 +65,10 @@ pub const MAIN_SYMBOL_SIZE: f64 = 28.0;
 pub const BACK_SYMBOL_SIZE: f64 = 22.0;
 
 pub const FONT_SIZE: f64 = 13.0;
+/// Text that is a control or sits among them: the times, the speed, the
+/// words on a button. At 13 points it looked like small print next to
+/// symbols of 18.
+pub const CONTROL_FONT_SIZE: f64 = 15.0;
 pub const TITLE_FONT_SIZE: f64 = 16.0;
 pub const TITLE_SPACING: f64 = 1.0;
 
