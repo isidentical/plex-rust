@@ -36,6 +36,8 @@ pub struct Views {
     wash: Retained<NSView>,
     /// The episode the row shows.
     shown: RefCell<Option<RatingKey>>,
+    /// Told that the pointer or the keyboard has come to the row.
+    on_rest: OnceCell<Box<dyn Fn()>>,
 }
 
 define_class!(
@@ -65,7 +67,12 @@ define_class!(
         fn load_view(&self) {
             let views = Rc::new(Views::new(self.mtm()));
             let hovered = Rc::clone(&views);
-            let row = HoverView::new(self.mtm(), move |over| hovered.set_hovered(over));
+            let row = HoverView::new(self.mtm(), move |over| {
+                hovered.set_hovered(over);
+                if over {
+                    hovered.rested();
+                }
+            });
             views.place_in(&row);
             // VoiceOver reads a row as one button, not as loose pieces.
             row.setAccessibilityElement(true);
@@ -83,6 +90,9 @@ define_class!(
             let () = unsafe { msg_send![super(self), setSelected: selected] };
             if let Some(views) = self.ivars().get() {
                 views.art.set_focused(selected);
+                if selected {
+                    views.rested();
+                }
             }
         }
 
@@ -136,6 +146,24 @@ impl EpisodeItem {
         self.view().setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
 
+    /// Whether [`set_on_rest`](Self::set_on_rest) was called.
+    pub fn has_on_rest(&self) -> bool {
+        self.ivars().get().is_some_and(|views| views.on_rest.get().is_some())
+    }
+
+    /// Says who hears that the pointer or the keyboard has come to the
+    /// row, which is where a click or Return is most likely to follow. A
+    /// row is reused for many episodes, so `on_rest` has to find out
+    /// which one it shows when it is called.
+    pub fn set_on_rest(&self, on_rest: impl Fn() + 'static) {
+        // Asking for the view makes AppKit call `loadView` if it has not.
+        let _ = self.view();
+        if let Some(views) = self.ivars().get() {
+            // Cannot matter if it fails: the first answer stands.
+            let _ = views.on_rest.set(Box::new(on_rest));
+        }
+    }
+
     /// Whether `point`, in the window's coordinates, is on the play glyph.
     pub fn is_on_play(&self, point: NSPoint) -> bool {
         self.ivars().get().is_some_and(|views| views.art.is_on_play(point))
@@ -183,6 +211,13 @@ impl Views {
             ),
             wash,
             shown: RefCell::new(None),
+            on_rest: OnceCell::new(),
+        }
+    }
+
+    fn rested(&self) {
+        if let Some(on_rest) = self.on_rest.get() {
+            on_rest();
         }
     }
 

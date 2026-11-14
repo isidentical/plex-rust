@@ -1167,6 +1167,14 @@ impl Posters {
     /// once for each cell the collection makes. A cell that is reused
     /// while scrolling already has it, and only that is checked.
     fn make_pressable(&self, cell: &NSCollectionViewItem) {
+        // A row of a list is pressed as it is. It only says when the
+        // pointer or the keyboard comes to it, as a card does.
+        if let Some(row) = cell.downcast_ref::<EpisodeItem>() {
+            if !row.has_on_rest() {
+                row.set_on_rest(self.rest_on(cell));
+            }
+            return;
+        }
         let Some(card) = cell.downcast_ref::<PosterItem>().filter(|card| !card.has_on_press())
         else {
             return;
@@ -1180,8 +1188,14 @@ impl Posters {
                 posters.open(&index_path, false);
             }
         });
+        card.set_on_rest(self.rest_on(cell));
+    }
+
+    /// What `cell` does when the pointer or the keyboard comes to it:
+    /// says that the item it then shows may be opened next.
+    fn rest_on(&self, cell: &NSCollectionViewItem) -> impl Fn() + 'static {
         let (posters, rested) = (Weak::new(self), Weak::new(cell));
-        card.set_on_rest(move || {
+        move || {
             let (Some(posters), Some(cell)) = (posters.load(), rested.load()) else {
                 return;
             };
@@ -1192,7 +1206,7 @@ impl Posters {
             if let (Some(_), Some(Card::Item(item))) = (index_path, card) {
                 posters.act(Action::Rest(item));
             }
-        });
+        }
     }
 
     fn act_on_menu_item(&self, action: impl Fn(Item) -> Action) {
