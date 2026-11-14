@@ -20,7 +20,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
-use plex::library::{appearances, next_up, of_genre};
+use plex::library::{appearances, directed, next_up, of_genre};
 use plex::model::{Hub, Item, Kind, Media, Part, RatingKey, Role, Stream, StreamKind, Tag};
 
 use super::artwork::{self, ArtView};
@@ -74,6 +74,8 @@ enum Event {
     Play,
     /// A genre was clicked.
     OpenGenre(Tag),
+    /// A director was clicked.
+    OpenDirector(Role),
     /// The header was laid out, and its content takes this many points.
     Resized(f64),
 }
@@ -165,7 +167,8 @@ struct Hero {
     version: Choice,
     audio: Choice,
     subtitles: Choice,
-    /// Who directed it and who made it.
+    /// Who directed it, each name leading to what else they directed, and
+    /// who made it.
     directors: Fact,
     studio: Fact,
     /// One capsule for each genre, which leads to the others of it.
@@ -258,7 +261,9 @@ impl Detail {
                 move |action| match (action, listed.upgrade()) {
                     // Only the page knows which library the person is to
                     // be looked up in.
-                    (Action::OpenPerson(person), Some(page)) => page.open_person(&person),
+                    (Action::OpenPerson(person), Some(page)) => {
+                        page.open_work(&person, appearances)
+                    }
                     (action, _) => from_list(action),
                 },
                 || {},
@@ -327,6 +332,7 @@ impl Detail {
             Event::Follow(link) => self.follow_link(link),
             Event::Play => self.press_play(),
             Event::OpenGenre(genre) => self.open_genre(&genre),
+            Event::OpenDirector(director) => self.open_work(&director, directed),
             Event::Resized(height) => self.fit_header(height),
         }
     }
@@ -559,12 +565,21 @@ impl Detail {
         }
     }
 
-    /// Asks for the list of what else `person` is in, in the library the
-    /// item on the page is in.
-    fn open_person(&self, person: &Role) {
+    /// Does what a click on the first member of the cast does.
+    pub fn open_lead(&self) {
+        let lead = self.item.borrow().as_ref().and_then(|item| item.roles.first().cloned());
+        if let Some(lead) = lead {
+            self.open_work(&lead, appearances);
+        }
+    }
+
+    /// Asks for the list of the work of `person` in the library the item
+    /// on the page is in: what they are in, or what they directed, as
+    /// `listed` gives the path of.
+    fn open_work(&self, person: &Role, listed: fn(u32, &Role) -> Option<String>) {
         let library = self.item.borrow().as_ref().and_then(|item| item.library_section_id);
-        if let Some(path) = library.and_then(|library| appearances(library, person)) {
-            (self.on_action)(Action::OpenList { title: person.tag.clone(), path });
+        if let Some(path) = library.and_then(|library| listed(library, person)) {
+            (self.on_action)(Action::OpenWork { person: person.clone(), path });
         }
     }
 
@@ -1226,7 +1241,9 @@ impl Hero {
         });
     }
 
-    /// Fills in who directed `item` and who made it.
+    /// Fills in who directed `item` and who made it. A director of a
+    /// film leads to the other films of theirs in the library. The
+    /// library of a show lists its shows, which have no directors.
     fn show_credits(&self, item: &Item) {
         let main_thread = self.view.mtm();
         let primary = NSColor::labelColor();
@@ -1240,9 +1257,19 @@ impl Hero {
                     true => format!("{},", director.tag),
                     false => director.tag.clone(),
                 };
-                let plain = label::line(theme::FONT_BODY, Weight::Regular, &primary, main_thread);
-                label::set(&plain, &name);
-                Retained::into_super(Retained::into_super(plain))
+                if director.id.is_none() || item.kind != Kind::Movie {
+                    let plain =
+                        label::line(theme::FONT_BODY, Weight::Regular, &primary, main_thread);
+                    label::set(&plain, &name);
+                    return Retained::into_super(Retained::into_super(plain));
+                }
+                let (on_event, opened) = (Rc::clone(&self.on_event), (*director).clone());
+                let open = move || on_event(Event::OpenDirector(opened.clone()));
+                let (link, words) = text_link(theme::FONT_BODY, open, main_thread);
+                label::set(&words, &name);
+                let spoken = format!("More directed by {}", director.tag);
+                link.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
+                Retained::into_super(link)
             })
             .collect();
         self.directors.set(directors);

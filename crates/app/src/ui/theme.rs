@@ -290,6 +290,9 @@ pub const DOWNLOAD_BAR_WIDTH: f64 = 240.0;
 /// The strip above the list that says the server is away.
 pub const DOWNLOAD_STRIP_HEIGHT: f64 = 44.0;
 
+/// The heading of the list of a person's work: their photo and name.
+pub const PERSON_HEADING_HEIGHT: f64 = PORTRAIT_WIDTH + 2.0 * SPACE_L;
+
 /// The bar above a library's grid: its size on the left, order on the right.
 pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
 

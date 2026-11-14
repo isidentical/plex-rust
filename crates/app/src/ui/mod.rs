@@ -19,6 +19,7 @@ mod layout;
 mod library_bar;
 mod menus;
 mod notice;
+mod person;
 pub mod player;
 mod poster;
 mod posters;

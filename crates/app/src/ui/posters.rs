@@ -114,6 +114,12 @@ pub enum Action {
     OpenSeason(Item),
     /// Show what else this member of the cast is in.
     OpenPerson(Role),
+    /// Show the list at this server path, which is what this person is
+    /// in or has directed, under their name and photo.
+    OpenWork {
+        person: Role,
+        path: String,
+    },
     /// Show the whole list at this server path, under this title.
     OpenList {
         title: String,

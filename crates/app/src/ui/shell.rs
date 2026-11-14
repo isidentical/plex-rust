@@ -23,7 +23,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{FirstCharacter, Listing, Page, Sort};
-use plex::model::{Colors, Hub, Item, Kind, RatingKey, Section};
+use plex::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section};
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
@@ -38,6 +38,7 @@ use super::layout;
 use super::library_bar::LibraryBar;
 use super::menus::{self, Commands};
 use super::notice::{Mark, Notice};
+use super::person::PersonHeading;
 use super::player::input::Key;
 use super::player::{PlayerScreen, Purpose};
 use super::poster::Shape;
@@ -224,6 +225,11 @@ enum Route {
         title: String,
         path: String,
     },
+    /// What a person is in or has directed: the list at a server path.
+    Person {
+        person: Role,
+        path: String,
+    },
     /// The page of an item. For a show, with how it opens.
     Item(Box<Item>, Opening),
     Search(String),
@@ -383,6 +389,8 @@ pub struct Tweaks {
     pub version: Option<u64>,
     /// The server not answering, whether or not it would.
     pub away: bool,
+    /// On an item's page, the first of its cast clicked.
+    pub person: bool,
     /// A change the viewer made on the page having failed to reach the
     /// server.
     pub refused: bool,
@@ -854,6 +862,10 @@ impl Shell {
                 }
             }
             Some(Place::List { title, path }) => self.go(Route::List { title, path }),
+            Some(Place::Person { name, photo, path }) => {
+                let person = Role { id: None, tag: name, role: None, thumb: photo };
+                self.go(Route::Person { person, path });
+            }
             Some(Place::Downloads) => self.go(Route::Downloads),
             Some(Place::Item { .. }) if saved.is_some() => {
                 if let Some(item) = saved {
@@ -891,6 +903,11 @@ impl Shell {
             Route::Home => Place::Home,
             Route::Library(section, _) => Place::Library { key: section.key.clone() },
             Route::List { title, path } => Place::List { title: title.clone(), path: path.clone() },
+            Route::Person { person, path } => Place::Person {
+                name: person.tag.clone(),
+                photo: person.thumb.clone(),
+                path: path.clone(),
+            },
             Route::Item(item, _) => Place::Item { key: item.rating_key.as_str().to_owned() },
             Route::Downloads => Place::Downloads,
             Route::Search(_) => return,
@@ -1366,6 +1383,9 @@ impl Shell {
                 self.library(session, section, *listing)
             }
             (Route::List { title, path }, Some(session)) => self.list(session, &route, title, path),
+            (Route::Person { person, path }, Some(session)) => {
+                self.work(session, &route, person, path)
+            }
             (Route::Item(item, opening), Some(session)) => self.item_page(session, item, opening),
             (Route::Search(query), Some(session)) => self.search_results(session, query),
         };
@@ -1510,6 +1530,26 @@ impl Shell {
         let source = Paged::Path(path.to_owned());
         let nothing = self.nothing("square.stack", "Nothing here", "This list is empty.");
         self.grid(session, route.clone(), source, None, title, nothing, |_| {})
+    }
+
+    /// Lists what `person` is in or has directed, which is the list at
+    /// `path`, under their photo and name.
+    fn work(
+        self: &Rc<Self>,
+        session: &Session,
+        route: &Route,
+        person: &Role,
+        path: &str,
+    ) -> (Screen, Rc<dyn Fn()>) {
+        let heading = PersonHeading::new(self.main_thread, person, &session.images);
+        let header = Header { view: heading.view().retain(), height: theme::PERSON_HEADING_HEIGHT };
+        let source = Paged::Path(path.to_owned());
+        let nothing =
+            self.nothing("person", "Nothing here", "The library has nothing else of theirs.");
+        // The heading lives as long as this closure, which the entry keeps.
+        self.grid(session, route.clone(), source, Some(header), "", nothing, move |total| {
+            heading.set_total(total);
+        })
     }
 
     /// A grid of posters under the heading `title` that shows `source` a
@@ -1978,6 +2018,7 @@ impl Shell {
                     shell.open_show_of(&episode, opening);
                 }
                 Action::OpenList { title, path } => shell.go(Route::List { title, path }),
+                Action::OpenWork { person, path } => shell.go(Route::Person { person, path }),
                 Action::Rest(item) => shell.ask_ahead(&item),
                 // Only a detail page lists people, and it turns this into
                 // the list of what the person is in before it gets here.
@@ -2628,6 +2669,9 @@ impl Shell {
                 if let (Some(version), Screen::Detail(detail)) = (snapshot.tweaks.version, screen) {
                     detail.pick_version(version);
                 }
+                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.person, screen) {
+                    detail.open_lead();
+                }
                 if let (true, Screen::Detail(detail)) = (snapshot.tweaks.download, screen) {
                     detail.press_download();
                 }
@@ -2678,6 +2722,7 @@ fn title(route: &Route) -> &str {
         Route::Home => "Home",
         Route::Library(section, _) => &section.title,
         Route::List { title, .. } => title,
+        Route::Person { person, .. } => &person.tag,
         Route::Item(item, _) => &item.title,
         Route::Search(_) => "Search",
         Route::Downloads => "Downloads",
@@ -2690,7 +2735,7 @@ fn destination_of(route: &Route) -> Option<Destination> {
         Route::Home => Some(Destination::Home),
         Route::Library(section, _) => Some(Destination::Section(section.clone())),
         Route::Downloads => Some(Destination::Downloads),
-        Route::List { .. } | Route::Item(..) | Route::Search(_) => None,
+        Route::List { .. } | Route::Person { .. } | Route::Item(..) | Route::Search(_) => None,
     }
 }
 

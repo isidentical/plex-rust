@@ -300,6 +300,14 @@ pub fn appearances(section: u32, person: &Role) -> Option<String> {
     Some(format!("/library/sections/{section}/all?actor={}", person.id?))
 }
 
+/// Server path of the list of everything in library `section` that
+/// `person` directed. `None` for a director the server gave no number, as
+/// for a member of the cast. A library of films lists films this way. One
+/// of shows lists none, since it is their episodes that are directed.
+pub fn directed(section: u32, person: &Role) -> Option<String> {
+    Some(format!("/library/sections/{section}/all?director={}", person.id?))
+}
+
 /// Server path of the list of everything in library `section` of the
 /// genre `genre`. `None` for a genre the server gave no number, which is
 /// every one in a listing.

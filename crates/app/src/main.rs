@@ -52,7 +52,7 @@ usage: plex-rust
                pull, release, bright, small, wide, marker, stall, fail,
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
          tweaks: narrow, wide, collapsed, hover, link, season, download,
-                 version=<media-id>,
+                 version=<media-id>, person,
                  scroll=<points>, across=<points>, page, letter=<index>,
                  unwatched,
                  keys=<left|right|up|down|return>,...,
@@ -163,6 +163,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             None if *tweak == "unanswered" => parsed.unanswered = true,
             None if *tweak == "looking" => parsed.looking = true,
+            None if *tweak == "person" => parsed.person = true,
             None if *tweak == "refused" => parsed.refused = true,
             None if *tweak == "offline" => parsed.offline = true,
             None if *tweak == "approving" => parsed.approving = true,

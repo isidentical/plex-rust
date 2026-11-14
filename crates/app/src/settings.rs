@@ -105,6 +105,13 @@ pub enum Place {
     Item {
         key: String,
     },
+    /// What a person is in or has directed: the list at this server
+    /// path, under their name and the photo at this address.
+    Person {
+        name: String,
+        photo: Option<String>,
+        path: String,
+    },
     /// What is kept on this Mac.
     Downloads,
 }
@@ -168,6 +175,11 @@ mod tests {
             Place::Library { key: "2".to_owned() },
             Place::List { title: "Recently Added".to_owned(), path: "/hubs/recent".to_owned() },
             Place::Item { key: "370".to_owned() },
+            Place::Person {
+                name: "Name".to_owned(),
+                photo: None,
+                path: "/library/sections/1/all?actor=1".to_owned(),
+            },
             Place::Downloads,
         ];
         for place in places {
