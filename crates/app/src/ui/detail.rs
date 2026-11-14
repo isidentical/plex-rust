@@ -10,7 +10,7 @@ use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityLinkRole,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityImageRole, NSAccessibilityLinkRole,
     NSAttributedStringNSExtendedStringDrawing, NSButton, NSCellImagePosition, NSColor,
     NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
     NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
@@ -25,6 +25,7 @@ use plex::model::{Hub, Item, Kind, Media, Part, RatingKey, Role, Stream, StreamK
 
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
+use super::banner::Banner;
 use super::callback::Callback;
 use super::formats;
 use super::hover::HoverView;
@@ -35,7 +36,7 @@ use super::posters::{Action, Header, OnAction, Outline, Playback, Posters, Shelf
 use super::text;
 use super::theme;
 use crate::downloads::{Downloads, State};
-use crate::images::Images;
+use crate::images::{Artwork, Images};
 
 /// How many genres, directors and cast members a page names.
 const GENRES_SHOWN: usize = 3;
@@ -111,10 +112,14 @@ pub struct Detail {
 /// The views at the top of the page.
 struct Hero {
     view: Retained<HeaderView>,
-    /// What the page leads with: the poster of a film or show, or a frame
-    /// of an episode.
+    /// What the page leads with: the backdrop of the film or show, to the
+    /// edges of the window.
+    banner: Rc<Banner>,
+    /// Whether there is a backdrop, which is then given room to be seen.
+    has_backdrop: Rc<Cell<bool>>,
+    /// On an episode's page, a frame of the episode.
     art: Rc<ArtView>,
-    /// Around it. On an episode's page a click on it plays the episode.
+    /// Around it. A click on it plays the episode.
     art_link: Retained<HoverView>,
     /// On an episode's page, the poster of its show, small, beside the
     /// way down to the episode. It leads to the show.
@@ -129,10 +134,11 @@ struct Hero {
     season_name: Retained<NSTextField>,
     episode_number: Retained<NSTextField>,
     title: Retained<NSTextField>,
+    /// The title of a film or show drawn as on its poster, which stands
+    /// in for the words when the server has it.
+    logo: Logo,
     facts: Retained<NSTextField>,
     badges: Retained<NSStackView>,
-    /// One capsule for each genre, which leads to the others of it.
-    genres: Retained<NSStackView>,
     play: Pill,
     /// Beside the button that resumes: the way back to the beginning.
     restart: Pill,
@@ -146,12 +152,12 @@ struct Hero {
     menu_play: Retained<NSMenuItem>,
     menu_restart: Retained<NSMenuItem>,
     menu_watched: Retained<NSMenuItem>,
-    remaining: Retained<NSTextField>,
+    remaining: Remaining,
+    /// The line from the poster.
+    tagline: Retained<NSTextField>,
     summary: Retained<NSTextField>,
     /// Under a summary that is cut short. Leads to all of it.
     more: Retained<HoverView>,
-    /// Who directed it and who made it.
-    credits: Retained<NSTextField>,
     /// What to play of a film or an episode: which version of it, with
     /// which sound and which subtitles. Each is there only when there is
     /// more than one to choose from.
@@ -159,6 +165,11 @@ struct Hero {
     version: Choice,
     audio: Choice,
     subtitles: Choice,
+    /// Who directed it and who made it.
+    directors: Fact,
+    studio: Fact,
+    /// One capsule for each genre, which leads to the others of it.
+    genres: Retained<NSStackView>,
     seasons: Seasons,
     season_size: Retained<NSTextField>,
     on_event: Rc<dyn Fn(Event)>,
@@ -233,11 +244,7 @@ impl Detail {
             }
 
             // Until the header has been laid out and says how tall it is.
-            // Only a show has seasons to pick from under it.
-            let height = match kind {
-                Kind::Show => theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT,
-                _ => theme::HERO_HEIGHT,
-            };
+            let height = theme::HERO_HEIGHT;
             let header = Header { view: Retained::into_super(hero.view.clone()), height };
             let (listed, from_list) = (Weak::clone(page), Rc::clone(&on_action));
             let list = Posters::new(
@@ -256,14 +263,20 @@ impl Detail {
                 },
                 || {},
             );
+            list.let_header_reach(hero.banner.reach());
             let backdrop = Backdrop::new(main_thread);
             layout::fill(&backdrop, list.view());
-            let keyed = Weak::clone(page);
-            let view = PageView::new(main_thread, move |key| {
-                if let Some(page) = keyed.upgrade() {
-                    page.key_pressed(key);
-                }
-            });
+            let (keyed, header) = (Weak::clone(page), hero.view.clone());
+            let view = PageView::new(
+                main_thread,
+                move |key| {
+                    if let Some(page) = keyed.upgrade() {
+                        page.key_pressed(key);
+                    }
+                },
+                // The banner is as tall as the height of the page allows.
+                move || header.setNeedsLayout(true),
+            );
             layout::fill(&view, &backdrop);
 
             Self {
@@ -442,13 +455,6 @@ impl Detail {
         self.hero.show(item, self.version.get(), &self.images);
         if let Some(colors) = item.colors {
             self.backdrop.set_colors(colors);
-        }
-        let art = match item.kind {
-            Kind::Episode => item.grandparent_art.as_deref().or(item.art.as_deref()),
-            _ => item.art.as_deref(),
-        };
-        if let Some(path) = art {
-            self.backdrop.show_art(path, &self.images);
         }
         *self.item.borrow_mut() = Some(item.clone());
         self.show_play_button();
@@ -648,7 +654,7 @@ impl Detail {
         let Some(playable) = playable else {
             hero.restart.button.setHidden(true);
             hero.menu_restart.setHidden(true);
-            return;
+            return hero.remaining.show("", 0.0);
         };
         let verb = if playable.view_offset.is_some() { "Resume" } else { "Play" };
         let is_show = self.item.borrow().as_ref().is_some_and(|item| item.kind == Kind::Show);
@@ -668,8 +674,7 @@ impl Detail {
         let mut beside: Vec<String> = Vec::new();
         beside.extend(is_show.then(|| playable.title.clone()));
         beside.extend(text::remaining(&playable));
-        label::set(&hero.remaining, &beside.join(" · "));
-        hero.remaining.setHidden(beside.is_empty());
+        hero.remaining.show(&beside.join(" · "), playable.progress());
     }
 }
 
@@ -720,19 +725,21 @@ impl Hero {
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
         let line = |size, weight, color| label::line(size, weight, color, main_thread);
 
+        let view = HeaderView::new(main_thread);
+        let banner = Rc::new(Banner::new(&view, main_thread));
+
         let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
         art.set_flat();
-        art.set_playable(is_episode);
+        art.set_playable(true);
         let (hovered, played) = (Rc::clone(&art), Rc::clone(&on_event));
         let art_link = HoverView::pressable(
             main_thread,
             move |over| hovered.set_hovered(over),
             move || played(Event::Play),
         );
-        // A poster stands for the film. Only a frame of an episode, with
-        // the play glyph on it, is there to be pressed.
-        art_link.set_live(is_episode);
-        art_link.setAccessibilityElement(is_episode);
+        // Only an episode has a frame of its own to lead with.
+        art_link.setHidden(!is_episode);
+        art_link.setAccessibilityElement(true);
         // SAFETY: the role is a constant that AppKit provides.
         art_link.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
         art_link.setAccessibilityLabel(Some(ns_string!("Play")));
@@ -754,11 +761,12 @@ impl Hero {
         layout::cover(&show_poster_link, show_poster.view());
         show_poster_link.setHidden(!is_episode);
         show_poster_link.setAccessibilityElement(true);
-        let (show_link, show_name) = text_link(follow(Link::Show), main_thread);
-        let (season_link, season_name) = text_link(follow(Link::Season), main_thread);
-        let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
+        let headline = theme::FONT_HEADLINE;
+        let (show_link, show_name) = text_link(headline, follow(Link::Show), main_thread);
+        let (season_link, season_name) = text_link(headline, follow(Link::Season), main_thread);
+        let episode_number = line(headline, Weight::Semibold, &secondary);
         let step = || {
-            let step = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
+            let step = line(headline, Weight::Semibold, &secondary);
             label::set(&step, "›");
             // Punctuation between links, not something to read out.
             step.setAccessibilityElement(false);
@@ -781,6 +789,7 @@ impl Hero {
         );
         let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
         eyebrow.setVisibilityPriority_forView(if_necessary, &last);
+        eyebrow.setHidden(!is_episode);
         let title = label::paragraph(
             theme::FONT_LARGE_TITLE,
             Weight::Bold,
@@ -793,40 +802,38 @@ impl Hero {
         let genres = NSStackView::new(main_thread);
         genres.setSpacing(theme::SPACE_S);
 
-        let play = Pill::new("Play", "play.fill", true, main_thread);
+        let play = Pill::large("Play", "play.fill", true, main_thread);
         // The default action of the page, which Return triggers.
         play.button.setKeyEquivalent(ns_string!("\r"));
-        let restart = Pill::new("Play from Start", "arrow.counterclockwise", false, main_thread);
+        let restart = Pill::large("Play from Start", "arrow.counterclockwise", false, main_thread);
         restart.button.setHidden(true);
-        let watched = Pill::new("Mark as Watched", "checkmark", false, main_thread);
-        let download = Pill::new("Download", "arrow.down.circle", false, main_thread);
+        let watched = Pill::large("Mark as Watched", "checkmark", false, main_thread);
+        let download = Pill::large("Download", "arrow.down.circle", false, main_thread);
         download.button.setHidden(true);
         let downloaded = line(theme::FONT_BODY, Weight::Regular, &secondary);
         downloaded.setHidden(true);
-        let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
-        // Placed by gravity, which is what lets the stack drop a view that
-        // does not fit.
+        let remaining = Remaining::new(main_thread);
         let row: [&NSView; 6] = [
             &play.button,
             &restart.button,
             &watched.button,
             &download.button,
             &downloaded,
-            &remaining,
+            &remaining.view,
         ];
-        let buttons = NSStackView::new(main_thread);
-        buttons.setViews_inGravity(&NSArray::from_slice(&row), NSStackViewGravity::Leading);
+        let buttons = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
         buttons.setSpacing(theme::SPACE_M);
-        // In a narrow window the row gives up how much is left to watch,
-        // whole, before anything in it is cut short.
-        buttons.setClippingResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        buttons.setVisibilityPriority_forView(if_necessary, &remaining);
+        buttons.setCustomSpacing_afterView(theme::SPACE_L, &download.button);
 
         let seasons = Seasons::new(main_thread);
 
+        let tagline = label::paragraph(
+            theme::FONT_HEADLINE,
+            Weight::Semibold,
+            &primary,
+            theme::HERO_TAGLINE_LINES,
+            main_thread,
+        );
         let summary = label::paragraph(
             theme::FONT_HEADLINE,
             Weight::Regular,
@@ -835,8 +842,8 @@ impl Hero {
             main_thread,
         );
         let (headed, read) = (title.clone(), summary.clone());
-        let (more, more_label) = text_link(move || read_in_full(&headed, &read), main_thread);
-        more_label.setFont(Some(&label::font(theme::FONT_BODY, Weight::Semibold)));
+        let (more, more_label) =
+            text_link(theme::FONT_BODY, move || read_in_full(&headed, &read), main_thread);
         label::set(&more_label, "More");
         more.setAccessibilityLabel(Some(ns_string!("Read the whole summary")));
         more.setHidden(true);
@@ -847,7 +854,7 @@ impl Hero {
         let choices = NSStackView::stackViewWithViews(&NSArray::from_slice(&rows), main_thread);
         choices.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         choices.setAlignment(NSLayoutAttribute::Leading);
-        choices.setSpacing(theme::SPACE_XS);
+        choices.setSpacing(theme::SPACE_S);
         choices.setHidden(true);
 
         let (menu_play, menu_watched) =
@@ -859,13 +866,14 @@ impl Hero {
         menu.addItem(&menu_play);
         menu.addItem(&menu_restart);
         menu.addItem(&menu_watched);
-        let view = HeaderView::new(main_thread);
         // SAFETY: the view keeps the menu, as a responder keeps the one it
         // is given.
         unsafe { view.setMenu(Some(&menu)) };
 
         let hero = Self {
             view,
+            banner,
+            has_backdrop: Rc::new(Cell::new(false)),
             art,
             art_link,
             show_poster,
@@ -877,17 +885,17 @@ impl Hero {
             season_name,
             episode_number,
             title,
+            logo: Logo::new(main_thread),
             // Two lines, so that a narrow window wraps the last facts
             // and does not cut them off.
             facts: label::paragraph(
                 theme::FONT_HEADLINE,
                 Weight::Medium,
-                &secondary,
+                &theme::white(theme::SECONDARY_ON_ART_OPACITY),
                 theme::HERO_FACTS_LINES,
                 main_thread,
             ),
             badges,
-            genres,
             play,
             restart,
             watched,
@@ -897,13 +905,16 @@ impl Hero {
             menu_restart,
             menu_watched,
             remaining,
+            tagline,
             summary,
             more,
-            credits: line(theme::FONT_BODY, Weight::Regular, &secondary),
             choices,
             version,
             audio,
             subtitles,
+            directors: Fact::new("Director", main_thread),
+            studio: Fact::new("Studio", main_thread),
+            genres,
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
             on_event,
@@ -913,48 +924,51 @@ impl Hero {
         hero
     }
 
-    /// The artwork on the left, the text in a column beside it, and for a
-    /// show the season picker in a strip along the bottom, where the
-    /// episode list begins.
+    /// What the item is and the buttons to watch it on the lower part of
+    /// the banner. Under the banner what it is about and, beside that or
+    /// under it, what there is to choose and to know. For a show the
+    /// season picker in a strip along the bottom, where the episode list
+    /// begins.
     fn place(&self, buttons: &NSStackView, kind: Kind) {
         let main_thread = self.view.mtm();
-        let (summary, more) = (self.summary.clone(), self.more.clone());
-        let column = Column::new(main_thread, move || offer_more(&summary, &more));
+        let column = |lines: &[&NSView], spacing: f64| {
+            let column = NSStackView::stackViewWithViews(&NSArray::from_slice(lines), main_thread);
+            column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+            column.setAlignment(NSLayoutAttribute::Leading);
+            column.setSpacing(spacing);
+            column.setTranslatesAutoresizingMaskIntoConstraints(false);
+            column
+        };
 
         // The show's poster stands beside the lines that name the episode.
-        let titles: [&NSView; 2] = [&self.eyebrow, &self.title];
-        let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
-        titles.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        titles.setAlignment(NSLayoutAttribute::Leading);
-        titles.setSpacing(theme::SPACE_XS);
+        let titles = column(&[&self.eyebrow, &self.title, &self.logo.view], theme::SPACE_XS);
         let headline: [&NSView; 2] = [&self.show_poster_link, &titles];
         let headline =
             NSStackView::stackViewWithViews(&NSArray::from_slice(&headline), main_thread);
         headline.setAlignment(NSLayoutAttribute::Top);
         headline.setSpacing(theme::SPACE_M);
+        let lead = column(&[&headline, &self.facts, &self.badges, buttons], theme::SPACE_M);
+        lead.setCustomSpacing_afterView(theme::SPACE_S, &headline);
+        lead.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
+        let stage = NSView::new(main_thread);
+        stage.setTranslatesAutoresizingMaskIntoConstraints(false);
+        stage.addSubview(&self.art_link);
+        stage.addSubview(&lead);
 
-        let lines: [&NSView; 9] = [
-            &headline,
-            &self.facts,
-            &self.badges,
-            buttons,
-            &self.summary,
-            &self.more,
-            &self.choices,
-            &self.genres,
-            &self.credits,
-        ];
-        for line in lines {
-            column.addArrangedSubview(line);
+        let (summary, more) = (self.summary.clone(), self.more.clone());
+        let story = Column::new(main_thread, move || offer_more(&summary, &more));
+        let told: [&NSView; 3] = [&self.tagline, &self.summary, &self.more];
+        for line in told {
+            story.addArrangedSubview(line);
         }
-        column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        column.setAlignment(NSLayoutAttribute::Leading);
-        column.setSpacing(theme::SPACE_M);
-        column.setCustomSpacing_afterView(theme::SPACE_S, &headline);
-        column.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
-        column.setCustomSpacing_afterView(theme::SPACE_L, buttons);
-        column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
-        column.setTranslatesAutoresizingMaskIntoConstraints(false);
+        story.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        story.setAlignment(NSLayoutAttribute::Leading);
+        story.setSpacing(theme::SPACE_S);
+        let known = column(&[&self.choices, &self.directors.row, &self.studio.row], theme::SPACE_S);
+        let side = column(&[&known, &self.genres], theme::SPACE_M);
+        let about: [&NSView; 2] = [&story, &side];
+        let about = NSStackView::stackViewWithViews(&NSArray::from_slice(&about), main_thread);
+        about.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         let season: [&NSView; 3] = [&self.seasons.tabs, &self.seasons.menu, &self.season_size];
         let season = NSStackView::stackViewWithViews(&NSArray::from_slice(&season), main_thread);
@@ -962,63 +976,104 @@ impl Hero {
         season.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         let (view, art) = (&self.view, &self.art_link);
-        view.addSubview(art);
-        view.addSubview(&column);
+        view.addSubview(&stage);
+        view.addSubview(&about);
         view.addSubview(&season);
-        // The text may run past the artwork: a long title in a narrow
-        // window takes three lines and leaves the rest no less room.
-        let season_bar = if kind == Kind::Show { theme::SEASON_BAR_HEIGHT } else { 0.0 };
-        let (on_event, pictured, written) =
-            (Rc::clone(&self.on_event), art.clone(), column.clone());
-        view.on_layout(move || {
-            let content = written.frame().size.height.max(pictured.frame().size.height).ceil();
-            on_event(Event::Resized(2.0 * theme::SPACE_L + content + season_bar));
-        });
 
         let margin = theme::PAGE_MARGIN;
+        // As tall as shows the backdrop, and taller where the text needs
+        // it: a long title in a narrow window takes three lines.
+        let room = stage.heightAnchor().constraintEqualToConstant(0.0);
+        room.setPriority(NSLayoutPriorityDefaultHigh);
+        // Beside what the item is about, the rest is this wide.
+        let beside = side.widthAnchor().constraintEqualToConstant(theme::HERO_SIDE_WIDTH);
+        let season_bar = if kind == Kind::Show { theme::SEASON_BAR_HEIGHT } else { 0.0 };
+        let (banner, has_backdrop) = (Rc::clone(&self.banner), Rc::clone(&self.has_backdrop));
+        let (on_event, staged, told) = (Rc::clone(&self.on_event), stage.clone(), about.clone());
+        let (room_given, abreast) = (room.clone(), beside.clone());
+        let (logo, worded) = (self.logo.clone(), lead.clone());
+        view.on_layout(move || {
+            let width = staged.frame().size.width;
+            banner.fit(worded.frame().size.height);
+            logo.fit(width);
+            let page = staged.enclosingScrollView().map(|page| page.bounds().size.height);
+            let wanted = match has_backdrop.get() {
+                true => (width * theme::HERO_HEIGHT_PER_WIDTH)
+                    .min(page.unwrap_or_default() * theme::HERO_MOST)
+                    .round(),
+                false => 0.0,
+            };
+            if room_given.constant() != wanted {
+                room_given.setConstant(wanted);
+            }
+            arrange(&told, &abreast, width >= theme::HERO_ABREAST_FROM);
+            let content = staged.frame().size.height + told.frame().size.height;
+            on_event(Event::Resized((content + 2.0 * theme::SPACE_L + season_bar).ceil()));
+        });
+        arrange(&about, &beside, false);
+
         // The strip is the last thing in the header.
         let bar_middle = -theme::SEASON_BAR_HEIGHT / 2.0;
-        let (wide, tall) = (art.widthAnchor(), art.heightAnchor());
-        let shape = match kind {
+        let lead_from = match kind {
             Kind::Episode => {
+                let (wide, tall) = (art.widthAnchor(), art.heightAnchor());
                 let share = wide.constraintEqualToAnchor_multiplier(
                     &view.widthAnchor(),
                     theme::HERO_STILL_SHARE,
                 );
                 // As much of the page as it can have within its bounds.
                 share.setPriority(NSLayoutPriorityDefaultHigh);
-                vec![
+                NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
                     share,
                     wide.constraintGreaterThanOrEqualToConstant(theme::HERO_STILL_MIN_WIDTH),
                     wide.constraintLessThanOrEqualToConstant(theme::HERO_STILL_MAX_WIDTH),
                     tall.constraintEqualToAnchor_multiplier(&wide, theme::LANDSCAPE_ASPECT),
-                ]
+                    art.leadingAnchor()
+                        .constraintEqualToAnchor_constant(&stage.leadingAnchor(), margin),
+                    art.bottomAnchor().constraintEqualToAnchor(&stage.bottomAnchor()),
+                    art.topAnchor().constraintGreaterThanOrEqualToAnchor_constant(
+                        &stage.topAnchor(),
+                        theme::SPACE_S,
+                    ),
+                ]));
+                lead.leadingAnchor()
+                    .constraintEqualToAnchor_constant(&art.trailingAnchor(), theme::SPACE_XL)
             }
-            _ => vec![
-                wide.constraintEqualToConstant(theme::HERO_POSTER_WIDTH),
-                tall.constraintEqualToAnchor_multiplier(&wide, theme::POSTER_ASPECT),
-            ],
+            _ => lead
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&stage.leadingAnchor(), margin),
         };
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&shape));
         let small = self.show_poster_link.widthAnchor();
+        let text_width = theme::HERO_TEXT_WIDTH;
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             small.constraintEqualToConstant(theme::HERO_SHOW_POSTER_WIDTH),
             self.show_poster_link
                 .heightAnchor()
                 .constraintEqualToAnchor_multiplier(&small, theme::POSTER_ASPECT),
-            art.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            art.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
-            column
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&art.trailingAnchor(), theme::SPACE_XXL),
-            column.topAnchor().constraintEqualToAnchor(&art.topAnchor()),
-            column
+            stage.topAnchor().constraintEqualToAnchor(&view.topAnchor()),
+            stage.leadingAnchor().constraintEqualToAnchor(&view.leadingAnchor()),
+            stage.trailingAnchor().constraintEqualToAnchor(&view.trailingAnchor()),
+            room,
+            self.banner.view().bottomAnchor().constraintEqualToAnchor(&stage.bottomAnchor()),
+            lead_from,
+            lead.bottomAnchor().constraintEqualToAnchor(&stage.bottomAnchor()),
+            lead.topAnchor()
+                .constraintGreaterThanOrEqualToAnchor_constant(&stage.topAnchor(), theme::SPACE_S),
+            lead.trailingAnchor()
+                .constraintLessThanOrEqualToAnchor_constant(&stage.trailingAnchor(), -margin),
+            buttons.trailingAnchor().constraintLessThanOrEqualToAnchor(&lead.trailingAnchor()),
+            about
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&stage.bottomAnchor(), theme::SPACE_L),
+            about.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
+            about
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&view.trailingAnchor(), -margin),
             // A title has the width of the page. Only running text is
             // kept to a width that reads well.
-            self.summary.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
-            buttons.trailingAnchor().constraintLessThanOrEqualToAnchor(&column.trailingAnchor()),
+            self.tagline.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
+            self.summary.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
+            side.widthAnchor().constraintLessThanOrEqualToAnchor(&about.widthAnchor()),
             season.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
             season
                 .centerYAnchor()
@@ -1039,7 +1094,6 @@ impl Hero {
             label.setHidden(words.is_empty());
         };
         let is_episode = item.kind == Kind::Episode;
-        self.eyebrow.setHidden(!is_episode);
         let show = item.grandparent_title.as_deref().unwrap_or_default();
         let season = item.parent_title.as_deref().unwrap_or_default();
         set(&self.show_name, show);
@@ -1051,11 +1105,12 @@ impl Hero {
             .setAccessibilityLabel(Some(&NSString::from_str(&format!("Poster. Go to {show}"))));
         let number = item.index.map(|number| format!("Episode {number}"));
         set(&self.episode_number, number.as_deref().unwrap_or_default());
-        set(&self.title, &item.title);
+        self.show_logo(item, images);
         // A line may break after a dot between two facts, never before it.
         set(&self.facts, &facts(item).replace(" · ", "\u{a0}· "));
+        set(&self.tagline, item.tagline.as_deref().unwrap_or_default());
         set(&self.summary, item.summary.as_deref().unwrap_or_default());
-        set(&self.credits, &credits(item));
+        self.show_credits(item);
 
         let main_thread = self.view.mtm();
         let genres: Vec<Retained<NSView>> = item
@@ -1082,8 +1137,8 @@ impl Hero {
             .collect();
         let file = media.map(formats::file_facts).unwrap_or_default();
         if !file.is_empty() {
-            let secondary = NSColor::secondaryLabelColor();
-            let plain = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
+            let faint = theme::white(theme::SECONDARY_ON_ART_OPACITY);
+            let plain = label::line(theme::FONT_CAPTION, Weight::Medium, &faint, main_thread);
             label::set(&plain, &file);
             badges.push(Retained::into_super(Retained::into_super(plain)));
         }
@@ -1093,26 +1148,294 @@ impl Hero {
         );
         self.badges.setHidden(badges.is_empty());
 
-        let toggle = match item.is_watched() {
-            true => "Mark as Unwatched",
-            false => "Mark as Watched",
-        };
-        self.watched.set_title(toggle);
-        self.menu_watched.setTitle(&NSString::from_str(toggle));
-        self.watched.set_lit(item.is_watched());
+        self.show_watched(item.is_watched());
 
-        // An episode's own artwork is a frame of it, a film's is its poster.
-        let request = match is_episode {
-            true => theme::HERO_STILL_REQUEST,
-            false => theme::HERO_POSTER_REQUEST,
+        // An episode's own picture is a frame of it, which may give the
+        // episode away when it is as large as the page. Its show's
+        // backdrop does not.
+        let backdrop = match item.kind {
+            Kind::Episode => item.grandparent_art.as_deref().or(item.art.as_deref()),
+            _ => item.art.as_deref(),
         };
-        self.art.show(item.thumb.as_deref(), request, images);
-        self.art.set_progress(item.progress());
+        self.banner.paint(item.colors.map(|colors| colors.bottom_left));
+        self.banner.show(backdrop, images);
+        if self.has_backdrop.replace(backdrop.is_some()) != backdrop.is_some() {
+            self.view.setNeedsLayout(true);
+        }
         if is_episode {
+            self.art.show(item.thumb.as_deref(), theme::HERO_STILL_REQUEST, images);
+            self.art.set_progress(item.progress());
             let poster = item.grandparent_thumb.as_deref();
             self.show_poster.show(poster, theme::HERO_SHOW_POSTER_REQUEST, images);
         }
     }
+
+    /// Says on the button and in the menu what a press of either now
+    /// does to `watched`, which the button also shows by being lit.
+    fn show_watched(&self, watched: bool) {
+        let toggle = if watched { "Mark as Unwatched" } else { "Mark as Watched" };
+        self.watched.set_title(toggle);
+        self.menu_watched.setTitle(&NSString::from_str(toggle));
+        self.watched.set_lit(watched);
+    }
+
+    /// Shows the title of a film or show as its logo, if the server has
+    /// one. The words wait for a logo that is on its way and stand in for
+    /// one that cannot be had. An episode goes by its own name: the logo
+    /// it lists is that of its show.
+    fn show_logo(&self, item: &Item, images: &Rc<Images>) {
+        let path = item.logo().filter(|_| item.kind != Kind::Episode);
+        let logo = &self.logo;
+        label::set(&self.title, &item.title);
+        logo.view.setAccessibilityLabel(Some(&NSString::from_str(&item.title)));
+        if logo.wanted.borrow().as_deref() == path {
+            return;
+        }
+        *logo.wanted.borrow_mut() = path.map(str::to_owned);
+        let (width, height) = theme::HERO_LOGO_REQUEST;
+        let (width, height) = (width * theme::RETINA_SCALE, height * theme::RETINA_SCALE);
+        let ready = path.and_then(|path| images.cached_cutout(path, width, height));
+        logo.set(ready.as_ref());
+        self.title.setHidden(path.is_some());
+        let (Some(path), None) = (path, ready) else {
+            return;
+        };
+        let (logo, title, asked) = (logo.clone(), self.title.clone(), path.to_owned());
+        images.load_cutout(path, width, height, move |artwork| {
+            if logo.wanted.borrow().as_deref() != Some(asked.as_str()) {
+                return;
+            }
+            logo.set(artwork);
+            title.setHidden(artwork.is_some());
+        });
+    }
+
+    /// Fills in who directed `item` and who made it.
+    fn show_credits(&self, item: &Item) {
+        let main_thread = self.view.mtm();
+        let primary = NSColor::labelColor();
+        let shown: Vec<&Role> = item.directors.iter().take(DIRECTORS_SHOWN).collect();
+        let directors: Vec<Retained<NSView>> = shown
+            .iter()
+            .enumerate()
+            .map(|(place, director)| {
+                // Each name but the last ends in a comma.
+                let name = match place + 1 < shown.len() {
+                    true => format!("{},", director.tag),
+                    false => director.tag.clone(),
+                };
+                let plain = label::line(theme::FONT_BODY, Weight::Regular, &primary, main_thread);
+                label::set(&plain, &name);
+                Retained::into_super(Retained::into_super(plain))
+            })
+            .collect();
+        self.directors.set(directors);
+        let studio: Vec<Retained<NSView>> = item
+            .studio
+            .iter()
+            .map(|studio| {
+                let plain = label::line(theme::FONT_BODY, Weight::Regular, &primary, main_thread);
+                label::set(&plain, studio);
+                Retained::into_super(Retained::into_super(plain))
+            })
+            .collect();
+        self.studio.set(studio);
+    }
+}
+
+/// Puts what there is to choose and to know beside what the item is
+/// about, or under it where the page is too narrow for both: `beside`
+/// holds the second to its width while they are side by side.
+fn arrange(about: &NSStackView, beside: &NSLayoutConstraint, abreast: bool) {
+    let orientation = match abreast {
+        true => NSUserInterfaceLayoutOrientation::Horizontal,
+        false => NSUserInterfaceLayoutOrientation::Vertical,
+    };
+    if about.orientation() == orientation && beside.isActive() == abreast {
+        return;
+    }
+    about.setOrientation(orientation);
+    about.setAlignment(if abreast { NSLayoutAttribute::Top } else { NSLayoutAttribute::Leading });
+    about.setSpacing(if abreast { theme::SPACE_XXL } else { theme::SPACE_M });
+    beside.setActive(abreast);
+}
+
+/// The title of a film or show as a picture of its own.
+#[derive(Clone)]
+struct Logo {
+    view: Retained<NSView>,
+    /// As large as the page has room for, and no larger than the picture.
+    size: (Retained<NSLayoutConstraint>, Retained<NSLayoutConstraint>),
+    /// How large the picture is, in points, and how wide the page.
+    natural: Rc<Cell<NSSize>>,
+    page: Rc<Cell<f64>>,
+    /// The logo that is shown or on its way.
+    wanted: Rc<RefCell<Option<String>>>,
+}
+
+impl Logo {
+    fn new(main_thread: MainThreadMarker) -> Self {
+        let view = artwork::layered(main_thread);
+        view.setHidden(true);
+        view.setAccessibilityElement(true);
+        // SAFETY: the role is a constant that AppKit provides.
+        view.setAccessibilityRole(Some(unsafe { NSAccessibilityImageRole }));
+        if let Some(layer) = view.layer() {
+            // A logo is drawn for its own poster, and the backdrop under
+            // it here may be as light as it is.
+            layer.setShadowOpacity(theme::HERO_SHADOW_OPACITY);
+            layer.setShadowRadius(theme::HERO_LOGO_SHADOW_RADIUS);
+            layer.setShadowOffset(CGSize::ZERO);
+        }
+        let size = (
+            view.widthAnchor().constraintEqualToConstant(0.0),
+            view.heightAnchor().constraintEqualToConstant(0.0),
+        );
+        size.0.setActive(true);
+        size.1.setActive(true);
+        let natural = Rc::new(Cell::new(NSSize::ZERO));
+        Self { view, size, natural, page: Rc::default(), wanted: Rc::default() }
+    }
+
+    /// Sizes the logo for a page `page` points wide.
+    fn fit(&self, page: f64) {
+        self.page.set(page);
+        let (natural, most) = (self.natural.get(), theme::HERO_LOGO_REQUEST);
+        if natural.width <= 0.0 || natural.height <= 0.0 {
+            return;
+        }
+        let wide = (page * theme::HERO_LOGO_SHARE).clamp(theme::HERO_LOGO_LEAST, f64::from(most.0));
+        let tall = wide * f64::from(most.1) / f64::from(most.0);
+        let scale = (wide / natural.width).min(tall / natural.height).min(1.0);
+        let (wide, tall) = ((natural.width * scale).round(), (natural.height * scale).round());
+        if self.size.0.constant() != wide || self.size.1.constant() != tall {
+            self.size.0.setConstant(wide);
+            self.size.1.setConstant(tall);
+        }
+    }
+
+    /// Shows `logo`, or with none hides the view.
+    fn set(&self, logo: Option<&Artwork>) {
+        self.view.setHidden(logo.is_none());
+        let Some((logo, layer)) = logo.zip(self.view.layer()) else {
+            return;
+        };
+        let pixels = logo.size();
+        let scale = f64::from(theme::RETINA_SCALE);
+        self.natural.set(NSSize::new(pixels.width / scale, pixels.height / scale));
+        self.fit(self.page.get());
+        // SAFETY: the contents are a decoded CGImage.
+        unsafe { layer.setContents(Some(logo.contents())) };
+    }
+}
+
+/// Beside the buttons: what the main one plays and how much of it is
+/// left, in words over a bar.
+struct Remaining {
+    view: Retained<NSStackView>,
+    words: Retained<NSTextField>,
+    track: Retained<NSView>,
+    fill: Retained<NSView>,
+    fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
+}
+
+impl Remaining {
+    fn new(main_thread: MainThreadMarker) -> Self {
+        let faint = theme::white(theme::SECONDARY_ON_ART_OPACITY);
+        let words = label::line(theme::FONT_BODY, Weight::Medium, &faint, main_thread);
+        // In a narrow window the words are what gives, cut short with an
+        // ellipsis, before any button does.
+        words.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let track = artwork::layered(main_thread);
+        artwork::fill_with(&track, &theme::white(theme::HOME_HERO_TRACK_OPACITY));
+        let fill = artwork::layered(main_thread);
+        artwork::fill_with(&fill, &NSColor::controlAccentColor());
+        for bar in [&track, &fill] {
+            if let Some(layer) = bar.layer() {
+                layer.setCornerRadius(theme::PROGRESS_BAR_HEIGHT / 2.0);
+            }
+        }
+        track.addSubview(&fill);
+        let lines: [&NSView; 2] = [&words, &track];
+        let view = NSStackView::stackViewWithViews(&NSArray::from_slice(&lines), main_thread);
+        view.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        view.setAlignment(NSLayoutAttribute::Leading);
+        view.setSpacing(theme::SPACE_XS);
+        view.setHidden(true);
+        let wide = track.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PROGRESS_WIDTH);
+        wide.setPriority(NSLayoutPriorityDefaultHigh);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            wide,
+            track.heightAnchor().constraintEqualToConstant(theme::PROGRESS_BAR_HEIGHT),
+            fill.leadingAnchor().constraintEqualToAnchor(&track.leadingAnchor()),
+            fill.topAnchor().constraintEqualToAnchor(&track.topAnchor()),
+            fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
+        ]));
+        Self { view, words, track, fill, fill_width: RefCell::new(None) }
+    }
+
+    /// Says `words` over a bar filled to `fraction`, from 0 to 1. No
+    /// words hide both, and nothing watched hides the bar.
+    fn show(&self, words: &str, fraction: f64) {
+        label::set(&self.words, words);
+        self.view.setHidden(words.is_empty());
+        self.track.setHidden(fraction <= 0.0);
+        if let Some(old) = self.fill_width.take() {
+            old.setActive(false);
+        }
+        let width = self.fill.widthAnchor().constraintEqualToAnchor_multiplier(
+            &self.track.widthAnchor(),
+            fraction.clamp(0.0, 1.0),
+        );
+        width.setActive(true);
+        self.fill_width.replace(Some(width));
+    }
+}
+
+/// Something known about the item: what it is under a caption, as the
+/// menus that choose what plays are under theirs.
+struct Fact {
+    row: Retained<NSStackView>,
+    values: Retained<NSStackView>,
+}
+
+impl Fact {
+    fn new(caption: &str, main_thread: MainThreadMarker) -> Self {
+        let values = NSStackView::new(main_thread);
+        values.setSpacing(theme::SPACE_XS);
+        let row = captioned(caption, &values, main_thread);
+        Self { row, values }
+    }
+
+    /// Shows `values` beside the caption, or with none hides both.
+    fn set(&self, values: Vec<Retained<NSView>>) {
+        self.row.setHidden(values.is_empty());
+        self.values.setViews_inGravity(
+            &NSArray::from_retained_slice(&values),
+            NSStackViewGravity::Leading,
+        );
+    }
+}
+
+/// `value` beside the word for what it is, in a row that starts hidden.
+/// The words of all such rows are one column.
+fn captioned(
+    caption: &str,
+    value: &NSView,
+    main_thread: MainThreadMarker,
+) -> Retained<NSStackView> {
+    let secondary = NSColor::secondaryLabelColor();
+    let name = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
+    label::set(&name, caption);
+    name.widthAnchor().constraintEqualToConstant(theme::CHOICE_CAPTION_WIDTH).setActive(true);
+    let row: [&NSView; 2] = [&name, value];
+    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
+    row.setSpacing(theme::SPACE_S);
+    row.setHidden(true);
+    row
 }
 
 impl Hero {
@@ -1211,9 +1534,6 @@ struct Choice {
 
 impl Choice {
     fn new(caption: &str, main_thread: MainThreadMarker) -> Self {
-        let secondary = NSColor::secondaryLabelColor();
-        let name = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
-        label::set(&name, caption);
         let picker = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(main_thread),
             NSRect::ZERO,
@@ -1223,15 +1543,9 @@ impl Choice {
         picker.setFont(Some(&label::font(theme::FONT_CAPTION, Weight::Regular)));
         picker.setAccessibilityLabel(Some(&NSString::from_str(caption)));
         picker.setTranslatesAutoresizingMaskIntoConstraints(false);
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            name.widthAnchor().constraintEqualToConstant(theme::CHOICE_CAPTION_WIDTH),
-            picker.widthAnchor().constraintLessThanOrEqualToConstant(theme::CHOICE_MENU_MAX_WIDTH),
-        ]));
-        let row: [&NSView; 2] = [&name, &picker];
-        let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
-        row.setSpacing(theme::SPACE_S);
-        row.setHidden(true);
-        Self { row, picker }
+        let widest = theme::CHOICE_MENU_MAX_WIDTH;
+        picker.widthAnchor().constraintLessThanOrEqualToConstant(widest).setActive(true);
+        Self { row: captioned(caption, &picker, main_thread), picker }
     }
 
     /// Fills the menu with `titles`, the one at `picked` chosen. With
@@ -1264,15 +1578,27 @@ define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "PlexRustDetailPage"]
-    #[ivars = OnceCell<Box<dyn Fn(Key)>>]
+    #[ivars = PageHears]
     struct PageView;
 
     impl PageView {
         #[unsafe(method_id(initWithFrame:))]
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
-            let this = this.set_ivars(OnceCell::new());
+            let this = this.set_ivars(PageHears::default());
             // SAFETY: forwards the designated initializer unchanged.
             unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), layout] };
+            let (hears, height) = (self.ivars(), self.bounds().size.height);
+            if let (Some(on_height), true) =
+                (hears.on_height.get(), hears.height.replace(height) != height)
+            {
+                on_height();
+            }
         }
 
         /// The list of cards hands a key it has no use for to the text
@@ -1280,7 +1606,7 @@ define_class!(
         /// from the list to whatever holds it.
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, _sender: Option<&AnyObject>) {
-            if let Some(on_key) = self.ivars().get() {
+            if let Some(on_key) = self.ivars().on_key.get() {
                 on_key(Key::Escape);
             }
         }
@@ -1290,7 +1616,7 @@ define_class!(
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &AnyObject) {
             let typed = text.downcast_ref::<NSString>().map(ToString::to_string);
-            match (typed.as_deref(), self.ivars().get()) {
+            match (typed.as_deref(), self.ivars().on_key.get()) {
                 (Some(" "), Some(on_key)) => on_key(Key::Space),
                 // SAFETY: forwards the text unchanged.
                 _ => unsafe { msg_send![super(self), insertText: text] },
@@ -1298,6 +1624,15 @@ define_class!(
         }
     }
 );
+
+/// What a page tells whoever made it.
+#[derive(Default)]
+struct PageHears {
+    on_key: OnceCell<Box<dyn Fn(Key)>>,
+    /// Called when the page is another height than it was.
+    on_height: OnceCell<Box<dyn Fn()>>,
+    height: Cell<f64>,
+}
 
 /// A key that means something on the page as a whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1308,13 +1643,19 @@ enum Key {
 
 impl PageView {
     /// A view that calls `on_key` when one of the page's keys is pressed
-    /// and nothing inside the view took it.
-    fn new(main_thread: MainThreadMarker, on_key: impl Fn(Key) + 'static) -> Retained<Self> {
+    /// and nothing inside the view took it, and `on_height` when it is laid
+    /// out at another height than before.
+    fn new(
+        main_thread: MainThreadMarker,
+        on_key: impl Fn(Key) + 'static,
+        on_height: impl Fn() + 'static,
+    ) -> Retained<Self> {
         let view: Retained<Self> =
             // SAFETY: `initWithFrame:` is NSView's designated initializer.
             unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
-        // Cannot fail: the cell was created empty by the initializer.
-        let _ = view.ivars().set(Box::new(on_key));
+        // Cannot fail: the cells were created empty by the initializer.
+        let _ = view.ivars().on_key.set(Box::new(on_key));
+        let _ = view.ivars().on_height.set(Box::new(on_height));
         view
     }
 }
@@ -1478,6 +1819,9 @@ fn whole_summary(title: &NSTextField, summary: &NSTextField) -> Retained<NSView>
 pub(super) struct Pill {
     pub(super) button: Retained<NSButton>,
     prominent: bool,
+    /// How tall it is, and the size of its title and its glyph.
+    height: f64,
+    font: f64,
     /// For the prominent pill: as wide as the title needs. Replaced when
     /// the title changes.
     width: RefCell<Option<Retained<NSLayoutConstraint>>>,
@@ -1494,22 +1838,40 @@ impl Pill {
         prominent: bool,
         main_thread: MainThreadMarker,
     ) -> Self {
+        let (height, font) = (theme::PILL_HEIGHT, theme::FONT_BODY);
+        Self::sized(title, symbol, prominent, height, font, main_thread)
+    }
+
+    /// The same, as large as a finger needs it: the buttons of a page.
+    fn large(title: &str, symbol: &str, prominent: bool, main_thread: MainThreadMarker) -> Self {
+        let (height, font) = (theme::TOUCH_TARGET, theme::FONT_HEADLINE);
+        Self::sized(title, symbol, prominent, height, font, main_thread)
+    }
+
+    fn sized(
+        title: &str,
+        symbol: &str,
+        prominent: bool,
+        height: f64,
+        font: f64,
+        main_thread: MainThreadMarker,
+    ) -> Self {
         // SAFETY: the target and action are set once the page exists.
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, main_thread)
         };
         button.setBordered(false);
-        button.setFont(Some(&label::font(theme::FONT_BODY, Weight::Semibold)));
+        button.setFont(Some(&label::font(font, Weight::Semibold)));
         button.setWantsLayer(true);
         if let Some(layer) = button.layer() {
-            layer.setCornerRadius(theme::PILL_HEIGHT / 2.0);
+            layer.setCornerRadius(height / 2.0);
         }
         button.setTranslatesAutoresizingMaskIntoConstraints(false);
-        button.heightAnchor().constraintEqualToConstant(theme::PILL_HEIGHT).setActive(true);
+        button.heightAnchor().constraintEqualToConstant(height).setActive(true);
         if !prominent {
-            button.widthAnchor().constraintEqualToConstant(theme::PILL_HEIGHT).setActive(true);
+            button.widthAnchor().constraintEqualToConstant(height).setActive(true);
         }
-        let pill = Self { button, prominent, width: RefCell::new(None) };
+        let pill = Self { button, prominent, height, font, width: RefCell::new(None) };
         pill.set_symbol(symbol);
         pill.set_lit(prominent);
         pill.set_title(title);
@@ -1517,7 +1879,7 @@ impl Pill {
     }
 
     fn set_symbol(&self, symbol: &str) {
-        let image = artwork::symbol(symbol, theme::FONT_BODY, Weight::Semibold);
+        let image = artwork::symbol(symbol, self.font, Weight::Semibold);
         if let (Some(image), true) = (&image, self.prominent) {
             // A button sets its title right against its image. Widening
             // the rectangle the image is laid out by puts a gap between.
@@ -1562,7 +1924,8 @@ impl Pill {
         }
         // A button without a bezel is exactly as wide as its content. The
         // capsule needs room at both ends.
-        let width = self.button.intrinsicContentSize().width + 2.0 * theme::PILL_PADDING;
+        let padding = theme::PILL_PADDING * self.height / theme::PILL_HEIGHT;
+        let width = self.button.intrinsicContentSize().width + 2.0 * padding;
         let width = self.button.widthAnchor().constraintEqualToConstant(width.ceil());
         width.setActive(true);
         *self.width.borrow_mut() = Some(width);
@@ -1573,11 +1936,12 @@ impl Pill {
 /// sets them apart from the plain text around them, and give way a little
 /// under the pointer, which turns into a hand over them.
 fn text_link(
+    size: f64,
     on_click: impl Fn() + 'static,
     main_thread: MainThreadMarker,
 ) -> (Retained<HoverView>, Retained<NSTextField>) {
     let primary = NSColor::labelColor();
-    let label = label::line(theme::FONT_HEADLINE, Weight::Semibold, &primary, main_thread);
+    let label = label::line(size, Weight::Semibold, &primary, main_thread);
     let lit = label.clone();
     let link = HoverView::link(
         main_thread,
@@ -1642,18 +2006,6 @@ fn ratings(item: &Item) -> Vec<String> {
     ratings.extend(item.rating.map(|rating| by(critics, "RT", rating)));
     ratings.extend(item.audience_rating.map(|rating| by(viewers, viewers_of, rating)));
     ratings
-}
-
-/// Who directed `item` and who made it: "Directed by A, B · Studio".
-fn credits(item: &Item) -> String {
-    let directors: Vec<&str> =
-        item.directors.iter().take(DIRECTORS_SHOWN).map(|director| director.tag.as_str()).collect();
-    let mut credits: Vec<String> = Vec::new();
-    if !directors.is_empty() {
-        credits.push(format!("Directed by {}", directors.join(", ")));
-    }
-    credits.extend(item.studio.clone());
-    credits.join(" · ")
 }
 
 /// A few words in an outlined box.

@@ -159,8 +159,40 @@ pub const BADGE_HEIGHT: f64 = 20.0;
 pub const BADGE_PADDING: f64 = SPACE_S;
 pub const BADGE_BACKGROUND_OPACITY: f64 = 0.7;
 
-/// The top of a detail page: artwork on the left, text beside it.
-pub const HERO_HEIGHT: f64 = 380.0;
+/// The top of a detail page: the item's backdrop from edge to edge of the
+/// window, with what the item is on its lower part. How tall the header
+/// is taken to be until it has been laid out.
+pub const HERO_HEIGHT: f64 = 560.0;
+/// How tall the backdrop is for each point of the page's width,
+pub const HERO_HEIGHT_PER_WIDTH: f64 = 0.43;
+/// and the most of the window's height it takes, so that what is under
+/// it stays in view.
+pub const HERO_MOST: f64 = 0.6;
+/// How much of the backdrop is left at each point of the way from its top
+/// to its bottom, where it has given way to the page.
+pub const HERO_FADE_STOPS: [(f64, f64); 5] =
+    [(0.0, 1.0), (0.35, 1.0), (0.6, 0.72), (0.8, 0.32), (1.0, 0.0)];
+/// How strongly the artwork's own colour is laid over the backdrop where
+/// text is set on it.
+pub const HERO_SHADE_OPACITY: f64 = 0.75;
+/// How much of that strength it has where the text begins, how far above
+/// that it starts, as a share of the backdrop's height,
+pub const HERO_SHADE_AT_TEXT: f64 = 0.75;
+pub const HERO_SHADE_LEAD: f64 = 0.15;
+/// and how far across the clear part of the backdrop it runs from the
+/// near side before it is gone.
+pub const HERO_SHADE_REACH: f64 = 0.6;
+/// The title of a film or show as its logo: no larger than this, and
+/// within that as wide as this share of the page, but no narrower than
+/// the least.
+pub const HERO_LOGO_REQUEST: (u32, u32) = (480, 170);
+pub const HERO_LOGO_SHARE: f64 = 0.34;
+pub const HERO_LOGO_LEAST: f64 = 220.0;
+pub const HERO_LOGO_SHADOW_RADIUS: f64 = 12.0;
+/// From this width of page on, what there is to choose and to know about
+/// an item is beside what it is about, this wide, and not under it.
+pub const HERO_ABREAST_FROM: f64 = 960.0;
+pub const HERO_SIDE_WIDTH: f64 = 320.0;
 /// The strip under a show's header that holds its season picker.
 pub const SEASON_BAR_HEIGHT: f64 = 52.0;
 /// The buttons of a detail page, drawn as capsules.
@@ -171,7 +203,8 @@ pub const PILL_PADDING: f64 = SPACE_L;
 pub const PILL_GLYPH_GAP: f64 = 6.0;
 /// How strongly white is laid under a button that is not the main one.
 pub const PILL_WASH_OPACITY: f64 = 0.16;
-pub const HERO_POSTER_WIDTH: f64 = 232.0;
+/// The poster of what is playing, as the system shows it beside the
+/// media keys.
 pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
 /// An episode's page leads with a frame of the episode: this much of the
 /// page's width, within these bounds.
@@ -185,6 +218,7 @@ pub const HERO_SHOW_POSTER_REQUEST: (u32, u32) = (44, 66);
 pub const HERO_TEXT_WIDTH: f64 = 640.0;
 pub const HERO_TITLE_LINES: isize = 3;
 pub const HERO_FACTS_LINES: isize = 2;
+pub const HERO_TAGLINE_LINES: isize = 2;
 pub const HERO_SUMMARY_LINES: isize = 4;
 /// The popover that holds a summary too long for the page.
 pub const SUMMARY_POPOVER_WIDTH: f64 = 420.0;
@@ -202,13 +236,9 @@ pub const CHIP_PADDING: f64 = 10.0;
 pub const CHIP_WASH_OPACITY: f64 = 0.10;
 pub const CHIP_HOVER_OPACITY: f64 = 0.22;
 
-/// The backdrop behind a detail page, in pixels. One size for every window.
+/// The backdrop at the top of a detail page, in pixels. One size for
+/// every window.
 pub const BACKDROP_REQUEST: (u32, u32) = (1920, 1080);
-/// How much of the page's height the backdrop covers, from the top.
-pub const BACKDROP_HEIGHT_FRACTION: f64 = 0.8;
-pub const BACKDROP_OPACITY: f32 = 0.5;
-/// How dark the left of the backdrop is made, where the text is.
-pub const BACKDROP_SCRIM_OPACITY: f64 = 0.5;
 /// How far the page colours from the artwork are darkened, so that white
 /// text on them stays readable.
 pub const TINT_BRIGHTNESS: f64 = 0.45;
@@ -298,9 +328,10 @@ pub fn artwork_outline_opacity() -> f64 {
     if increases_contrast() { ARTWORK_HOVER_OUTLINE_OPACITY } else { ARTWORK_OUTLINE_OPACITY }
 }
 
-/// How strongly a detail page's backdrop shows behind its text.
-pub fn backdrop_opacity() -> f32 {
-    if increases_contrast() { BACKDROP_OPACITY / 2.0 } else { BACKDROP_OPACITY }
+/// How strongly the artwork's colour is laid over a backdrop where text
+/// is set on it: all of it for a viewer who asked for more contrast.
+pub fn hero_shade_opacity() -> f64 {
+    if increases_contrast() { 1.0 } else { HERO_SHADE_OPACITY }
 }
 
 /// Behind every screen that has no colours of its own. The window's own

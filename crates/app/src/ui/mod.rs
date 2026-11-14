@@ -2,6 +2,7 @@
 
 mod artwork;
 mod backdrop;
+mod banner;
 mod callback;
 mod confirm;
 mod detail;

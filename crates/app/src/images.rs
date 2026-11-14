@@ -44,15 +44,35 @@ impl Artwork {
 
     /// The picture as AppKit takes it, at one point a pixel.
     pub fn image(&self) -> Retained<NSImage> {
+        NSImage::initWithCGImage_size(NSImage::alloc(), self.pixels(), NSSize::ZERO)
+    }
+
+    /// How many pixels wide and tall the picture is.
+    pub fn size(&self) -> NSSize {
+        let pixels = Some(self.pixels());
+        NSSize::new(CGImage::width(pixels) as f64, CGImage::height(pixels) as f64)
+    }
+
+    fn pixels(&self) -> &CGImage {
         // SAFETY: an `Artwork` is only ever made from a `CGImage`, in
-        // `Images::load`, and Core Foundation objects are Objective-C ones.
-        let image: &CGImage = unsafe { &*Retained::as_ptr(&self.0).cast() };
-        NSImage::initWithCGImage_size(NSImage::alloc(), image, NSSize::ZERO)
+        // `Images::fetch`, and Core Foundation objects are Objective-C ones.
+        unsafe { &*Retained::as_ptr(&self.0).cast() }
     }
 }
 
-/// Loads posters and backdrops through three layers: decoded pictures in
-/// memory, JPEG files on disk, and the server.
+/// How a picture is asked of the server, which is also part of its name
+/// in both caches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A JPEG scaled to cover its box.
+    Photo,
+    /// A PNG scaled to fit its box, clear around its subject.
+    Cutout,
+}
+
+/// Loads posters, backdrops and title logos through three layers: decoded
+/// pictures in memory, files on disk as the server sent them, and the
+/// server.
 pub struct Images {
     main_thread: MainThreadMarker,
     background: Rc<Background>,
@@ -83,9 +103,18 @@ impl Images {
     /// The artwork at server path `path` for a box of `width` by `height`
     /// pixels, if it is in memory. Never touches the disk or the network.
     pub fn cached(&self, path: &str, width: u32, height: u32) -> Option<Artwork> {
-        let key = NSString::from_str(&name(path, width, height));
+        self.in_memory(&name(path, width, height, Kind::Photo))
+    }
+
+    /// The same for artwork that is clear around its subject, such as a
+    /// title logo, scaled to fit inside the box.
+    pub fn cached_cutout(&self, path: &str, width: u32, height: u32) -> Option<Artwork> {
+        self.in_memory(&name(path, width, height, Kind::Cutout))
+    }
+
+    fn in_memory(&self, name: &str) -> Option<Artwork> {
         // SAFETY: the cache only holds images under string keys.
-        unsafe { self.memory.objectForKey(&key) }.map(Artwork)
+        unsafe { self.memory.objectForKey(&NSString::from_str(name)) }.map(Artwork)
     }
 
     /// Calls `then` on the main thread with the artwork at server path
@@ -101,7 +130,38 @@ impl Images {
         height: u32,
         then: impl FnOnce(&Artwork) + 'static,
     ) {
-        let name = name(path, width, height);
+        self.fetch(Kind::Photo, path, width, height, move |artwork| {
+            if let Some(artwork) = artwork {
+                then(artwork);
+            }
+        });
+    }
+
+    /// Calls `then` on the main thread with artwork that is clear around
+    /// its subject, such as a title logo, scaled to fit inside `width` by
+    /// `height` pixels.
+    ///
+    /// Words stand in for a logo that cannot be had, so `then` hears of
+    /// that too, as `None`, once the failure is logged.
+    pub fn load_cutout(
+        self: &Rc<Self>,
+        path: &str,
+        width: u32,
+        height: u32,
+        then: impl FnOnce(Option<&Artwork>) + 'static,
+    ) {
+        self.fetch(Kind::Cutout, path, width, height, then);
+    }
+
+    fn fetch(
+        self: &Rc<Self>,
+        kind: Kind,
+        path: &str,
+        width: u32,
+        height: u32,
+        then: impl FnOnce(Option<&Artwork>) + 'static,
+    ) {
+        let name = name(path, width, height, kind);
         let key = NSString::from_str(&name);
         let (server, disk, path) = (self.server.clone(), self.disk.clone(), path.to_owned());
         let fetch = async move {
@@ -114,13 +174,16 @@ impl Images {
             // Not kept, or kept as something that is no picture: a file
             // damaged on disk would otherwise stand in for this picture for
             // good. The download takes its place.
-            let (image, jpeg) =
-                decoded(server.image(&path, width, height).await?, longest_side).await;
+            let sent = match kind {
+                Kind::Photo => server.image(&path, width, height).await?,
+                Kind::Cutout => server.cutout(&path, width, height).await?,
+            };
+            let (image, sent) = decoded(sent, longest_side).await;
             let image = image?;
             // Kept only now that it has decoded, and without holding the
             // picture up for the disk. A failed write only costs a download
             // next time.
-            tokio::spawn(async move { disk.write(&name, jpeg).await });
+            tokio::spawn(async move { disk.write(&name, sent).await });
             Ok::<_, Error>(image)
         };
 
@@ -136,31 +199,39 @@ impl Images {
                     let object: &AnyObject = (*image).as_ref();
                     let artwork = Artwork(object.retain());
                     let cost = CGImage::bytes_per_row(Some(&image)) * CGImage::height(Some(&image));
-                    // SAFETY: as in `cached`.
+                    // SAFETY: as in `in_memory`.
                     unsafe { images.memory.setObject_forKey_cost(artwork.contents(), &key, cost) };
-                    then(&artwork);
+                    then(Some(&artwork));
                 }
-                Err(error) => eprintln!("plex-rust: artwork not loaded: {}", with_causes(&error)),
+                Err(error) => {
+                    eprintln!("plex-rust: artwork not loaded: {}", with_causes(&error));
+                    then(None);
+                }
             }
         });
     }
 }
 
-/// The name of a picture in both caches.
-fn name(path: &str, width: u32, height: u32) -> String {
-    format!("{path} {width}x{height}")
+/// The name of a picture in both caches. A photo's is what it was before
+/// there were cutouts, so that what was kept then is still found.
+fn name(path: &str, width: u32, height: u32, kind: Kind) -> String {
+    match kind {
+        Kind::Photo => format!("{path} {width}x{height}"),
+        Kind::Cutout => format!("{path} {width}x{height} cutout"),
+    }
 }
 
-/// Decodes `jpeg` and hands it back with the result. A poster takes a few
+/// Decodes `file` and hands it back with the result. A poster takes a few
 /// milliseconds of processor time, which must not hold up the threads that
 /// serve the network.
-async fn decoded(jpeg: Vec<u8>, longest_side: u32) -> (Result<CFRetained<CGImage>>, Vec<u8>) {
-    let decode = tokio::task::spawn_blocking(move || (decode(&jpeg, longest_side), jpeg));
+async fn decoded(file: Vec<u8>, longest_side: u32) -> (Result<CFRetained<CGImage>>, Vec<u8>) {
+    let decode = tokio::task::spawn_blocking(move || (decode(&file, longest_side), file));
     decode.await.unwrap_or_else(|_| (Err(Error::NotAnImage), Vec::new()))
 }
 
-/// Turns a JPEG into pixels, no larger than `longest_side` on its longer
-/// side. The pixels are produced here and now, not when first drawn.
+/// Turns a JPEG or a PNG into pixels, no larger than `longest_side` on
+/// its longer side and clear where the file was. The pixels are produced
+/// here and now, not when first drawn.
 fn decode(jpeg: &[u8], longest_side: u32) -> Result<CFRetained<CGImage>> {
     let data = CFData::from_bytes(jpeg);
     let size = CFNumber::new_i64(i64::from(longest_side));
@@ -187,6 +258,8 @@ fn decode(jpeg: &[u8], longest_side: u32) -> Result<CFRetained<CGImage>> {
 
 #[cfg(test)]
 mod tests {
+    use objc2_core_graphics::CGImageAlphaInfo;
+
     use super::*;
 
     /// A kept file is replaced only if it fails to decode, so what is not
@@ -197,5 +270,27 @@ mod tests {
         assert!(matches!(decode(b"", 300), Err(Error::NotAnImage)));
         // The start of a JPEG and nothing after it.
         assert!(matches!(decode(&[0xff, 0xd8, 0xff, 0xe0], 300), Err(Error::NotAnImage)));
+    }
+
+    /// A logo is drawn on a backdrop, which has to show around its letters.
+    #[test]
+    fn a_picture_with_clear_parts_keeps_them() {
+        // A PNG two pixels wide: a clear one and a white one.
+        const PNG: [u8; 73] = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0xf4, 0x22, 0x7f, 0x8a, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0xf8, 0xff, 0xff, 0x3f, 0x03, 0x10, 0xff, 0x07, 0x00, 0x1e, 0xea, 0x06,
+            0xfa, 0x39, 0x2b, 0x65, 0x6a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+            0x42, 0x60, 0x82,
+        ];
+        let image = decode(&PNG, 2).unwrap();
+        assert_eq!(CGImage::width(Some(&image)), 2);
+        let opaque = [
+            CGImageAlphaInfo::None,
+            CGImageAlphaInfo::NoneSkipFirst,
+            CGImageAlphaInfo::NoneSkipLast,
+        ];
+        assert!(!opaque.contains(&CGImage::alpha_info(Some(&image))));
     }
 }
