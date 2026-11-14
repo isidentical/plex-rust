@@ -3,12 +3,15 @@
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSAccessibility, NSButton, NSColor, NSControlSize, NSImageView, NSLayoutAttribute,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSAccessibility, NSAccessibilityAnnouncementKey,
+    NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityPostNotificationWithUserInfo,
+    NSAccessibilityPriorityKey, NSAccessibilityPriorityLevel, NSButton, NSColor, NSControlSize,
+    NSImageView, NSLayoutAttribute, NSProgressIndicator, NSProgressIndicatorStyle, NSStackView,
+    NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
 };
-use objc2_foundation::{NSArray, NSString, ns_string};
+use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, ns_string};
 
 use super::artwork;
 use super::callback::Callback;
@@ -35,6 +38,8 @@ pub enum Mark<'a> {
 
 pub struct Notice {
     stack: Retained<NSStackView>,
+    /// The title and the sentence under it, as VoiceOver says them.
+    spoken: Retained<NSString>,
     button: Option<Retained<NSButton>>,
     /// Kept because a button does not retain its target.
     _pressed: Option<Retained<Callback>>,
@@ -97,13 +102,35 @@ impl Notice {
             .widthAnchor()
             .constraintLessThanOrEqualToConstant(theme::NOTICE_WIDTH)
             .setActive(true);
-        Self { stack, button, _pressed: pressed }
+        let spoken = NSString::from_str(&format!("{title}. {detail}"));
+        Self { stack, spoken, button, _pressed: pressed }
     }
 
     /// The message, as large as its words. It goes in the middle of
     /// whatever it stands in for.
     pub fn view(&self) -> &NSView {
         &self.stack
+    }
+
+    /// Has VoiceOver say the notice. It took the place of a whole screen
+    /// without the viewer asking, and VoiceOver's cursor may have been on
+    /// something that is no longer there.
+    pub fn announce(&self, window: &NSWindow) {
+        let priority = NSNumber::new_isize(NSAccessibilityPriorityLevel::High.0);
+        // SAFETY: the keys and the notification are constants that AppKit
+        // provides. A window is an accessibility element, and the values
+        // are of the types the two keys are documented to take.
+        unsafe {
+            let info = NSDictionary::<NSString, AnyObject>::from_slices(
+                &[NSAccessibilityAnnouncementKey, NSAccessibilityPriorityKey],
+                &[&**self.spoken, &**priority],
+            );
+            NSAccessibilityPostNotificationWithUserInfo(
+                window,
+                NSAccessibilityAnnouncementRequestedNotification,
+                Some(&info),
+            );
+        }
     }
 
     /// Adds the error itself in small print at the bottom, for whoever

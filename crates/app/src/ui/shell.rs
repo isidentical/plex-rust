@@ -1490,6 +1490,7 @@ impl Shell {
 
     fn show_notice(&self, notice: Notice) {
         layout::centre(&self.content, notice.view());
+        notice.announce(&self.window);
         *self.notice.borrow_mut() = Some(notice);
     }
 
