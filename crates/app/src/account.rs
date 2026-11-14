@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSProcessInfo, NSString, NSURL, NSUUID};
+use objc2_foundation::{NSString, NSURL, NSUUID};
 use plex::{Client, Identity, MediaServer, Token, auth};
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +53,10 @@ fn identity() -> Result<Identity> {
         }
         Err(error) => return Err(file_error(error)),
     };
-    let device_name = NSProcessInfo::processInfo().hostName().to_string();
+    // The name the kernel holds, such as `Annas-MacBook-Pro.local`. Not
+    // `NSProcessInfo::hostName`, which asks the network what this Mac is
+    // called and held up every launch for 15 to 25 ms while it waited.
+    let device_name = rustix::system::uname().nodename().to_string_lossy().into_owned();
     Ok(Identity { client_identifier, device_name })
 }
 

@@ -863,6 +863,7 @@ dependencies = [
  "objc2-quartz-core",
  "player",
  "plex",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",
