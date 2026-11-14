@@ -130,6 +130,8 @@ pub struct Views {
     /// What the card shows, to tell a new look at the same thing from
     /// another thing taking the card over.
     shown: RefCell<Option<Card>>,
+    /// Hears that the pointer or the keyboard has come to the card.
+    on_rest: OnceCell<Box<dyn Fn()>>,
 }
 
 define_class!(
@@ -160,7 +162,12 @@ define_class!(
             let views = Rc::new(Views::new(self.mtm()));
             // The whole card reacts to the pointer, captions included.
             let hovered = Rc::clone(&views);
-            let card = HoverView::new(self.mtm(), move |over| hovered.art.set_hovered(over));
+            let card = HoverView::new(self.mtm(), move |over| {
+                hovered.art.set_hovered(over);
+                if over {
+                    hovered.rested();
+                }
+            });
             views.place_in(&card);
             // VoiceOver reads a card as one button, not as a picture and
             // two loose pieces of text.
@@ -179,6 +186,9 @@ define_class!(
             let () = unsafe { msg_send![super(self), setSelected: selected] };
             if let Some(views) = self.ivars().get() {
                 views.art.set_focused(selected);
+                if selected {
+                    views.rested();
+                }
             }
         }
 
@@ -252,6 +262,19 @@ impl PosterItem {
     pub fn set_on_press(&self, on_press: impl Fn() + 'static) {
         if let Some(card) = self.view().downcast_ref::<HoverView>() {
             card.set_on_press(on_press);
+        }
+    }
+
+    /// Says who hears that the pointer or the keyboard has come to the
+    /// card, which is where a click or Return is most likely to follow.
+    /// Like `on_press`, it is told once and has to find out what the
+    /// card shows when it is called.
+    pub fn set_on_rest(&self, on_rest: impl Fn() + 'static) {
+        // Asking for the view makes AppKit call `loadView` if it has not.
+        let _ = self.view();
+        if let Some(views) = self.ivars().get() {
+            // Cannot matter if it fails: the first answer stands.
+            let _ = views.on_rest.set(Box::new(on_rest));
         }
     }
 
@@ -400,12 +423,19 @@ impl Views {
             ),
             subtitle: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
             shown: RefCell::new(None),
+            on_rest: OnceCell::new(),
         };
         // A caption too long for its card is cut short. The pointer
         // resting on it then brings up the whole of it.
         views.title.setAllowsExpansionToolTips(true);
         views.subtitle.setAllowsExpansionToolTips(true);
         views
+    }
+
+    fn rested(&self) {
+        if let Some(on_rest) = self.on_rest.get() {
+            on_rest();
+        }
     }
 
     /// Artwork on top, filling the card down to the captions.

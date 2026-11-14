@@ -65,6 +65,12 @@ const PAGE_SIZE: u32 = 100;
 /// How many items each row related to a film or show starts with.
 const RELATED_LENGTH: u32 = 20;
 
+/// How long the pointer or the keyboard stays on a card before what its
+/// page shows is asked for ahead of the click. Shorter than the time a
+/// hand takes to stop and press, longer than it takes to pass over a card
+/// on the way to another.
+const REST_BEFORE_ASKING_AHEAD: Duration = Duration::from_millis(120);
+
 /// How many results a search shows of each kind.
 const SEARCH_LIMIT: u32 = 30;
 
@@ -124,6 +130,8 @@ struct Shell {
     /// What the place on screen has asked the server and may not have
     /// heard back about. None of it is wanted once the viewer moves on.
     asked: RefCell<Vec<Task>>,
+    /// The asking ahead for the card the pointer or keyboard is on.
+    asked_ahead: RefCell<Option<Task>>,
     /// A message shown in place of the current entry, such as an error.
     notice: RefCell<Option<Notice>>,
     /// Says, over the current entry, that it shows what was saved and not
@@ -265,6 +273,16 @@ enum Unanswered {
     ShowsTheError,
     /// The screen does without. The error is logged.
     GoesWithout,
+}
+
+/// Who is asked for an item that something waits for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// The server, for what is true now.
+    Server,
+    /// What was saved from the server's last answer, which is there at
+    /// once, and the server only if nothing was.
+    SavedFirst,
 }
 
 /// What a snapshot shows.
@@ -518,6 +536,7 @@ impl Shell {
                 position: Cell::new(0),
                 moves: Cell::new(0),
                 asked: RefCell::new(Vec::new()),
+                asked_ahead: RefCell::new(None),
                 notice: RefCell::new(None),
                 stale,
                 split,
@@ -766,7 +785,8 @@ impl Shell {
                 None => self.go(Route::Home),
             },
             Some(Subject::Item(key)) => {
-                self.fetch(RatingKey::new(key.as_str()), |shell, item| shell.open(item));
+                let key = RatingKey::new(key.as_str());
+                self.fetch(key, Asked::Server, |shell, item| shell.open(item));
             }
             Some(Subject::Play(key, keys)) => {
                 let (key, keys) = (RatingKey::new(key.as_str()), keys.clone());
@@ -776,7 +796,7 @@ impl Shell {
                         self.play_kept(&download, Purpose::Check, Playback::default());
                         self.press_later(keys, SNAPSHOT_KEYS_AFTER);
                     }
-                    None => self.fetch(key, move |shell, item| {
+                    None => self.fetch(key, Asked::Server, move |shell, item| {
                         shell.open_player(item, Purpose::Check);
                         shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
                     }),
@@ -1613,6 +1633,7 @@ impl Shell {
                     shell.open_show_of(&episode, opening);
                 }
                 Action::OpenList { title, path } => shell.go(Route::List { title, path }),
+                Action::Rest(item) => shell.ask_ahead(&item),
                 // Only a detail page lists people, and it turns this into
                 // the list of what the person is in before it gets here.
                 Action::OpenPerson(_) => {}
@@ -1642,8 +1663,74 @@ impl Shell {
         }
     }
 
+    /// Asks the server now for what the page of `item` shows, because the
+    /// pointer or the keyboard is on its card. The answers are saved, so
+    /// the page opens with them and not with a wait for each. Only once
+    /// the card has been rested on for a moment, and no further once
+    /// another card is.
+    fn ask_ahead(self: &Rc<Self>, item: &Item) {
+        if let Some(passed_over) = self.asked_ahead.borrow_mut().take() {
+            passed_over.cancel();
+        }
+        // A server that is not answering is not asked on the off chance.
+        let Some(session) = self.session().filter(|_| !self.stale.is_shown()) else {
+            return;
+        };
+        let (server, images, item) = (session.server.clone(), session.images, item.clone());
+        // The backdrop of the page, as `Detail::show` picks it. It is the
+        // largest thing the page waits for.
+        let backdrop = match item.kind {
+            Kind::Episode => item.grandparent_art.clone().or(item.art.clone()),
+            Kind::Clip | Kind::Season => None,
+            _ => item.art.clone(),
+        };
+        let ask = async move {
+            tokio::time::sleep(REST_BEFORE_ASKING_AHEAD).await;
+            // The same questions as `open` and `item_page` ask. An answer
+            // is wanted for being saved, and a failure is the page's to
+            // report when it asks again itself, so neither is looked at.
+            let key = &item.rating_key;
+            match (item.kind, &item.parent_rating_key) {
+                (Kind::Clip, _) => {}
+                (Kind::Season, Some(show)) => {
+                    let _ = tokio::join!(server.item(show), server.episodes(show));
+                }
+                (Kind::Show, _) => {
+                    let related = server.related(key, RELATED_LENGTH);
+                    let _ = tokio::join!(server.item(key), server.episodes(key), related);
+                }
+                (Kind::Episode, Some(season)) => {
+                    let _ = tokio::join!(server.item(key), server.children(season));
+                }
+                (Kind::Movie, _) => {
+                    let _ = tokio::join!(server.item(key), server.related(key, RELATED_LENGTH));
+                }
+                _ => {
+                    let _ = server.item(key).await;
+                }
+            }
+        };
+        let asking = self.background.run(self.main_thread, ask, |()| {});
+        *self.asked_ahead.borrow_mut() = Some(asking);
+        let Some(backdrop) = backdrop else {
+            return;
+        };
+        // Not given up with the rest: a picture half fetched is fetched
+        // again from the start, and once here it is kept.
+        let rest = async { tokio::time::sleep(REST_BEFORE_ASKING_AHEAD).await };
+        let (shell, moves) = (Rc::clone(self), self.moves.get());
+        self.background.run(self.main_thread, rest, move |()| {
+            let (width, height) = theme::BACKDROP_REQUEST;
+            if shell.moves.get() == moves && images.cached(&backdrop, width, height).is_none() {
+                images.load(&backdrop, width, height, |_| {});
+            }
+        });
+    }
+
     fn open_show(self: &Rc<Self>, show: RatingKey, opening: Opening) {
-        self.fetch(show, move |shell, show| {
+        // What was saved of the show opens its page at once. The page
+        // then asks the server itself.
+        self.fetch(show, Asked::SavedFirst, move |shell, show| {
             shell.go(Route::Item(Box::new(show.clone()), opening));
         });
     }
@@ -1759,13 +1846,26 @@ impl Shell {
         }
     }
 
-    /// Fetches the item with `key` and hands it to `then`.
-    fn fetch(self: &Rc<Self>, key: RatingKey, then: impl FnOnce(&Rc<Self>, &Item) + 'static) {
+    /// Fetches the item with `key` from where `asked` says and hands it
+    /// to `then`.
+    fn fetch(
+        self: &Rc<Self>,
+        key: RatingKey,
+        asked: Asked,
+        then: impl FnOnce(&Rc<Self>, &Item) + 'static,
+    ) {
         let Some(session) = self.session() else {
             return;
         };
         let server = session.server.clone();
-        let load = async move { server.item(&key).await };
+        let load = async move {
+            if asked == Asked::SavedFirst
+                && let Ok(saved) = server.remembered().item(&key).await
+            {
+                return Ok(saved);
+            }
+            server.item(&key).await
+        };
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |item| match item {
             Ok(item) => then(&shell, &item),

@@ -115,6 +115,9 @@ pub enum Action {
         title: String,
         path: String,
     },
+    /// Nothing yet: the pointer or the keyboard has come to this item,
+    /// which may be opened next.
+    Rest(Item),
 }
 
 /// How to play an item, where that is not how the server remembers it.
@@ -952,6 +955,19 @@ impl Posters {
             };
             if let Some(index_path) = posters.ivars().collection.indexPathForItem(&cell) {
                 posters.open(&index_path, false);
+            }
+        });
+        let (posters, rested) = (Weak::new(self), Weak::new(cell));
+        card.set_on_rest(move || {
+            let (Some(posters), Some(cell)) = (posters.load(), rested.load()) else {
+                return;
+            };
+            let index_path = posters.ivars().collection.indexPathForItem(&cell);
+            let (shelf, card) = index_path.as_deref().map(position).unwrap_or_default();
+            // Cloned so the handler is free to change what is shown.
+            let card = posters.ivars().content.borrow().card(shelf, card).cloned();
+            if let (Some(_), Some(Card::Item(item))) = (index_path, card) {
+                posters.act(Action::Rest(item));
             }
         });
     }
