@@ -112,6 +112,9 @@ struct Shell {
     settings: Cell<Settings>,
     /// How each library was last listed, kept across launches.
     listings: RefCell<Listings>,
+    /// Set for a snapshot of a screen that is still waiting: screens are
+    /// then built and never loaded.
+    holds_loads: Cell<bool>,
 }
 
 /// What exists only while a server is known.
@@ -241,6 +244,10 @@ pub struct Tweaks {
     pub listing: Listing,
     /// The screen having failed to load in this way.
     pub fault: Option<Failure>,
+    /// The screen as it is before the server or the cache has answered.
+    pub unanswered: bool,
+    /// The first launch after signing in, before any server is known.
+    pub looking: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -393,6 +400,7 @@ impl Shell {
                 opening_player: Cell::new(false),
                 settings: Cell::new(settings),
                 listings: RefCell::new(listings),
+                holds_loads: Cell::new(false),
             }
         })
     }
@@ -430,13 +438,7 @@ impl Shell {
                 }
             });
         } else {
-            self.show_notice(Notice::new(
-                self.main_thread,
-                Mark::Spinner,
-                "Looking for your server",
-                "Asking plex.tv where it is.",
-                None,
-            ));
+            self.show_looking();
         }
 
         // Then the truth. The saved server is asked directly, which is one
@@ -485,6 +487,18 @@ impl Shell {
         });
     }
 
+    /// What the first launch shows until plex.tv has said where the
+    /// server is. Later launches start from the server they remember.
+    fn show_looking(&self) {
+        self.show_notice(Notice::new(
+            self.main_thread,
+            Mark::Spinner,
+            "Looking for your server",
+            "Asking plex.tv where it is.",
+            None,
+        ));
+    }
+
     /// Starts over from the stored account, after a failure to connect.
     fn restart(self: &Rc<Self>) {
         match account::signed_in() {
@@ -515,6 +529,7 @@ impl Shell {
         self.sidebar.show(destinations);
 
         let tweaks = snapshot.map(|snapshot| snapshot.tweaks.clone()).unwrap_or_default();
+        self.holds_loads.set(tweaks.unanswered);
         match snapshot.map(|snapshot| &snapshot.subject) {
             Some(Subject::Library(index)) => match sections.get(*index) {
                 Some(section) => self.go(Route::Library(section.clone(), tweaks.listing)),
@@ -751,7 +766,9 @@ impl Shell {
             Route::Item(item, opening) => self.item_page(&session, item, opening),
             Route::Search(query) => self.search_results(&session, query),
         };
-        reload();
+        if !self.holds_loads.get() {
+            reload();
+        }
         Some(Entry { route, screen, reload })
     }
 
@@ -963,7 +980,13 @@ impl Shell {
             "No results",
             "Check the spelling, or try fewer words.",
         );
-        let posters = self.posters(session, None, Vec::new(), nothing, || {});
+        // The two kinds a search most often finds, in the server's order,
+        // so that the wait for the first answer is not a blank pane.
+        let outlines = vec![
+            Outline { title: "Shows", style: Style::Shelf(Shape::Poster), count: 8 },
+            Outline { title: "Movies", style: Style::Shelf(Shape::Poster), count: 8 },
+        ];
+        let posters = self.posters(session, None, outlines, nothing, || {});
         let reload = self.search_loader(session, &posters, query);
         (Screen::Posters(posters), reload)
     }
@@ -1506,6 +1529,9 @@ impl Shell {
             if let Some(failure) = snapshot.tweaks.fault {
                 let small_print = "error sending request for url (https://192.168.0.2:32400/hubs)";
                 shell.show_failure_of(failure, NOT_LOADED, small_print, Self::reload);
+            }
+            if snapshot.tweaks.looking {
+                shell.show_looking();
             }
             let settle = async { tokio::time::sleep(SNAPSHOT_TWEAKS_SETTLE).await };
             let done = Rc::clone(&shell);

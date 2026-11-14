@@ -40,7 +40,8 @@ usage: plex-rust
          tweaks: narrow, hover, link, season, scroll=<points>,
                  across=<points>, unwatched,
                  sort=title|added|released|rating|watched,
-                 fault=unanswered|signed-out|missing|no-server|other
+                 fault=unanswered|signed-out|missing|no-server|other,
+                 unanswered, looking
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
@@ -119,6 +120,8 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
+            None if *tweak == "unanswered" => parsed.unanswered = true,
+            None if *tweak == "looking" => parsed.looking = true,
             Some(("scroll", points)) => {
                 parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
             }
