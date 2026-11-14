@@ -227,6 +227,20 @@ impl PosterItem {
         view.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
 
+    /// Whether the card was told what a press through VoiceOver does.
+    pub fn has_on_press(&self) -> bool {
+        self.view().downcast_ref::<HoverView>().is_some_and(HoverView::has_on_press)
+    }
+
+    /// Says what pressing the card through VoiceOver does. A card is
+    /// reused for many items, so `on_press` has to find out which one it
+    /// shows when it is called.
+    pub fn set_on_press(&self, on_press: impl Fn() + 'static) {
+        if let Some(card) = self.view().downcast_ref::<HoverView>() {
+            card.set_on_press(on_press);
+        }
+    }
+
     /// Whether `point`, in the window's coordinates, is on the play glyph.
     pub fn is_on_play(&self, point: NSPoint) -> bool {
         self.ivars().get().is_some_and(|views| views.art.is_on_play(point))

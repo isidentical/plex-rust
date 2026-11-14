@@ -20,6 +20,10 @@ pub struct Ivars {
     shows_hand: Cell<bool>,
     /// Whether the pointer was over the view when last heard of.
     is_over: Cell<bool>,
+    /// For a view that is no link but stands for a button: what pressing
+    /// it through VoiceOver does. A click on such a view is handled by
+    /// whatever it sits in.
+    on_press: OnceCell<Box<dyn Fn()>>,
 }
 
 define_class!(
@@ -65,6 +69,18 @@ define_class!(
                 // SAFETY: forwards the event unchanged.
                 let () = unsafe { msg_send![super(self), mouseDown: event] };
             }
+        }
+
+        /// VoiceOver presses a view that says it is a button. Without
+        /// this the press is offered and then does nothing.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            let ivars = self.ivars();
+            let on_click = ivars.on_click.get().filter(|_| ivars.is_live.get());
+            let press = on_click.or(ivars.on_press.get());
+            // What the press leads to may replace the page this view is on.
+            let _alive = self.retain();
+            press.inspect(|press| press()).is_some()
         }
 
         #[unsafe(method(mouseUp:))]
@@ -141,6 +157,18 @@ impl HoverView {
         let _ = view.ivars().on_click.set(Box::new(on_click));
         view.ivars().is_live.set(true);
         view
+    }
+
+    /// Whether [`set_on_press`](Self::set_on_press) was called.
+    pub fn has_on_press(&self) -> bool {
+        self.ivars().on_press.get().is_some()
+    }
+
+    /// Says what pressing the view through VoiceOver does, once: a view
+    /// that already knows keeps what it was told first.
+    pub fn set_on_press(&self, on_press: impl Fn() + 'static) {
+        // Cannot matter if it fails: the first answer stands.
+        let _ = self.ivars().on_press.set(Box::new(on_press));
     }
 
     /// Turns a link on or off. Off, it is a plain view: no hand, no click.

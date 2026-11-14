@@ -276,6 +276,7 @@ define_class!(
             };
             let cell = collection
                 .makeItemWithIdentifier_forIndexPath(&NSString::from_str(identifier), index_path);
+            self.make_pressable(&cell);
             self.fill(&cell, index_path);
             cell
         }
@@ -679,6 +680,25 @@ impl Posters {
             Some(Card::Person(person)) => self.act(Action::OpenPerson(person)),
             None => {}
         }
+    }
+
+    /// Lets VoiceOver press `cell` as a click would. The handler is made
+    /// once for each cell the collection makes. A cell that is reused
+    /// while scrolling already has it, and only that is checked.
+    fn make_pressable(&self, cell: &NSCollectionViewItem) {
+        let Some(card) = cell.downcast_ref::<PosterItem>().filter(|card| !card.has_on_press())
+        else {
+            return;
+        };
+        let (posters, pressed) = (Weak::new(self), Weak::new(cell));
+        card.set_on_press(move || {
+            let (Some(posters), Some(cell)) = (posters.load(), pressed.load()) else {
+                return;
+            };
+            if let Some(index_path) = posters.ivars().collection.indexPathForItem(&cell) {
+                posters.open(&index_path, false);
+            }
+        });
     }
 
     fn act_on_menu_item(&self, action: impl Fn(Item) -> Action) {
