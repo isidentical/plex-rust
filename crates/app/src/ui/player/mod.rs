@@ -543,6 +543,13 @@ impl PlayerScreen {
         if press == Press::Held && !repeats {
             return true;
         }
+        // Changing the volume, the speed or a track says what it did in a
+        // notice. Bringing every control up for it as well would cover
+        // the picture each time the viewer nudges the speed.
+        let reveals = !matches!(
+            key,
+            Key::Up | Key::Down | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f')
+        );
         let is_episode = self.ivars().item.kind == Kind::Episode;
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
@@ -601,7 +608,9 @@ impl PlayerScreen {
         // A hand on the keyboard is not on the mouse: wherever the pointer
         // was left, it is no longer holding the controls up.
         self.ivars().pointer_on_controls.set(false);
-        self.show_controls(true);
+        if reveals {
+            self.show_controls(true);
+        }
         true
     }
 
