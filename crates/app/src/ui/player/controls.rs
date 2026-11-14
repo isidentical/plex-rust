@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSImageSymbolConfiguration, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSImageSymbolConfiguration, NSLayoutConstraintOrientation,
     NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSStackView, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView,
 };
@@ -16,6 +16,7 @@ use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
 
 use super::badge::Badge;
+use super::bubble::Bubble;
 use super::chip::{Chip, Style};
 use super::failure::Failure;
 use super::info::Info;
@@ -26,13 +27,6 @@ use super::surface::{Material, Surface};
 use super::theme;
 use super::upnext::UpNext;
 use super::waiting::Waiting;
-
-/// How much the bubble's wish to be over the pointer counts for in the
-/// layout: less than anything else there. At the default strengths it
-/// outweighed the window's wish to keep its size and a label's wish to
-/// keep its width, so a bubble that could not be where it was asked to be
-/// moved the scrubber and widened the window instead of giving way.
-const FOLLOWS_POINTER: f32 = 1.0;
 
 /// The loudest the volume slider goes, which is the file's own level.
 pub const FULL_VOLUME: f64 = 100.0;
@@ -59,10 +53,7 @@ pub struct Controls {
     /// The time left or the full length. A click switches between them.
     pub remaining: Retained<Chip>,
     /// Says what time the pointer is over on the scrubber.
-    pub bubble: Retained<Chip>,
-    /// Holds the bubble over the pointer: its constant is the distance from
-    /// the scrubber's left edge.
-    pub bubble_x: Retained<NSLayoutConstraint>,
+    pub bubble: Bubble,
     pub speed: Retained<Chip>,
     pub audio: Retained<Chip>,
     pub subtitles: Retained<Chip>,
@@ -91,7 +82,6 @@ impl Controls {
         material: Material,
     ) -> Self {
         let button = |symbol, name, key| Chip::button(main_thread, symbol, name, key);
-        let bubble = Chip::new(main_thread, Style::Caption);
         let scrubber =
             Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP, Reading::Time);
         let controls = Self {
@@ -115,8 +105,7 @@ impl Controls {
             ),
             elapsed: label(main_thread, theme::CONTROL_FONT_SIZE, medium(), &theme::text()),
             remaining: Chip::new(main_thread, Style::Plain),
-            bubble_x: bubble.centerXAnchor().constraintEqualToAnchor(&scrubber.leadingAnchor()),
-            bubble,
+            bubble: Bubble::new(main_thread, material, &scrubber),
             scrubber,
             speed: Chip::new(main_thread, Style::Plain),
             audio: button("waveform", "Audio track", "A"),
@@ -286,16 +275,13 @@ impl Controls {
     fn place_loose(&self, root: &NSView) {
         let (leading, trailing) = (root.leadingAnchor(), root.trailingAnchor());
         self.skip.setHidden(true);
-        self.bubble.setHidden(true);
-        self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
-        self.bubble_x.setPriority(FOLLOWS_POINTER);
         add(root, &self.skip);
         add(root, self.up_next.view());
         add(root, self.badge.view());
         add(root, self.info.view());
         add(root, self.waiting.view());
         add(root, self.failure.view());
-        add(root, &self.bubble);
+        add(root, self.bubble.view());
         pin(&[
             self.info
                 .view()
@@ -323,14 +309,17 @@ impl Controls {
                 .view()
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&self.top.bottomAnchor(), theme::TOP_GAP),
-            self.bubble_x.clone(),
+            self.bubble.follows(),
             self.bubble
+                .view()
                 .bottomAnchor()
                 .constraintEqualToAnchor_constant(&self.bottom.topAnchor(), -theme::BUBBLE_GAP),
             self.bubble
+                .view()
                 .leadingAnchor()
                 .constraintGreaterThanOrEqualToAnchor_constant(&leading, theme::MARGIN),
             self.bubble
+                .view()
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&trailing, -theme::MARGIN),
         ]);

@@ -9,8 +9,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
-    NSImageView, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
-    NSLineBreakMode, NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSImageView, NSLayoutConstraint, NSLayoutPriorityDefaultLow, NSStackView, NSTextField,
+    NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
 
@@ -18,7 +18,7 @@ use super::controls::{medium, symbol};
 use super::input::code;
 use super::theme;
 
-/// What a chip looks like and whether it can be clicked.
+/// What a chip looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
     /// A button that is only its symbol or text until the pointer is over
@@ -28,8 +28,6 @@ pub enum Style {
     Solid,
     /// A button on a faint fill, for the lesser of two choices on a card.
     Quiet,
-    /// Text on a dark fill that cannot be clicked: clicks pass through it.
-    Caption,
 }
 
 pub struct Ivars {
@@ -66,7 +64,7 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             // SAFETY: forwards the argument to the superclass unchanged.
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            let is_target = self.ivars().style.is_button() && self.ivars().enabled.get();
+            let is_target = self.ivars().enabled.get();
             hit.filter(|_| is_target).map(|_| Retained::into_super(self.retain()))
         }
 
@@ -175,16 +173,10 @@ define_class!(
     }
 );
 
-impl Style {
-    fn is_button(self) -> bool {
-        self != Self::Caption
-    }
-}
-
 impl Chip {
     pub fn new(main_thread: MainThreadMarker, style: Style) -> Retained<Self> {
         let color = match style {
-            Style::Plain | Style::Quiet | Style::Caption => theme::text(),
+            Style::Plain | Style::Quiet => theme::text(),
             Style::Solid => theme::text_on_solid(),
         };
         let icon = NSImageView::new(main_thread);
@@ -194,7 +186,7 @@ impl Chip {
         label.setTextColor(Some(&color));
         // Digits of equal width keep a time or a speed from changing the
         // chip's width as it counts.
-        let size = if style.is_button() { theme::CONTROL_FONT_SIZE } else { theme::FONT_SIZE };
+        let size = theme::CONTROL_FONT_SIZE;
         label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(size, medium())));
         label.setHidden(true);
 
@@ -214,16 +206,14 @@ impl Chip {
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         let chip: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         chip.lay_out(main_thread);
-        if style.is_button() {
-            chip.track_pointer();
-            // VoiceOver meets one button, not a picture and a text in a
-            // group with no name.
-            chip.setAccessibilityElement(true);
-            // SAFETY: the role is a constant that AppKit provides.
-            chip.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
-            chip.ivars().icon.setAccessibilityElement(false);
-            chip.ivars().label.setAccessibilityElement(false);
-        }
+        chip.track_pointer();
+        // VoiceOver meets one button, not a picture and a text in a group
+        // with no name.
+        chip.setAccessibilityElement(true);
+        // SAFETY: the role is a constant that AppKit provides.
+        chip.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        chip.ivars().icon.setAccessibilityElement(false);
+        chip.ivars().label.setAccessibilityElement(false);
         chip
     }
 
@@ -268,7 +258,7 @@ impl Chip {
     /// do.
     pub fn can_be_pressed(&self) -> bool {
         let ivars = self.ivars();
-        ivars.style.is_button() && ivars.enabled.get() && !self.isHiddenOrHasHiddenAncestor()
+        ivars.enabled.get() && !self.isHiddenOrHasHiddenAncestor()
     }
 
     /// Whether the keyboard is on the chip.
@@ -338,22 +328,6 @@ impl Chip {
         self.describe();
     }
 
-    /// Keeps the chip from growing wider than `width`. Text that does not
-    /// fit ends in an ellipsis.
-    pub fn limit_width(&self, width: f64) {
-        let label = &self.ivars().label;
-        label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        // Gives way to the limit, but not to the chip's wish to be square,
-        // which is of the low priority itself.
-        label.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow + 1.0,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[self
-            .widthAnchor()
-            .constraintLessThanOrEqualToConstant(width)]));
-    }
-
     /// Puts the symbol and the text side by side in the middle, and makes
     /// the chip a square that widens to fit them.
     fn lay_out(&self, main_thread: MainThreadMarker) {
@@ -365,10 +339,7 @@ impl Chip {
         self.addSubview(&content);
         self.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let height = match ivars.style {
-            Style::Plain | Style::Solid | Style::Quiet => theme::CHIP_SIZE,
-            Style::Caption => theme::CAPTION_HEIGHT,
-        };
+        let height = theme::CHIP_SIZE;
         let padded = content.widthAnchor();
         let square = self.widthAnchor().constraintEqualToConstant(height);
         square.setPriority(NSLayoutPriorityDefaultLow);
@@ -420,7 +391,6 @@ impl Chip {
         let ivars = self.ivars();
         let lit = ivars.enabled.get();
         match (ivars.style, lit && ivars.pressed.get(), lit && ivars.hovered.get()) {
-            (Style::Caption, ..) => Some(theme::backdrop()),
             (Style::Solid, true, _) => Some(theme::solid_pressed()),
             (Style::Solid, false, true) => Some(theme::solid_hovered()),
             (Style::Solid, false, false) => Some(theme::solid()),

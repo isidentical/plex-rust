@@ -49,8 +49,6 @@ pub const RIM_WIDTH: f64 = 1.0;
 /// The ring around the control the keyboard is on.
 pub const FOCUS_WIDTH: f64 = 2.5;
 pub const CHIP_CONTENT_SPACING: f64 = scale::PILL_GLYPH_GAP;
-/// The height of a chip that only says something.
-pub const CAPTION_HEIGHT: f64 = 28.0;
 /// The badge that says what a key press did is read at a glance, often
 /// from the sofa and with nothing else on screen, so it is larger than a
 /// label.
@@ -102,7 +100,16 @@ pub const VOLUME_WIDTH: f64 = 84.0;
 /// volume, out of 100.
 pub const SCRUBBER_STEP: f64 = 10.0;
 pub const VOLUME_STEP: f64 = 5.0;
+/// The bubble that says what time the pointer is at on the scrubber: a
+/// line of text with as much room above and below it as a notice has for
+/// its size, and how far it floats above the bar.
+pub const BUBBLE_HEIGHT: f64 = 32.0;
+pub const BUBBLE_PADDING: f64 = scale::SPACE_M;
+pub const BUBBLE_SPACING: f64 = scale::SPACE_S;
 pub const BUBBLE_GAP: f64 = scale::SPACE_S;
+/// How much the bubble's wish to be over the pointer counts for in the
+/// layout, out of the 1000 of a constraint that must hold.
+pub const FOLLOWS_POINTER: f32 = 1.0;
 /// Space between the bar and the Skip Intro button above it.
 pub const SKIP_GAP: f64 = scale::SPACE_M;
 
@@ -191,11 +198,6 @@ pub fn solid_pressed() -> Retained<NSColor> {
 
 pub fn text_on_solid() -> Retained<NSColor> {
     NSColor::blackColor()
-}
-
-/// Behind text that floats over the picture with no shade under it.
-pub fn backdrop() -> Retained<NSColor> {
-    scale::black(0.6)
 }
 
 /// Laid into the glass of a panel, so that white controls keep their

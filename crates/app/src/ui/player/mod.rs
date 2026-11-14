@@ -1,6 +1,7 @@
 //! The screen that plays one item: video with controls on top.
 
 mod badge;
+mod bubble;
 mod chip;
 mod chrome;
 mod controls;
@@ -512,7 +513,7 @@ impl PlayerScreen {
         // no longer there.
         self.show_controls(true);
         controls.bottom.set_shown(false);
-        controls.bubble.setHidden(true);
+        controls.bubble.hide();
         self.show_neighbours();
     }
 
@@ -1358,7 +1359,7 @@ impl PlayerScreen {
         self.show_progress(start, duration);
         controls.scrubber.set_loaded(0.0);
         controls.scrubber.set_marks(Vec::new());
-        controls.bubble.setHidden(true);
+        controls.bubble.hide();
         controls.skip.setHidden(true);
         controls.up_next.hide();
         ivars.chapters.borrow_mut().clear();
@@ -1434,20 +1435,14 @@ impl PlayerScreen {
         let ivars = self.ivars();
         let controls = &ivars.controls;
         let Some(place) = place else {
-            controls.bubble.setHidden(true);
+            controls.bubble.hide();
             return;
         };
         let time = Duration::from_secs_f64(place.value.max(0.0));
         let chapters = ivars.chapters.borrow();
         let chapter = chapters.iter().rev().find(|chapter| chapter.start <= time);
         let title = chapter.and_then(|chapter| chapter.title.as_deref());
-        let text = match title.filter(|title| !is_timestamp(title)) {
-            Some(title) => format!("{}  {title}", clock(time)),
-            None => clock(time),
-        };
-        controls.bubble.set_title(&text);
-        controls.bubble_x.setConstant(place.x);
-        controls.bubble.setHidden(false);
+        controls.bubble.show(&clock(time), title.filter(|title| !is_timestamp(title)), place.x);
     }
 
     fn change_volume(&self, by: f64) -> player::Result<()> {
@@ -1788,7 +1783,7 @@ impl PlayerScreen {
         ivars.controls.top.set_shown(shown || paused || failed);
         ivars.controls.bottom.set_shown(shown && !failed);
         if !shown {
-            ivars.controls.bubble.setHidden(true);
+            ivars.controls.bubble.hide();
             if self.focused().is_some() {
                 self.drop_focus();
             }
