@@ -721,15 +721,25 @@ impl Posters {
         heading::fill(strip, &title, on_more, self.mtm());
     }
 
-    /// Return and Space open the card the keyboard is on.
+    /// Return and Space open the card the keyboard is on. An arrow key
+    /// pressed while it is on none puts it on the first card in view:
+    /// the collection view only ever moves a selection it already has.
     fn key_pressed(&self, event: &NSEvent) -> bool {
-        if !matches!(event.keyCode(), KEY_RETURN | KEY_SPACE) {
-            return false;
+        let collection = &self.ivars().collection;
+        let selected = collection.selectionIndexPaths().anyObject();
+        match (event.keyCode(), selected) {
+            (KEY_RETURN | KEY_SPACE, Some(index_path)) => self.open(&index_path, false),
+            (KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN, None) => {
+                let Some(first) = first_visible(collection) else {
+                    return false;
+                };
+                collection.selectItemsAtIndexPaths_scrollPosition(
+                    &NSSet::from_retained_slice(&[first]),
+                    NSCollectionViewScrollPosition::NearestVerticalEdge,
+                );
+            }
+            _ => return false,
         }
-        let Some(index_path) = self.ivars().collection.selectionIndexPaths().anyObject() else {
-            return false;
-        };
-        self.open(&index_path, false);
         true
     }
 
@@ -776,6 +786,11 @@ impl Posters {
 fn position(index_path: &NSIndexPath) -> (usize, usize) {
     let part = |number: NSInteger| usize::try_from(number).unwrap_or(usize::MAX);
     (part(index_path.section()), part(index_path.item()))
+}
+
+/// The card in view that comes first in reading order.
+fn first_visible(collection: &NSCollectionView) -> Option<Retained<NSIndexPath>> {
+    collection.indexPathsForVisibleItems().iter().min_by_key(|index_path| position(index_path))
 }
 
 fn is_on_play(cell: &NSCollectionViewItem, point: NSPoint) -> bool {
