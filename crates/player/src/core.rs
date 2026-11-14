@@ -12,6 +12,12 @@ const OPTIONS: &[(&str, &str)] = &[
     // Frames are drawn by `Renderer`, mpv opens no window of its own.
     ("vo", "libmpv"),
     ("hwdec", "videotoolbox"),
+    // mpv's OpenGL renderer does not apply Dolby Vision metadata: it draws
+    // the picture underneath (`init_video` in video/out/gpu/video.c).
+    // Taking the metadata off the frames makes mpv describe that picture,
+    // and not the one the metadata would have made of it. Frames stay in
+    // the hardware decoder's buffers.
+    ("vf", "format:dolbyvision=no"),
     ("cache", "yes"),
     ("demuxer-max-bytes", "2GiB"),
     ("demuxer-max-back-bytes", "512MiB"),
@@ -320,11 +326,16 @@ impl Player {
         self.string(name)
     }
 
-    /// How the picture now playing is encoded, or `None` before the first
-    /// frame has been decoded.
+    /// How the picture now playing is encoded, or `None` before the
+    /// renderer has been given its first frame.
+    ///
+    /// This is the picture as the renderer gets it, which for Dolby Vision
+    /// is the one under the metadata: HDR10 or HLG for profiles 7 and 8.
+    /// mpv's `video-params` would say PQ and BT.2020 for every Dolby
+    /// Vision file, whatever is underneath.
     pub fn video_colors(&self) -> Result<Option<Colors>> {
         let (Some(transfer), Some(primaries)) =
-            (self.string("video-params/gamma")?, self.string("video-params/primaries")?)
+            (self.string("video-out-params/gamma")?, self.string("video-out-params/primaries")?)
         else {
             return Ok(None);
         };
