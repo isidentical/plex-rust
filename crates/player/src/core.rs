@@ -661,8 +661,13 @@ impl Player {
             return Ok(None);
         }
         check(status, || format!("read {name}"))?;
-        // Streams can report a slightly negative position right after a seek.
-        Ok(Some(Duration::from_secs_f64(seconds.max(0.0))))
+        // Streams can report a slightly negative position right after a
+        // seek, and a live or broken one a length that is not finite.
+        let time = Duration::try_from_secs_f64(seconds.max(0.0)).map_err(|_| Error::Mpv {
+            action: format!("read {name}"),
+            message: format!("not a time: {seconds}"),
+        })?;
+        Ok(Some(time))
     }
 }
 

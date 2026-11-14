@@ -44,6 +44,10 @@ pub enum Error {
 
     #[error("the server holds no file for {0}")]
     NoFile(String),
+
+    /// HTTP has no way to send a control character in a header.
+    #[error("{0:?} cannot be sent to Plex: it has a control character in it")]
+    Header(String),
 }
 
 impl Error {

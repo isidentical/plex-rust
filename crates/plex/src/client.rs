@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// The name this app goes by in Plex's device lists and dashboards.
 pub(crate) const PRODUCT: &str = "plex-rust";
@@ -56,8 +56,8 @@ impl Client {
         headers
             .insert(header("x-plex-version"), HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
         headers
-            .insert(header("x-plex-client-identifier"), header_value(&identity.client_identifier));
-        headers.insert(header("x-plex-device-name"), header_value(&identity.device_name));
+            .insert(header("x-plex-client-identifier"), header_value(&identity.client_identifier)?);
+        headers.insert(header("x-plex-device-name"), header_value(&identity.device_name)?);
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
@@ -72,7 +72,25 @@ pub(crate) fn header(name: &'static str) -> HeaderName {
 }
 
 /// Plex asks for header values as UTF-8, which HTTP allows as opaque bytes.
-fn header_value(text: &str) -> HeaderValue {
-    HeaderValue::from_bytes(text.as_bytes())
-        .unwrap_or_else(|_| panic!("header value contains a control character: {text:?}"))
+fn header_value(text: &str) -> Result<HeaderValue> {
+    HeaderValue::from_bytes(text.as_bytes()).map_err(|_| Error::Header(text.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client_named(device_name: &str) -> Result<Client> {
+        Client::new(Identity {
+            client_identifier: "identifier".to_owned(),
+            device_name: device_name.to_owned(),
+        })
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_a_header_is_an_error() {
+        // A Mac can be named anything, and the name is sent as a header.
+        assert!(matches!(client_named("Anna\u{2019}s Mac\n"), Err(Error::Header(_))));
+        assert!(client_named("Anna\u{2019}s Mac").is_ok());
+    }
 }
