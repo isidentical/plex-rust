@@ -199,9 +199,10 @@ crates/
     src/ui/shell/walk.rs  the scripted walk that times them
     src/ui/            one module a screen or a piece of one: sidebar,
                        toolbar, menus, hero, posters, poster, episode,
-                       detail, downloads, library_bar, heading, notice,
-                       stale, failure, confirm, artwork, backdrop, formats,
-                       text, label, layout, hover, callback, theme, snapshot
+                       detail, downloads, library_bar, jump, heading,
+                       notice, stale, failure, confirm, artwork, backdrop,
+                       formats, text, label, layout, hover, callback, theme,
+                       snapshot
     src/ui/player/     the player screen: controls, chips, sliders, menus,
                        input, media keys (remote), up next, zoom, info,
                        failure, and a theme of its own
@@ -288,7 +289,10 @@ within 3 seconds.
 `X-Plex-Container-Size`, total from `totalSize`), `/library/metadata/{id}`,
 its `/children` and `/allLeaves`, `/hubs/metadata/{id}/related`,
 `/hubs/search?query=`, and the paths the server itself hands out for the
-whole of a shelf.
+whole of a shelf. `/library/sections/{id}/firstCharacter` lists the first
+characters of a library's titles with the number of items under each [V],
+and `/services/ultrablur/colors?url=` gives the four colours of any
+picture [V].
 
 **Images:** `/photo/:/transcode?url=..&width=..&height=..&minSize=1&format=jpg`
 requested at the pixel size each kind of card is drawn at.
@@ -439,6 +443,8 @@ look and a dark appearance.
   literal sizes or colours anywhere else.
 - **Colour from the artwork:** detail pages and the home hero use the
   `UltraBlurColors` four-corner gradient that the server returns per item.
+  For an episode the hero shows its show's backdrop, and asks the server for
+  that picture's colours, since the episode's own are those of its frame.
 - **Motion:** system animations only: poster hover lift, shelf scrolling,
   cross fade between pages, controls fade. Nothing custom runs while idle.
 - Poster cells: rounded corners, progress bar for partly watched, a tick once
@@ -450,7 +456,14 @@ look and a dark appearance.
   content.
 - **Home:** `NSCollectionView` with a compositional layout, one horizontally
   scrolling shelf per hub: Continue Watching, On Deck, Recently Added.
-- **Library:** poster grid, paged while scrolling, sort menu.
+- **Library:** poster grid, paged while scrolling, sort menu. Listed by
+  title, a strip of first characters down the far edge jumps to each.
+- **Touch:** the display may take fingers. What is pressed on Home and in
+  the libraries is 44 points each way where the layout is ours, and the
+  system's largest size where the control is the system's: 36 for the
+  filter and the sort menu, 40 for a sidebar row. A finger scrolls every
+  scroll view by itself (`NSScrollView.touchScrollingEnabled`, on by
+  default since macOS 27, per `NSScrollView.h` in the macOS 27 SDK).
 - **Detail:** backdrop, poster, title, year, rating, summary, Play / Resume,
   watched toggle, download button, audio and subtitle pickers. Shows add a
   season picker and episode list.

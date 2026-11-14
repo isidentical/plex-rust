@@ -98,6 +98,10 @@ that season's episodes. A member of the cast leads to everything else of
 theirs in the library. Each library keeps the order and the filter it was
 last given.
 
+A library listed by title has the first letters of its titles down its
+far edge. A press on one goes to where those titles start, and so does a
+press that slides along the letters and lets go on one.
+
 ## Downloads
 
 The page of a film or an episode has a Download button. It fetches the
