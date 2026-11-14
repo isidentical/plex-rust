@@ -20,6 +20,7 @@ use plex::MediaServer;
 use plex::model::{Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
+use super::input::Key;
 use super::layout;
 use super::player::{NORMAL_SPEED, Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
@@ -41,6 +42,10 @@ const PAGE_SIZE: u32 = 100;
 /// How long a snapshot waits after the window has its content, so that
 /// work started by showing it, such as loading artwork, can finish.
 const SNAPSHOT_SETTLE: Duration = Duration::from_secs(3);
+
+/// How long a snapshot of the player waits before pressing its keys, so
+/// that the file is open and the keys have something to act on.
+const SNAPSHOT_KEYS_AFTER: Duration = Duration::from_millis(1500);
 
 struct Shell {
     main_thread: MainThreadMarker,
@@ -87,8 +92,9 @@ pub enum Subject {
     Library(usize),
     /// The detail page of the item with this rating key.
     Item(String),
-    /// The player, playing the item with this rating key as a check.
-    Play(String),
+    /// The player, playing the item with this rating key as a check, after
+    /// these keys were pressed in it.
+    Play(String, Vec<Key>),
 }
 
 /// Opens the main window and runs the app until it quits.
@@ -215,9 +221,11 @@ impl Shell {
         }
         match subject {
             Some(Subject::Item(key)) => self.fetch(RatingKey::new(key.as_str()), Self::open),
-            Some(Subject::Play(key)) => {
-                self.fetch(RatingKey::new(key.as_str()), |shell, item| {
-                    shell.play(item, Purpose::Check)
+            Some(Subject::Play(key, keys)) => {
+                let keys = keys.clone();
+                self.fetch(RatingKey::new(key.as_str()), move |shell, item| {
+                    shell.open_player(item, Purpose::Check);
+                    shell.press_later(keys);
                 });
             }
             _ => {}
@@ -425,6 +433,22 @@ impl Shell {
                 }
             }
             Err(error) => shell.show_message(&with_causes(&error)),
+        });
+    }
+
+    /// Presses `keys` in the player once it has had time to open its file.
+    fn press_later(self: &Rc<Self>, keys: Vec<Key>) {
+        // A timer can only be created on the runtime's own threads.
+        let wait = async { tokio::time::sleep(SNAPSHOT_KEYS_AFTER).await };
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, wait, move |()| {
+            // Cloned so that a key that closes the player finds no borrow.
+            let screen = shell.playing.borrow().clone();
+            if let Some(screen) = screen {
+                for key in keys {
+                    screen.press(key);
+                }
+            }
         });
     }
 

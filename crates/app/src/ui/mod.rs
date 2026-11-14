@@ -1,7 +1,7 @@
 //! The windows and views.
 
 mod detail;
-mod input;
+pub mod input;
 mod layout;
 mod player;
 mod poster;

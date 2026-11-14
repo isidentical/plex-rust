@@ -21,6 +21,25 @@ pub enum Key {
     Character(char),
 }
 
+impl Key {
+    /// Reads a key from its name, as written on a command line: `space`,
+    /// `left`, or a single character such as `d`.
+    pub fn named(name: &str) -> Option<Self> {
+        let mut characters = name.chars();
+        match (name, characters.next(), characters.next()) {
+            ("space", ..) => Some(Self::Space),
+            ("return", ..) => Some(Self::Return),
+            ("escape", ..) => Some(Self::Escape),
+            ("left", ..) => Some(Self::Left),
+            ("right", ..) => Some(Self::Right),
+            ("up", ..) => Some(Self::Up),
+            ("down", ..) => Some(Self::Down),
+            (_, Some(character), None) => Some(Self::Character(character)),
+            _ => None,
+        }
+    }
+}
+
 /// How many times the mouse button went down in quick succession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clicks {

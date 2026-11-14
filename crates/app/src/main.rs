@@ -18,6 +18,7 @@ use plex::model::RatingKey;
 
 use crate::error::{Error, Result};
 use crate::progress::Progress;
+use crate::ui::input::Key;
 use crate::ui::shell::Subject;
 
 const USAGE: &str = "\
@@ -25,7 +26,7 @@ usage: reel
        reel snapshot home <png-path>
        reel snapshot library <index> <png-path>
        reel snapshot item <rating-key> <png-path>
-       reel snapshot play <rating-key> <png-path>
+       reel snapshot play <rating-key> <png-path> [<key>...]
        reel login
        reel servers [<address>]
        reel api [--post] <path>
@@ -56,8 +57,10 @@ fn run(args: &[&str]) -> Result<()> {
         ["snapshot", "item", key, path] => {
             ui::shell::run(Some((Subject::Item((*key).to_owned()), path.into())))
         }
-        ["snapshot", "play", key, path] => {
-            ui::shell::run(Some((Subject::Play((*key).to_owned()), path.into())))
+        ["snapshot", "play", key, path, keys @ ..] => {
+            let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
+            let keys = keys.ok_or(Error::Usage(USAGE))?;
+            ui::shell::run(Some((Subject::Play((*key).to_owned(), keys), path.into())))
         }
         ["login"] => account::login(),
         ["servers"] => servers(None),

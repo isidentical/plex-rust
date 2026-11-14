@@ -420,7 +420,7 @@ impl PlayerScreen {
     }
 
     /// Acts on a key. Returns whether the key means anything here.
-    fn press(&self, key: Key) -> bool {
+    pub fn press(&self, key: Key) -> bool {
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
             Key::Left => self.jump(|position| position.saturating_sub(SKIP), "−10 s"),
