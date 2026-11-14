@@ -345,8 +345,8 @@ takes to decode from a keyframe up to the target.
 itself. Subtitles Plex keeps in files of their own, which are the streams it
 lists with a `key`, are added with `sub-add` by their address on the server
 once the video is open, with the same token header. Track menus come from
-`track-list`, named as the server names each stream. A download played from
-disk gets only the subtitles inside its file.
+`track-list`, named as the server names each stream. A download keeps those
+files next to its video, and played from disk it gets them from there.
 
 **Skip intro / credits:** a button shown while the position is inside a
 marker. **Next episode:** on end of file, play the episode that follows in
@@ -430,8 +430,12 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
 - Original file to `~/Movies/plex-rust/`, written as `.part`, resumed with an HTTP
   `Range` request, renamed when the byte count equals `Part.size`. A size
   mismatch is an error, not a retry loop.
-- The item's metadata JSON and poster are stored next to it so Downloads
-  works with no server. Those files are the only record of a download.
+- Of an item in several versions, the one picked on its page. A version
+  split across files is refused: a download is one file, as is what plays.
+- The item's metadata JSON, with the downloaded version first, its poster
+  and the subtitle files the server keeps beside the video are stored next
+  to it so Downloads works with no server. Those files are the only record
+  of a download.
 - Offline playback hands mpv the local path. Position is stored next to the
   file and sent as one timeline call with `offline=1` when the server is
   next reached.

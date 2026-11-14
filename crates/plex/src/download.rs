@@ -1,5 +1,6 @@
 //! Fetching the original file of an item to keep, in one go or carrying on
-//! from where an earlier attempt stopped.
+//! from where an earlier attempt stopped, and the subtitle files the
+//! server keeps next to it.
 
 use std::io::ErrorKind;
 use std::path::Path;
@@ -15,7 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
-use crate::model::Part;
+use crate::model::{Part, Stream};
 use crate::server::MediaServer;
 
 /// How long one download may take. The client's own limit of half a minute
@@ -126,6 +127,15 @@ impl MediaServer {
             Either::Left((fetched, _)) => fetched,
             Either::Right(((), _)) => Err(Error::Cancelled),
         }
+    }
+
+    /// The whole of a subtitle file the server keeps next to a video:
+    /// `stream` is one that [`Part::sidecars`] lists.
+    pub async fn sidecar(&self, stream: &Stream) -> Result<Vec<u8>> {
+        let no_file = || Error::NoFile(format!("subtitle stream {}", stream.id));
+        let key = stream.key.as_deref().ok_or_else(no_file)?;
+        let response = self.request(Method::GET, key).send().await?.error_for_status()?;
+        Ok(response.bytes().await?.to_vec())
     }
 
     async fn fetch(&self, part: &Part, partial: &Path, transfer: &Transfer) -> Result<()> {
@@ -260,7 +270,7 @@ mod tests {
     struct Asked {
         /// The path and query.
         target: String,
-        /// The first byte asked for.
+        /// The first byte asked for, or 0 by a request for all of it.
         from: usize,
     }
 
@@ -285,7 +295,7 @@ mod tests {
                 let head = String::from_utf8(head).unwrap().to_lowercase();
                 let target = head.split(' ').nth(1).unwrap().to_owned();
                 let range = head.lines().find_map(|line| line.strip_prefix("range: bytes="));
-                let from = range.unwrap().trim_end_matches('-').parse().unwrap();
+                let from = range.map_or(0, |range| range.trim_end_matches('-').parse().unwrap());
                 let asked = Asked { target, from };
                 let (head, body) = answer(&asked);
                 log.lock().unwrap().push(asked);
@@ -398,6 +408,30 @@ mod tests {
         let plain = "/library/parts/1/2/file.mkv";
         assert_eq!(targets, [format!("{plain}?download=1"), plain.to_owned()]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_subtitle_file_is_fetched_from_where_its_stream_says() {
+        let (server, seen) = serve(|asked| match asked.target.as_str() {
+            "/library/streams/12" => {
+                ("200 OK\r\nContent-Length: 5".to_owned(), b"1\nHi\n".to_vec())
+            }
+            _ => ("404 Not Found\r\nContent-Length: 0".to_owned(), Vec::new()),
+        })
+        .await;
+        let stream = |key: Option<&str>| -> Stream {
+            serde_json::from_value(serde_json::json!({ "id": 12, "streamType": 3, "key": key }))
+                .unwrap()
+        };
+
+        let kept = server.sidecar(&stream(Some("/library/streams/12"))).await.unwrap();
+        assert_eq!(kept, b"1\nHi\n");
+        let gone = server.sidecar(&stream(Some("/library/streams/13"))).await.unwrap_err();
+        assert!(gone.is_missing());
+        // Subtitles inside the video have no file of their own to fetch.
+        let inside = server.sidecar(&stream(None)).await.unwrap_err();
+        assert!(matches!(inside, Error::NoFile(_)));
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

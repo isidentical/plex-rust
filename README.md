@@ -65,8 +65,9 @@ last given.
 ## Downloads
 
 The page of a film or an episode has a Download button. It fetches the
-original file into `~/Movies/plex-rust`, with a poster and what the server
-says about the item beside it. Downloads, in the sidebar, lists what is there
+original file of the version picked on that page into `~/Movies/plex-rust`,
+with a poster, the subtitle files the server keeps next to the video, and
+what the server says about the item beside it. Downloads, in the sidebar, lists what is there
 and what is on its way. A download that was cut short, by quitting or by the
 network, carries on from where it stopped when it is resumed.
 

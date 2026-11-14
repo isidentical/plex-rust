@@ -40,7 +40,7 @@ usage: plex-rust
        plex-rust snapshot list <server-path> <png-path> [<tweak>...]
        plex-rust snapshot downloads <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path> [approving]
-       plex-rust snapshot play <rating-key> <png-path> [<key>...]
+       plex-rust snapshot play <rating-key> <png-path> [away] [<key>...]
        plex-rust snapshot walk <png-path> [<step>...]
          steps: home, library=<index>, list=<server-path>, refresh,
                 scroll=<points>, back, forward, search=<query>,
@@ -105,9 +105,14 @@ fn run(args: &[&str]) -> Result<()> {
             snapshot(Subject::Walk(steps.ok_or(Error::Usage(USAGE))?), path, &[])
         }
         ["snapshot", "play", key, path, keys @ ..] => {
+            // Only a download plays with the server away.
+            let (tweaks, keys) = match keys {
+                ["away", keys @ ..] => (&["away"][..], keys),
+                keys => (&[][..], keys),
+            };
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
             let keys = keys.ok_or(Error::Usage(USAGE))?;
-            snapshot(Subject::Play((*key).to_owned(), keys), path, &[])
+            snapshot(Subject::Play((*key).to_owned(), keys), path, tweaks)
         }
         ["login"] => account::login(),
         ["servers"] => servers(None),

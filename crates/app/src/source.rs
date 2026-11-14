@@ -7,6 +7,7 @@ use plex::MediaServer;
 use plex::model::{Item, Part, Stream, StreamKind};
 
 use crate::error::{Error, Result};
+use crate::store::Download;
 
 /// The original file of `item` on `server`, starting where the viewer left
 /// off, with the audio and subtitle tracks they last chose and the
@@ -28,11 +29,25 @@ fn sidecar(server: &MediaServer, stream: &Stream) -> Option<Sidecar> {
     })
 }
 
-/// The same file of `item` as it was downloaded to `file`, so that nothing
-/// of it comes over the network.
-pub fn on_disk(file: &Path, item: &Item) -> Source {
+/// The same file of `item` as `download` holds it, with the subtitle files
+/// that were downloaded with it, so that nothing comes over the network.
+///
+/// `item` says which subtitles the viewer last chose, as far as it knows:
+/// it is the server's word when the server is there.
+pub fn on_disk(download: &Download, item: &Item) -> Source {
     // macOS only has file names that are text, so nothing is lost here.
-    Source { location: file.to_string_lossy().into_owned(), ..as_left(item) }
+    let location = |file: &Path| file.to_string_lossy().into_owned();
+    let kept = |stream: &Stream| {
+        // A download made before subtitles were kept has none on disk.
+        let kept = download.subtitles.iter().find(|kept| kept.stream.id == stream.id)?;
+        kept.file.exists().then(|| Sidecar {
+            location: location(&kept.file),
+            title: stream.display_title.clone(),
+            selected: stream.selected,
+        })
+    };
+    let sidecars = part(item).into_iter().flat_map(Part::sidecars).filter_map(kept).collect();
+    Source { location: location(&download.file), sidecars, ..as_left(item) }
 }
 
 fn part(item: &Item) -> Option<&Part> {

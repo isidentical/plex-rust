@@ -246,8 +246,11 @@ impl Downloads {
 }
 
 /// Brings the file of `download` to disk from `server`, carrying on from
-/// what an earlier attempt left, and its poster with it. `transfer` hears
-/// how far the file has got.
+/// what an earlier attempt left, and its poster and subtitle files with
+/// it. `transfer` hears how far the file has got.
+///
+/// The subtitles come first, so that a download that is whole has them:
+/// without the server there is nowhere else to get them from.
 pub async fn fetch(server: &MediaServer, download: &Download, transfer: &Transfer) -> Result<()> {
     let file_error = |path: &std::path::Path| {
         let path = path.to_owned();
@@ -274,6 +277,16 @@ pub async fn fetch(server: &MediaServer, download: &Download, transfer: &Transfe
             // picture.
             Err(error) => eprintln!("plex-rust: poster not kept: {}", with_causes(&error)),
         }
+    }
+
+    for subtitles in &download.subtitles {
+        let (file, partial) = (&subtitles.file, &subtitles.partial);
+        if tokio::fs::try_exists(file).await.map_err(file_error(file))? {
+            continue;
+        }
+        let text = server.sidecar(&subtitles.stream).await?;
+        tokio::fs::write(partial, text).await.map_err(file_error(partial))?;
+        tokio::fs::rename(partial, file).await.map_err(file_error(partial))?;
     }
 
     server.download(&download.part, &download.partial, transfer).await?;

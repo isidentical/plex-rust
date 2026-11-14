@@ -3,9 +3,11 @@
 //! Each one is a few files side by side in `~/Movies/plex-rust`, named
 //! after the item: the original file, which ends in `.part` until all of
 //! it is there, a `.json` with the item as the server described it, a
-//! `.jpg` poster, and for as long as the server has yet to hear where a
-//! viewing stopped, a `.position` that says where. Nothing else records a
-//! download, so the folder can be looked at, backed up and tidied by hand.
+//! `.jpg` poster, the subtitle files the server keeps next to the video,
+//! each with the number of its stream before its ending, and for as long
+//! as the server has yet to hear where a viewing stopped, a `.position`
+//! that says where. Nothing else records a download, so the folder can be
+//! looked at, backed up and tidied by hand.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -13,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use plex::library::item_from;
-use plex::model::{Item, Kind, Millis, Part, RatingKey};
+use plex::model::{Item, Kind, Millis, Part, RatingKey, Stream};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -38,8 +40,22 @@ pub struct Download {
     /// The original file until then.
     pub partial: PathBuf,
     pub poster: PathBuf,
+    /// The subtitles the server keeps in files of their own for this
+    /// file, which are downloaded with it.
+    pub subtitles: Vec<Subtitles>,
     record: PathBuf,
     position: PathBuf,
+}
+
+/// One subtitle file of a download.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subtitles {
+    /// What the server said of it when the item was asked for.
+    pub stream: Stream,
+    /// The file, once all of it is there.
+    pub file: PathBuf,
+    /// The file until then.
+    pub partial: PathBuf,
 }
 
 /// How much of a download is on disk.
@@ -116,8 +132,10 @@ impl Store {
 
     /// Deletes every file of `download`.
     pub fn remove(&self, download: &Download) -> Result<()> {
-        let Download { file, partial, poster, record, position, .. } = download;
-        [file, partial, poster, record, position].into_iter().try_for_each(|path| remove(path))
+        let Download { file, partial, poster, record, position, subtitles, .. } = download;
+        let subtitles = subtitles.iter().flat_map(|kept| [&kept.file, &kept.partial]);
+        let files = [file, partial, poster, record, position].into_iter().chain(subtitles);
+        files.into_iter().try_for_each(|path| remove(path))
     }
 
     /// Keeps where a viewing of `download` stopped until the server can
@@ -178,7 +196,17 @@ impl Store {
             None => name.clone(),
         };
         let at = |name: String| self.directory.join(name);
+        let subtitles = |stream: &Stream| {
+            // The stream's number keeps two files in one language apart.
+            let file = format!("{name}.{}.{}", stream.id, ending(stream));
+            Subtitles {
+                stream: stream.clone(),
+                partial: at(format!("{file}.part")),
+                file: at(file),
+            }
+        };
         Ok(Download {
+            subtitles: part.sidecars().map(subtitles).collect(),
             partial: at(format!("{file}.part")),
             file: at(file),
             poster: at(format!("{name}.jpg")),
@@ -242,6 +270,13 @@ fn with_first(mut item: serde_json::Value, version: Option<u64>) -> serde_json::
         versions.sort_by_key(|media| id(media) != Some(version));
     }
     item
+}
+
+/// The ending for the file of the subtitles in `stream`: their format as
+/// the server names it, which is what a player goes by, such as `srt`.
+fn ending(stream: &Stream) -> &str {
+    let is_plain = |codec: &&str| !codec.is_empty() && codec.chars().all(char::is_alphanumeric);
+    stream.codec.as_deref().filter(is_plain).unwrap_or("subtitles")
 }
 
 fn read(path: &Path) -> Result<serde_json::Value> {
@@ -356,6 +391,29 @@ pub mod tests {
         });
         assert!(matches!(store.add(&film, None), Err(Error::InParts { parts: 2, .. })));
         assert_eq!(store.list().unwrap(), []);
+        fs::remove_dir_all(&store.directory).unwrap();
+    }
+
+    #[test]
+    fn subtitles_in_files_of_their_own_are_kept_under_the_name_of_the_item() {
+        let store = store("subtitles");
+        let mut item = episode();
+        item["Media"][0]["Part"][0]["Stream"] = serde_json::json!([
+            { "id": 11, "streamType": 3, "codec": "srt" },
+            { "id": 12, "streamType": 3, "codec": "srt", "key": "/library/streams/12" },
+            { "id": 13, "streamType": 3, "codec": "../x", "key": "/library/streams/13" },
+        ]);
+        let download = store.add(&item, None).unwrap();
+        let name = "A Show - S02E07 - Who-What- Why? [5640]";
+        let names: Vec<&str> =
+            download.subtitles.iter().map(|kept| file_name(&kept.file)).collect();
+        assert_eq!(names, [format!("{name}.12.srt"), format!("{name}.13.subtitles")]);
+
+        // They go when the download goes, fetched or half fetched.
+        fs::write(&download.subtitles[0].file, "1").unwrap();
+        fs::write(&download.subtitles[1].partial, "1").unwrap();
+        store.remove(&download).unwrap();
+        assert_eq!(fs::read_dir(&store.directory).unwrap().count(), 0);
         fs::remove_dir_all(&store.directory).unwrap();
     }
 
