@@ -45,7 +45,8 @@ usage: plex-rust
        plex-rust snapshot walk <png-path> [<step>...]
          steps: home, library=<index>, list=<server-path>, refresh,
                 scroll=<points>, back, forward, search=<query>,
-                type=<query>, activate, wait,
+                type=<query>, activate, wait, downloads,
+                open=<rating-key>, download, click=<button-title>, retry,
                 left, right, up, down, return
          keys: space, left, d, ..., and idle, end, wait, hover, drag,
                pull, release, bright, small, wide, marker, stall, fail,

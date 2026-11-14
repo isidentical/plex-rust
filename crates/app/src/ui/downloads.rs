@@ -83,6 +83,7 @@ struct Row {
     has_poster: Cell<bool>,
     status: Retained<NSTextField>,
     bar: Retained<NSProgressIndicator>,
+    buttons: Vec<Retained<NSButton>>,
     /// Kept because buttons do not retain their targets.
     _targets: Vec<Retained<Callback>>,
 }
@@ -97,6 +98,8 @@ pub struct Ivars {
     nothing: Notice,
     /// A strip across the top that says the server is away.
     away: Retained<NSView>,
+    /// The strip's button, which looks for the server again.
+    reconnect: Retained<NSButton>,
     rows: RefCell<Vec<Row>>,
     on_act: Rc<dyn Fn(Act)>,
     /// Kept because a button does not retain its target.
@@ -169,7 +172,7 @@ impl DownloadList {
         let on_act: Rc<dyn Fn(Act)> = Rc::new(on_act);
         let pressed = Rc::clone(&on_act);
         let reconnect = Callback::new(main_thread, move |_| pressed(Act::Reconnect));
-        let away = away_strip(&reconnect, main_thread);
+        let (away, reconnect_button) = away_strip(&reconnect, main_thread);
         away.setHidden(true);
 
         let (root, body) = (NSView::new(main_thread), NSView::new(main_thread));
@@ -190,6 +193,7 @@ impl DownloadList {
             table,
             nothing,
             away,
+            reconnect: reconnect_button,
             rows: RefCell::new(Vec::new()),
             on_act,
             _reconnect: reconnect,
@@ -224,6 +228,26 @@ impl DownloadList {
     pub fn scroll_to(&self, y: f64) {
         let under_toolbar = self.ivars().scroll.contentInsets().top;
         self.ivars().table.scrollPoint(NSPoint { x: 0.0, y: y - under_toolbar });
+    }
+
+    /// Clicks the first button with `title` that is to be seen: the
+    /// strip's, or one in the topmost row that has such a button. For a
+    /// walk, which has no pointer. Returns whether there was one.
+    pub fn press(&self, title: &str) -> bool {
+        let ivars = self.ivars();
+        let titled = |button: &&Retained<NSButton>| button.title().to_string() == title;
+        let strip = (!ivars.away.isHidden()).then_some(&ivars.reconnect);
+        // Cloned out, because the click may build the rows again.
+        let button = {
+            let rows = ivars.rows.borrow();
+            strip.into_iter().chain(rows.iter().flat_map(|row| &row.buttons)).find(titled).cloned()
+        };
+        if let Some(button) = &button {
+            // SAFETY: the sender may be nil, and the button's target is a
+            // `Callback` that its row or the list keeps alive.
+            unsafe { button.performClick(None) };
+        }
+        button.is_some()
     }
 
     /// Shows `entries`, and with `away` that the server is not there.
@@ -304,7 +328,7 @@ impl Row {
         );
 
         let look = Look::of(&entry.state);
-        let mut targets = Vec::new();
+        let (mut targets, mut pressable) = (Vec::new(), Vec::new());
         let buttons = NSStackView::new(main_thread);
         buttons.setSpacing(theme::SPACE_S);
         buttons.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -323,6 +347,7 @@ impl Row {
             };
             button.setControlSize(NSControlSize::Large);
             buttons.addArrangedSubview(&button);
+            pressable.push(button);
             targets.push(pressed);
         }
 
@@ -358,6 +383,7 @@ impl Row {
             has_poster: Cell::new(false),
             status,
             bar,
+            buttons: pressable,
             _targets: targets,
         }
     }
@@ -385,9 +411,12 @@ impl Row {
     }
 }
 
-/// The strip that says the server is away, with a button that looks for
-/// it again.
-fn away_strip(reconnect: &Callback, main_thread: MainThreadMarker) -> Retained<NSView> {
+/// The strip that says the server is away, and its button, which looks
+/// for the server again.
+fn away_strip(
+    reconnect: &Callback,
+    main_thread: MainThreadMarker,
+) -> (Retained<NSView>, Retained<NSButton>) {
     let words = label::line(
         theme::FONT_BODY,
         Weight::Regular,
@@ -421,7 +450,7 @@ fn away_strip(reconnect: &Callback, main_thread: MainThreadMarker) -> Retained<N
             .trailingAnchor()
             .constraintLessThanOrEqualToAnchor_constant(&button.leadingAnchor(), -theme::SPACE_M),
     ]));
-    strip
+    (strip, button)
 }
 
 /// What a film or an episode is besides its title: "A Show · S2 · E7" or
