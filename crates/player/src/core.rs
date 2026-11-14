@@ -100,6 +100,13 @@ pub struct Track {
     pub selected: bool,
 }
 
+/// A named point in the loaded file, such as the start of a scene.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chapter {
+    pub start: Duration,
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
@@ -228,6 +235,26 @@ impl Player {
     /// How much playback time is buffered ahead of the position.
     pub fn buffered(&self) -> Result<Option<Duration>> {
         self.seconds("demuxer-cache-duration")
+    }
+
+    /// The position up to which the file is buffered and can play without
+    /// waiting, or `None` while nothing is.
+    pub fn buffered_until(&self) -> Result<Option<Duration>> {
+        self.seconds("demuxer-cache-time")
+    }
+
+    /// The chapters of the loaded file, in order. Most files have none.
+    pub fn chapters(&self) -> Result<Vec<Chapter>> {
+        let count: usize = self.number("chapter-list/count")?.unwrap_or(0);
+        (0..count).map(|index| self.chapter(index)).collect()
+    }
+
+    fn chapter(&self, index: usize) -> Result<Chapter> {
+        let start = self.seconds(&format!("chapter-list/{index}/time"))?;
+        Ok(Chapter {
+            start: start.unwrap_or_default(),
+            title: self.string(&format!("chapter-list/{index}/title"))?,
+        })
     }
 
     /// The hardware decoder in use, or `None` when decoding in software.
