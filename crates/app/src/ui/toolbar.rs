@@ -177,6 +177,16 @@ impl Toolbar {
         self.ivars().forward.setEnabled(can_go_forward);
     }
 
+    /// Says whether there is a server to search. Without one the field
+    /// is greyed out and says why, where it would take a query and find
+    /// nothing to ask.
+    pub fn set_search_enabled(&self, enabled: bool) {
+        let field = self.ivars().search.searchField();
+        let says = if enabled { "Search" } else { "Search needs your server" };
+        field.setPlaceholderString(Some(&NSString::from_str(says)));
+        field.setEnabled(enabled);
+    }
+
     /// Puts the keyboard in the search field.
     pub fn focus_search(&self) {
         let field = self.ivars().search.searchField();

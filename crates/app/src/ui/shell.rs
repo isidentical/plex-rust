@@ -981,6 +981,7 @@ impl Shell {
         destinations.push(Destination::Downloads);
         self.install_places(&destinations);
         self.sidebar.show(destinations);
+        self.toolbar.set_search_enabled(sections.is_some());
     }
 
     /// Gives the places of the sidebar their entries in the Go menu.
@@ -1272,7 +1273,7 @@ impl Shell {
         commands.back.set_enabled(browsing && position > 0);
         commands.forward.set_enabled(browsing && position + 1 < self.history.borrow().len());
         commands.reload.set_enabled(browsing);
-        commands.find.set_enabled(browsing);
+        commands.find.set_enabled(browsing && self.session.borrow().is_some());
         commands.play.set_enabled(browsing && on_item);
         commands.toggle_watched.set_enabled(browsing && on_item);
     }
