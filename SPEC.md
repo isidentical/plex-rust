@@ -290,9 +290,10 @@ within 3 seconds.
 its `/children` and `/allLeaves`, `/hubs/metadata/{id}/related`,
 `/hubs/search?query=`, and the paths the server itself hands out for the
 whole of a shelf. `/library/sections/{id}/firstCharacter` lists the first
-characters of a library's titles with the number of items under each [V],
-and `/services/ultrablur/colors?url=` gives the four colours of any
-picture [V].
+characters of a library's titles with the number of items under each, and
+`/services/ultrablur/colors?url=` gives the four colours of any picture.
+Both were read from a running server's answers; each has a recorded fixture
+in `crates/plex/tests/fixtures`.
 
 **Images:** `/photo/:/transcode?url=..&width=..&height=..&minSize=1&format=jpg`
 requested at the pixel size each kind of card is drawn at.
