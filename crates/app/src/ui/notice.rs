@@ -4,8 +4,8 @@
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlSize, NSImageView, NSLayoutAttribute, NSLayoutConstraint,
-    NSStackView, NSTextAlignment, NSUserInterfaceLayoutOrientation, NSView,
+    NSAccessibility, NSButton, NSColor, NSControlSize, NSImageView, NSLayoutAttribute,
+    NSLayoutConstraint, NSStackView, NSTextAlignment, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString, ns_string};
 
@@ -35,6 +35,8 @@ impl Notice {
         let glyph = NSImageView::new(main_thread);
         glyph.setImage(artwork::symbol(symbol, theme::NOTICE_SYMBOL_SIZE).as_deref());
         glyph.setContentTintColor(Some(&secondary));
+        // Decoration: the title under it says what happened.
+        glyph.setAccessibilityElement(false);
 
         let heading =
             label::line(theme::FONT_TITLE, Weight::Bold, &NSColor::labelColor(), main_thread);

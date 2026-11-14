@@ -6,8 +6,9 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSControlTextEditingDelegate, NSImage, NSImageView, NSScrollView, NSStackView, NSTableColumn,
-    NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField, NSView,
+    NSAccessibility, NSControlTextEditingDelegate, NSImage, NSImageView, NSScrollView, NSStackView,
+    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
+    NSTextField, NSView,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSString, ns_string,
@@ -167,10 +168,10 @@ fn row_view(destination: &Destination, main_thread: MainThreadMarker) -> Retaine
     let symbol = NSString::from_str(destination.symbol());
     if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol, None)
     {
-        views.push(Retained::into_super(Retained::into_super(NSImageView::imageViewWithImage(
-            &image,
-            main_thread,
-        ))));
+        let glyph = NSImageView::imageViewWithImage(&image, main_thread);
+        // The title next to it says what the row is.
+        glyph.setAccessibilityElement(false);
+        views.push(Retained::into_super(Retained::into_super(glyph)));
     }
     views.push(Retained::into_super(Retained::into_super(label)));
 

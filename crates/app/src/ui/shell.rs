@@ -716,6 +716,7 @@ impl Shell {
 
     /// Makes `view` the content, optionally fading from what was there.
     fn show_view(&self, view: &NSView, fade: bool) {
+        let fade = fade && !theme::reduces_motion();
         if let (true, Some(layer)) = (fade, self.content.layer()) {
             let transition = CATransition::new();
             // SAFETY: the type is a constant that Core Animation provides.
@@ -924,10 +925,20 @@ impl Shell {
     }
 
     fn search_results(self: &Rc<Self>, session: &Session, query: &str) -> (Screen, Rc<dyn Fn()>) {
-        let nothing = format!("Nothing found for “{query}”");
-        let posters = self.posters(session, None, Vec::new(), &nothing, || {});
+        let posters = self.posters(session, None, Vec::new(), "Nothing found", || {});
+        let reload = self.search_loader(session, &posters, query);
+        (Screen::Posters(posters), reload)
+    }
+
+    /// What asks for the results of `query` and shows them in `posters`.
+    fn search_loader(
+        self: &Rc<Self>,
+        session: &Session,
+        posters: &Retained<Posters>,
+        query: &str,
+    ) -> Rc<dyn Fn()> {
         let (shown, query) = (posters.clone(), query.to_owned());
-        let reload = self.loader(
+        self.loader(
             session,
             Unanswered::ShowsTheError,
             move |server| {
@@ -935,8 +946,7 @@ impl Shell {
                 async move { server.search(&query, SEARCH_LIMIT).await }
             },
             move |hubs: &Vec<Hub>| shown.show(search_shelves(hubs)),
-        );
-        (Screen::Posters(posters), reload)
+        )
     }
 
     /// Searches for `query` as the viewer types it. Each new query takes
@@ -946,9 +956,26 @@ impl Shell {
         match (query.is_empty(), searching) {
             (true, true) => self.back(),
             (true, false) => {}
-            (false, true) => self.replace(Route::Search(query.to_owned())),
+            (false, true) => self.search_again(query),
             (false, false) => self.go(Route::Search(query.to_owned())),
         }
+    }
+
+    /// Asks the screen of results that is on screen for the results of
+    /// `query` instead. The results it shows stay until the new ones are
+    /// there, so typing does not blank the screen at every letter.
+    fn search_again(self: &Rc<Self>, query: &str) {
+        let screen = self.current(|entry| entry.screen.clone());
+        let (Some(session), Some(Screen::Posters(posters))) = (self.session(), screen) else {
+            return;
+        };
+        self.moves.set(self.moves.get() + 1);
+        let reload = self.search_loader(&session, &posters, query);
+        if let Some(entry) = self.history.borrow_mut().get_mut(self.position.get()) {
+            entry.route = Route::Search(query.to_owned());
+            entry.reload = Rc::clone(&reload);
+        }
+        reload();
     }
 
     fn focus_search(self: &Rc<Self>) {
@@ -1350,9 +1377,13 @@ impl Shell {
         retry: fn(&Rc<Self>),
     ) {
         let retry = self.command(retry);
+        let symbol = match title {
+            UNREACHABLE => "wifi.exclamationmark",
+            _ => "exclamationmark.triangle",
+        };
         self.show_notice(Notice::new(
             self.main_thread,
-            "wifi.exclamationmark",
+            symbol,
             title,
             &with_causes(error),
             Some(("Try Again", Callback::new(self.main_thread, move |_| retry()))),
