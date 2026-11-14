@@ -4,7 +4,7 @@ plex-rust is a native macOS client for Plex, written in Rust. The interface
 is AppKit through the objc2 crates and playback is a statically linked mpv.
 
 plex-rust is an unofficial third-party client. It is not affiliated with,
-endorsed by or sponsored by Plex. Plex is a trademark of Plex, Inc. The app
+endorsed by or supported by Plex, Inc. Plex is a trademark of Plex, Inc. The app
 uses no Plex logo or artwork, and its icon is its own.
 
 [`README.md`](README.md) says how to build and use the app and lists every
