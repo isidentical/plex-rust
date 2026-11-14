@@ -194,6 +194,10 @@ impl Controls {
             sound.leadingAnchor().constraintEqualToAnchor_constant(&leading, hang),
             sound.centerYAnchor().constraintEqualToAnchor(&transport.centerYAnchor()),
             self.volume.widthAnchor().constraintEqualToConstant(theme::VOLUME_WIDTH),
+            // The play symbol is wider than the pause symbol. Left to fit
+            // its content, the chip would push its neighbours aside on
+            // every pause.
+            self.toggle.widthAnchor().constraintEqualToConstant(theme::TOGGLE_WIDTH),
             choices.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -hang),
             choices.centerYAnchor().constraintEqualToAnchor(&transport.centerYAnchor()),
             self.elapsed.leadingAnchor().constraintEqualToAnchor_constant(&leading, theme::MARGIN),

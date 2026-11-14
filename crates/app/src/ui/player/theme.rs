@@ -27,6 +27,9 @@ pub const GROUP_SPACING: f64 = 16.0;
 /// one that holds text. Apple asks for at least 28 points to click on; the
 /// best players give more.
 pub const CHIP_SIZE: f64 = 38.0;
+/// Width of the play and pause button, which fits the wider of its two
+/// symbols with the same padding as any chip.
+pub const TOGGLE_WIDTH: f64 = 46.0;
 pub const CHIP_RADIUS: f64 = 9.0;
 pub const CHIP_PADDING: f64 = 12.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
