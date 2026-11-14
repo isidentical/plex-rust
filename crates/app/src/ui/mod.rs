@@ -1,6 +1,7 @@
 //! The windows and views.
 
 mod detail;
+mod hover;
 pub mod input;
 mod layout;
 mod player;

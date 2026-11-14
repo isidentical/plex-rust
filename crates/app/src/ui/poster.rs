@@ -8,12 +8,14 @@ use objc2::rc::{Allocated, Retained, Weak};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSCollectionViewItem, NSColor, NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular,
-    NSImageScaling, NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSLineBreakMode, NSNibName,
-    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSImage, NSImageScaling, NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSLineBreakMode,
+    NSNibName, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
-use objc2_foundation::{NSArray, NSBundle, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSString, ns_string};
 use plex::model::{Item, Kind};
 
+use super::hover::HoverView;
+use super::layout;
 use super::theme;
 use crate::images::Images;
 
@@ -55,6 +57,11 @@ struct Views {
     artwork: Retained<NSImageView>,
     width: Retained<NSLayoutConstraint>,
     height: Retained<NSLayoutConstraint>,
+    /// A bar along the bottom of the artwork: how far the viewer has got.
+    progress: Retained<NSView>,
+    progress_width: Retained<NSLayoutConstraint>,
+    /// A tick in the corner of something watched to the end.
+    watched: Retained<NSImageView>,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
 }
@@ -85,7 +92,11 @@ define_class!(
         #[unsafe(method(loadView))]
         fn load_view(&self) {
             let views = Views::new(self.mtm());
-            self.setView(&views.stack());
+            // The whole cell reacts to the pointer, captions included.
+            let artwork = views.artwork.clone();
+            let cell = HoverView::new(self.mtm(), move |hovered| highlight(&artwork, hovered));
+            layout::cover(&cell, &views.stack());
+            self.setView(&cell);
             // Cannot fail: AppKit loads a controller's view once.
             let _ = self.ivars().views.set(views);
         }
@@ -110,6 +121,9 @@ impl PosterItem {
         views.title.setStringValue(&NSString::from_str(&title));
         views.subtitle.setStringValue(&NSString::from_str(&subtitle));
         views.artwork.setImage(None);
+        // A reused cell may have been left highlighted by the pointer.
+        highlight(&views.artwork, false);
+        views.show_progress(item, f64::from(width));
 
         let path = artwork_path(item, shape);
         *self.ivars().wanted.borrow_mut() = path.map(str::to_owned);
@@ -176,6 +190,46 @@ impl Views {
         width.setActive(true);
         height.setActive(true);
 
+        let progress = NSView::new(main_thread);
+        progress.setWantsLayer(true);
+        if let Some(layer) = progress.layer() {
+            layer.setBackgroundColor(Some(&NSColor::controlAccentColor().CGColor()));
+        }
+        progress.setTranslatesAutoresizingMaskIntoConstraints(false);
+        artwork.addSubview(&progress);
+        let progress_width = progress.widthAnchor().constraintEqualToConstant(0.0);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            progress.leadingAnchor().constraintEqualToAnchor(&artwork.leadingAnchor()),
+            progress.bottomAnchor().constraintEqualToAnchor(&artwork.bottomAnchor()),
+            progress.heightAnchor().constraintEqualToConstant(theme::PROGRESS_BAR_HEIGHT),
+            progress_width.clone(),
+        ]));
+
+        let watched = NSImageView::new(main_thread);
+        watched.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("checkmark.circle.fill"),
+                Some(ns_string!("Watched")),
+            )
+            .as_deref(),
+        );
+        watched.setContentTintColor(Some(&NSColor::whiteColor()));
+        // A white tick disappears on a pale poster without a shadow.
+        watched.setWantsLayer(true);
+        if let Some(layer) = watched.layer() {
+            layer.setShadowOpacity(theme::BADGE_SHADOW_OPACITY);
+            layer.setShadowRadius(theme::BADGE_SHADOW_RADIUS);
+        }
+        watched.setTranslatesAutoresizingMaskIntoConstraints(false);
+        artwork.addSubview(&watched);
+        let inset = theme::BADGE_INSET;
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            watched
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&artwork.trailingAnchor(), -inset),
+            watched.topAnchor().constraintEqualToAnchor_constant(&artwork.topAnchor(), inset),
+        ]));
+
         // SAFETY: the weights are constants that AppKit provides.
         let (medium, regular) = unsafe { (NSFontWeightMedium, NSFontWeightRegular) };
         let title = caption(theme::TITLE_FONT_SIZE, medium, &NSColor::labelColor(), main_thread);
@@ -185,7 +239,19 @@ impl Views {
             &NSColor::secondaryLabelColor(),
             main_thread,
         );
-        Self { artwork, width, height, title, subtitle }
+        Self { artwork, width, height, progress, progress_width, watched, title, subtitle }
+    }
+
+    /// Shows how much of `item` has been watched, on artwork `width` wide.
+    fn show_progress(&self, item: &Item, width: f64) {
+        let fraction = match (item.view_offset, item.duration) {
+            (Some(offset), Some(duration)) if duration.0 > 0 => offset.0 as f64 / duration.0 as f64,
+            _ => 0.0,
+        };
+        self.progress_width.setConstant(width * fraction.clamp(0.0, 1.0));
+        self.progress.setHidden(fraction == 0.0);
+        // Something being watched again is in progress, not done.
+        self.watched.setHidden(!item.is_watched() || fraction > 0.0);
     }
 
     fn stack(&self) -> Retained<NSStackView> {
@@ -197,6 +263,15 @@ impl Views {
         stack.setSpacing(theme::CAPTION_GAP);
         stack
     }
+}
+
+/// Outlines the artwork while the pointer is over its cell.
+fn highlight(artwork: &NSImageView, highlighted: bool) {
+    let Some(layer) = artwork.layer() else {
+        return;
+    };
+    layer.setBorderColor(Some(&NSColor::whiteColor().CGColor()));
+    layer.setBorderWidth(if highlighted { theme::HOVER_OUTLINE_WIDTH } else { 0.0 });
 }
 
 fn caption(

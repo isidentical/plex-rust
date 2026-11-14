@@ -38,3 +38,9 @@ pub const DETAIL_SUMMARY_LINES: isize = 8;
 
 pub const CONTROL_SPACING: f64 = 12.0;
 pub const CONTROL_BAR_RADIUS: f64 = 16.0;
+
+pub const HOVER_OUTLINE_WIDTH: f64 = 3.0;
+pub const PROGRESS_BAR_HEIGHT: f64 = 4.0;
+pub const BADGE_INSET: f64 = 6.0;
+pub const BADGE_SHADOW_OPACITY: f32 = 0.8;
+pub const BADGE_SHADOW_RADIUS: f64 = 2.0;
