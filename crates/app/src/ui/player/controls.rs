@@ -5,7 +5,7 @@
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSColor, NSLayoutAttribute};
+use objc2_app_kit::{NSAccessibility, NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
     NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
@@ -18,7 +18,7 @@ use plex::model::{Item, Kind};
 use super::chip::{Chip, Style};
 use super::layout::{add, pin, row};
 use super::pane::{Edge, Pane};
-use super::slider::Slider;
+use super::slider::{Reading, Slider};
 use super::theme;
 use super::upnext::UpNext;
 
@@ -68,7 +68,8 @@ impl Controls {
     pub fn new(main_thread: MainThreadMarker, root: &NSView, item: &Item) -> Self {
         let button = |symbol, name, key| Chip::button(main_thread, symbol, name, key);
         let bubble = Chip::new(main_thread, Style::Caption);
-        let scrubber = Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP);
+        let scrubber =
+            Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP, Reading::Time);
         let controls = Self {
             top: Pane::new(main_thread, Edge::Top),
             bottom: Pane::new(main_thread, Edge::Bottom),
@@ -79,7 +80,13 @@ impl Controls {
             previous: button("backward.end.fill", "Previous episode", "P"),
             next: button("forward.end.fill", "Next episode", "N"),
             mute: button("speaker.wave.2.fill", "Mute", "M"),
-            volume: Slider::new(main_thread, "Volume", FULL_VOLUME, theme::VOLUME_STEP),
+            volume: Slider::new(
+                main_thread,
+                "Volume",
+                FULL_VOLUME,
+                theme::VOLUME_STEP,
+                Reading::Share,
+            ),
             elapsed: label(main_thread, theme::FONT_SIZE, regular(), &theme::text()),
             remaining: Chip::new(main_thread, Style::Plain),
             bubble_x: bubble.centerXAnchor().constraintEqualToAnchor(&scrubber.leadingAnchor()),
@@ -241,6 +248,7 @@ impl Controls {
         self.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
         self.spinner.setIndeterminate(true);
         self.spinner.setDisplayedWhenStopped(false);
+        self.spinner.setAccessibilityLabel(Some(&NSString::from_str("Loading")));
         add(root, &self.skip);
         add(root, self.up_next.view());
         add(root, &self.notice);

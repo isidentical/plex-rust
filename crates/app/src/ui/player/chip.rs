@@ -4,16 +4,19 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
+    NSAccessibility, NSAccessibilityAnnouncementKey,
+    NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityButtonRole,
+    NSAccessibilityPostNotificationWithUserInfo, NSBezierPath, NSColor, NSEvent, NSFont,
     NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView,
     NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
     NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::{NSArray, NSPoint, NSRect, NSString, ns_string};
+use objc2_foundation::{NSArray, NSDictionary, NSPoint, NSRect, NSString, ns_string};
 
 use super::theme;
 
@@ -262,6 +265,33 @@ impl Chip {
         label.setStringValue(&NSString::from_str(title));
         label.setHidden(title.is_empty());
         self.describe();
+        if self.ivars().style == Style::Notice {
+            self.announce(title);
+        }
+    }
+
+    /// Has VoiceOver say `text`, as a notice is of no use to a viewer who
+    /// has to go looking for it before it is gone.
+    fn announce(&self, text: &str) {
+        // An announcement is only heard if it comes from a window.
+        let Some(window) = self.window() else {
+            return;
+        };
+        let text = NSString::from_str(text);
+        let said: &AnyObject = &text;
+        // SAFETY: the key is a constant that AppKit provides.
+        let key = unsafe { NSAccessibilityAnnouncementKey };
+        let info = NSDictionary::from_slices(&[key], &[said]);
+        // SAFETY: a window is an accessibility element, the notification
+        // is a constant that AppKit provides, and the announcement key
+        // takes a string.
+        unsafe {
+            NSAccessibilityPostNotificationWithUserInfo(
+                &window,
+                NSAccessibilityAnnouncementRequestedNotification,
+                Some(&info),
+            );
+        }
     }
 
     /// Keeps the chip from growing wider than `width`. Text that does not

@@ -33,6 +33,17 @@ pub enum Grip {
     Released,
 }
 
+/// What a slider's value is, which decides how VoiceOver says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reading {
+    /// A share of the whole: "65 percent".
+    #[default]
+    Share,
+    /// Seconds into a stretch of time: "12 minutes 25 seconds of 18
+    /// minutes 29 seconds".
+    Time,
+}
+
 #[derive(Default)]
 pub struct Ivars {
     /// Between 0 and `limit`.
@@ -40,6 +51,7 @@ pub struct Ivars {
     limit: Cell<f64>,
     /// How far VoiceOver moves the knob at a time.
     step: f64,
+    reading: Reading,
     /// Up to where the track is drawn as loaded. Nothing below `value`.
     loaded: Cell<f64>,
     /// Values at which the track is notched.
@@ -148,6 +160,19 @@ define_class!(
             Some(Retained::into_super(number))
         }
 
+        /// The value in words. Without it VoiceOver reads the number
+        /// above bare, and "67" says nothing about a film.
+        #[unsafe(method_id(accessibilityValueDescription))]
+        fn accessibility_value_description(&self) -> Option<Retained<NSString>> {
+            let (value, limit) = (self.ivars().value.get(), self.ivars().limit.get());
+            let words = match self.ivars().reading {
+                Reading::Share if limit > 0.0 => format!("{:.0} percent", 100.0 * value / limit),
+                Reading::Share => "0 percent".to_owned(),
+                Reading::Time => format!("{} of {}", spoken(value), spoken(limit)),
+            };
+            Some(NSString::from_str(&words))
+        }
+
         #[unsafe(method(accessibilityPerformIncrement))]
         fn perform_increment(&self) -> bool {
             self.step_by(self.ivars().step);
@@ -182,9 +207,16 @@ define_class!(
 
 impl Slider {
     /// A slider called `name` from 0 to `limit`, with the knob at 0.
-    /// VoiceOver moves the knob `step` at a time.
-    pub fn new(main_thread: MainThreadMarker, name: &str, limit: f64, step: f64) -> Retained<Self> {
-        let ivars = Ivars { limit: Cell::new(limit), step, ..Ivars::default() };
+    /// VoiceOver moves the knob `step` at a time and says the value as
+    /// `reading` has it.
+    pub fn new(
+        main_thread: MainThreadMarker,
+        name: &str,
+        limit: f64,
+        step: f64,
+        reading: Reading,
+    ) -> Retained<Self> {
+        let ivars = Ivars { limit: Cell::new(limit), step, reading, ..Ivars::default() };
         let this = Self::alloc(main_thread).set_ivars(ivars);
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         let slider: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -380,8 +412,33 @@ impl Slider {
     }
 }
 
+/// A length of time as it is said aloud: "1 hour 2 minutes 3 seconds",
+/// leaving out the hours of a time that has none.
+fn spoken(seconds: f64) -> String {
+    let seconds = seconds.max(0.0) as u64;
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    let count = |number: u64, unit: &str| match number {
+        1 => format!("1 {unit}"),
+        _ => format!("{number} {unit}s"),
+    };
+    let rest = format!("{} {}", count(minutes, "minute"), count(seconds, "second"));
+    if hours > 0 { format!("{} {rest}", count(hours, "hour")) } else { rest }
+}
+
 /// The square around a circle of `radius` about `center`.
 fn disc(center: NSPoint, radius: f64) -> NSRect {
     let corner = NSPoint::new(center.x - radius, center.y - radius);
     NSRect::new(corner, NSSize::new(2.0 * radius, 2.0 * radius))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spoken;
+
+    #[test]
+    fn a_time_is_said_in_words_with_hours_only_when_it_has_them() {
+        assert_eq!(spoken(745.9), "12 minutes 25 seconds");
+        assert_eq!(spoken(3661.0), "1 hour 1 minute 1 second");
+        assert_eq!(spoken(0.0), "0 minutes 0 seconds");
+    }
 }
