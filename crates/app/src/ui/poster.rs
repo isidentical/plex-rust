@@ -373,7 +373,7 @@ impl Views {
         // The name is right under it.
         initials.setAccessibilityElement(false);
         layout::float(&monogram, &initials);
-        Self {
+        let views = Self {
             monogram,
             initials,
             art: ArtView::new(main_thread, theme::RADIUS_M),
@@ -385,7 +385,12 @@ impl Views {
             ),
             subtitle: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
             shown: RefCell::new(None),
-        }
+        };
+        // A caption too long for its card is cut short. The pointer
+        // resting on it then brings up the whole of it.
+        views.title.setAllowsExpansionToolTips(true);
+        views.subtitle.setAllowsExpansionToolTips(true);
+        views
     }
 
     /// Artwork on top, filling the card down to the captions.
