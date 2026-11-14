@@ -1,0 +1,1103 @@
+{
+  "MediaContainer": {
+    "size": 9,
+    "allowSync": true,
+    "art": "/library/metadata/1044/art/1656276870",
+    "identifier": "com.plexapp.plugins.library",
+    "key": "1044",
+    "librarySectionID": 2,
+    "librarySectionTitle": "Librarysectiontitle",
+    "librarySectionUUID": "Librarysectionuuid",
+    "mediaTagPrefix": "Mediatagprefix",
+    "mediaTagVersion": 1786914632,
+    "mixedParents": true,
+    "nocache": true,
+    "parentIndex": 1,
+    "parentTitle": "Parenttitle",
+    "parentYear": 2001,
+    "theme": "Theme",
+    "title1": "Title1",
+    "title2": "Title2",
+    "viewGroup": "episode",
+    "viewMode": 65592,
+    "Metadata": [
+      {
+        "ratingKey": "1199",
+        "key": "/library/metadata/1199",
+        "parentRatingKey": "1198",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "Before the Storm",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1198",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 1,
+        "parentIndex": 0,
+        "audienceRating": 7.3,
+        "year": 2001,
+        "thumb": "/library/metadata/1199/thumb/1792356827",
+        "art": "/library/metadata/1044/art/1656281888",
+        "parentThumb": "/library/metadata/1198/thumb/1792356827",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656281888",
+        "grandparentArt": "/library/metadata/1044/art/1656281888",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 3503760,
+        "originallyAvailableAt": "2001-01-01",
+        "addedAt": 1656281888,
+        "updatedAt": 1792356827,
+        "audienceRatingImage": "Audienceratingimage",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2221,
+            "duration": 3503760,
+            "bitrate": 769,
+            "width": 640,
+            "height": 480,
+            "aspectRatio": 1.33,
+            "audioChannels": 2,
+            "audioCodec": "aac",
+            "videoCodec": "hevc",
+            "videoResolution": "480",
+            "container": "mp4",
+            "videoFrameRate": "PAL",
+            "optimizedForStreaming": 0,
+            "has64bitOffsets": false,
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2221,
+                "key": "/library/parts/2221/1656281888/file.mp4",
+                "duration": 3503760,
+                "file": "File",
+                "size": 336794084,
+                "container": "mp4",
+                "has64bitOffsets": false,
+                "optimizedForStreaming": false,
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "033534",
+          "topRight": "1d5557",
+          "bottomRight": "18585b",
+          "bottomLeft": "16381f"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1200",
+        "key": "/library/metadata/1200",
+        "parentRatingKey": "1198",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "A Year Later",
+        "titleSort": "Titlesort",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1198",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 2,
+        "parentIndex": 0,
+        "audienceRating": 7.5,
+        "year": 2001,
+        "thumb": "/library/metadata/1200/thumb/1792356828",
+        "art": "/library/metadata/1044/art/1656317697",
+        "parentThumb": "/library/metadata/1198/thumb/1792356827",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656317697",
+        "grandparentArt": "/library/metadata/1044/art/1656317697",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 3615080,
+        "originallyAvailableAt": "2001-01-02",
+        "addedAt": 1656317697,
+        "updatedAt": 1792356828,
+        "audienceRatingImage": "Audienceratingimage",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2222,
+            "duration": 3615080,
+            "bitrate": 768,
+            "width": 640,
+            "height": 352,
+            "aspectRatio": 1.85,
+            "audioChannels": 2,
+            "audioCodec": "aac",
+            "videoCodec": "hevc",
+            "videoResolution": "sd",
+            "container": "mp4",
+            "videoFrameRate": "PAL",
+            "optimizedForStreaming": 0,
+            "has64bitOffsets": false,
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2222,
+                "key": "/library/parts/2222/1656317697/file.mp4",
+                "duration": 3615080,
+                "file": "File",
+                "size": 346927046,
+                "container": "mp4",
+                "has64bitOffsets": false,
+                "optimizedForStreaming": false,
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "172d4f",
+          "topRight": "3f2710",
+          "bottomRight": "9c3244",
+          "bottomLeft": "234770"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1046",
+        "key": "/library/metadata/1046",
+        "parentRatingKey": "1045",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "The Arrival",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1045",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 1,
+        "parentIndex": 1,
+        "audienceRating": 7.3,
+        "year": 2002,
+        "thumb": "/library/metadata/1046/thumb/1792487377",
+        "art": "/library/metadata/1044/art/1656275134",
+        "parentThumb": "/library/metadata/1045/thumb/1792356813",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656275134",
+        "grandparentArt": "/library/metadata/1044/art/1656275134",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 2780928,
+        "originallyAvailableAt": "2002-01-03",
+        "addedAt": 1656275134,
+        "updatedAt": 1792487377,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2070,
+            "duration": 2780928,
+            "bitrate": 1188,
+            "width": 1248,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2070,
+                "key": "/library/parts/2070/1656275134/file.mkv",
+                "duration": 2780928,
+                "file": "File",
+                "size": 412859028,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "0f0209",
+          "topRight": "31316c",
+          "bottomRight": "110304",
+          "bottomLeft": "171517"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1047",
+        "key": "/library/metadata/1047",
+        "parentRatingKey": "1045",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "Old Friends",
+        "titleSort": "Titlesort",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1045",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 2,
+        "parentIndex": 1,
+        "audienceRating": 7.5,
+        "year": 2002,
+        "thumb": "/library/metadata/1047/thumb/1792487349",
+        "art": "/library/metadata/1044/art/1656275379",
+        "parentThumb": "/library/metadata/1045/thumb/1792356813",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656275379",
+        "grandparentArt": "/library/metadata/1044/art/1656275379",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 2808019,
+        "originallyAvailableAt": "2002-01-04",
+        "addedAt": 1656275379,
+        "updatedAt": 1792487349,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2071,
+            "duration": 2808019,
+            "bitrate": 1188,
+            "width": 1248,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2071,
+                "key": "/library/parts/2071/1656275379/file.mkv",
+                "duration": 2808019,
+                "file": "File",
+                "size": 416943784,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "52170d",
+          "topRight": "8e4223",
+          "bottomRight": "9c391b",
+          "bottomLeft": "280c04"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1058",
+        "key": "/library/metadata/1058",
+        "parentRatingKey": "1045",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "The Long Night",
+        "titleSort": "Titlesort",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1045",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 13,
+        "parentIndex": 1,
+        "audienceRating": 8.6,
+        "year": 2002,
+        "thumb": "/library/metadata/1058/thumb/1792487073",
+        "art": "/library/metadata/1044/art/1656276776",
+        "parentThumb": "/library/metadata/1045/thumb/1792356813",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656276776",
+        "grandparentArt": "/library/metadata/1044/art/1656276776",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 2874880,
+        "originallyAvailableAt": "2002-01-05",
+        "addedAt": 1656276776,
+        "updatedAt": 1792487073,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2082,
+            "duration": 2874880,
+            "bitrate": 1188,
+            "width": 1264,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2082,
+                "key": "/library/parts/2082/1656276776/file.mkv",
+                "duration": 2874880,
+                "file": "File",
+                "size": 426816399,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "4c1e0c",
+          "topRight": "4955a4",
+          "bottomRight": "795629",
+          "bottomLeft": "904615"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1085",
+        "key": "/library/metadata/1085",
+        "parentRatingKey": "1084",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "New Ground",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1084",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 1,
+        "parentIndex": 2,
+        "audienceRating": 7.1,
+        "year": 2003,
+        "thumb": "/library/metadata/1085/thumb/1792487811",
+        "art": "/library/metadata/1044/art/1656276870",
+        "parentThumb": "/library/metadata/1084/thumb/1792356816",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656276870",
+        "grandparentArt": "/library/metadata/1044/art/1656276870",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 2780283,
+        "originallyAvailableAt": "2003-01-06",
+        "addedAt": 1656276870,
+        "updatedAt": 1792487811,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2108,
+            "duration": 2780283,
+            "bitrate": 1178,
+            "width": 1264,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2108,
+                "key": "/library/parts/2108/1656276870/file.mkv",
+                "duration": 2780283,
+                "file": "File",
+                "size": 409323551,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "2a3213",
+          "topRight": "403615",
+          "bottomRight": "243b1d",
+          "bottomLeft": "07150a"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1097",
+        "key": "/library/metadata/1097",
+        "parentRatingKey": "1084",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "Crossing Over",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1084",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 13,
+        "parentIndex": 2,
+        "audienceRating": 8.8,
+        "year": 2003,
+        "thumb": "/library/metadata/1097/thumb/1792486956",
+        "art": "/library/metadata/1044/art/1656278480",
+        "parentThumb": "/library/metadata/1084/thumb/1792356816",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656278480",
+        "grandparentArt": "/library/metadata/1044/art/1656278480",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 2924544,
+        "originallyAvailableAt": "2003-01-07",
+        "addedAt": 1656278480,
+        "updatedAt": 1792486956,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2120,
+            "duration": 2924544,
+            "bitrate": 1178,
+            "width": 1264,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2120,
+                "key": "/library/parts/2120/1656278480/file.mkv",
+                "duration": 2924544,
+                "file": "File",
+                "size": 430537968,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "45171f",
+          "topRight": "2e5b9c",
+          "bottomRight": "2c0c18",
+          "bottomLeft": "692d28"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1117",
+        "key": "/library/metadata/1117",
+        "parentRatingKey": "1116",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "The Return",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1116",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 1,
+        "parentIndex": 4,
+        "audienceRating": 7.4,
+        "year": 2005,
+        "thumb": "/library/metadata/1117/thumb/1792487434",
+        "art": "/library/metadata/1044/art/1656279734",
+        "parentThumb": "/library/metadata/1116/thumb/1792356818",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656279734",
+        "grandparentArt": "/library/metadata/1044/art/1656279734",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 3057059,
+        "originallyAvailableAt": "2005-01-08",
+        "addedAt": 1656279734,
+        "updatedAt": 1792487434,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2144,
+            "duration": 3057059,
+            "bitrate": 1178,
+            "width": 1264,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2144,
+                "key": "/library/parts/2144/1656279734/file.mkv",
+                "duration": 3057059,
+                "file": "File",
+                "size": 450080011,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "432608",
+          "topRight": "743c10",
+          "bottomRight": "66260e",
+          "bottomLeft": "236243"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      },
+      {
+        "ratingKey": "1129",
+        "key": "/library/metadata/1129",
+        "parentRatingKey": "1116",
+        "grandparentRatingKey": "1044",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "grandparentGuid": "Grandparentguid",
+        "grandparentSlug": "Grandparentslug",
+        "studio": "Studio",
+        "type": "episode",
+        "title": "Last Light",
+        "grandparentKey": "/library/metadata/1044",
+        "parentKey": "/library/metadata/1116",
+        "grandparentTitle": "Grandparenttitle",
+        "parentTitle": "Parenttitle",
+        "contentRating": "TV-PG",
+        "summary": "Summary",
+        "index": 13,
+        "parentIndex": 4,
+        "audienceRating": 8.4,
+        "year": 2005,
+        "thumb": "/library/metadata/1129/thumb/1792486997",
+        "art": "/library/metadata/1044/art/1656280606",
+        "parentThumb": "/library/metadata/1116/thumb/1792356818",
+        "grandparentThumb": "/library/metadata/1044/thumb/1656280606",
+        "grandparentArt": "/library/metadata/1044/art/1656280606",
+        "grandparentTheme": "Grandparenttheme",
+        "duration": 3965133,
+        "originallyAvailableAt": "2005-01-09",
+        "addedAt": 1656280606,
+        "updatedAt": 1792486997,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "Media": [
+          {
+            "id": 2156,
+            "duration": 3965133,
+            "bitrate": 1178,
+            "width": 1264,
+            "height": 720,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "720",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "videoProfile": "main",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 2156,
+                "key": "/library/parts/2156/1656280606/file.mkv",
+                "duration": 3965133,
+                "file": "File",
+                "size": 583851150,
+                "container": "mkv",
+                "videoProfile": "main"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Alt",
+            "type": "coverPoster",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "snapshot",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "background",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "clearLogo",
+            "url": "Url"
+          },
+          {
+            "alt": "Alt",
+            "type": "backgroundSquare",
+            "url": "Url"
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "442503",
+          "topRight": "7e4416",
+          "bottomRight": "66300b",
+          "bottomLeft": "7f5318"
+        },
+        "Director": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Writer": [
+          {
+            "tag": "Tag"
+          }
+        ],
+        "Role": [
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          },
+          {
+            "tag": "Tag"
+          }
+        ]
+      }
+    ]
+  }
+}

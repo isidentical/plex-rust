@@ -8,7 +8,6 @@ mod layout;
 mod menu;
 mod pane;
 mod remote;
-mod season;
 mod slider;
 mod speed;
 mod stage;
@@ -35,6 +34,7 @@ use objc2_foundation::{
 };
 use player::{Chapter, DolbyVision, EndReason, Event, Player, Track, TrackKind};
 use plex::MediaServer;
+use plex::library::{self, Neighbours};
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
 
@@ -44,7 +44,6 @@ use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
 use self::menu::Choice;
 use self::remote::{Command, Playing, Remote};
-use self::season::Neighbours;
 use self::slider::{Grip, Pointed};
 use self::speed::Speed;
 use crate::background::Background;
@@ -178,11 +177,11 @@ pub struct Ivars {
     /// length, and not what is left of it.
     shows_length: Cell<bool>,
     chapters: RefCell<Vec<Chapter>>,
-    /// The season of the episode this screen opened with, once the server
-    /// has listed it.
+    /// Every episode of the show being played, in the server's order,
+    /// once the server has listed them.
     episodes: RefCell<Option<Vec<Item>>>,
     /// The episodes before and after the one playing. `None` for a film,
-    /// and for an episode until its season is listed.
+    /// and for an episode until its show is listed.
     neighbours: RefCell<Option<Neighbours>>,
     up_next: Cell<UpNext>,
     /// Held while playing, so that the display does not go to sleep in the
@@ -345,7 +344,7 @@ impl PlayerScreen {
             screen.take_media_controls(images);
         }
         screen.follow_events(main_thread);
-        screen.list_season();
+        screen.list_episodes();
         Ok(screen)
     }
 
@@ -832,15 +831,17 @@ impl PlayerScreen {
         Ok(())
     }
 
-    /// Asks the server for the season of the episode being played, to know
-    /// what comes before and after it.
-    fn list_season(&self) {
+    /// Asks the server for the episodes of the show being played, to know
+    /// what comes before and after each. All of them, and not the season
+    /// alone: the last episode of a season is followed by the first of
+    /// the next.
+    fn list_episodes(&self) {
         let (ivars, item) = (self.ivars(), self.item());
-        let (Kind::Episode, Some(season)) = (item.kind, item.parent_rating_key.clone()) else {
+        let (Kind::Episode, Some(show)) = (item.kind, item.grandparent_rating_key.clone()) else {
             return;
         };
         let server = ivars.server.clone();
-        let load = async move { server.children(&season).await };
+        let load = async move { server.episodes(&show).await };
         let screen = Weak::new(self);
         ivars.background.run(self.mtm(), load, move |episodes| {
             let Some(screen) = screen.load() else {
@@ -853,7 +854,7 @@ impl PlayerScreen {
                 }
                 // Next and Previous then stay as they are before the answer
                 // has come: with nowhere to go.
-                Err(error) => eprintln!("plex-rust: season not listed: {}", with_causes(&error)),
+                Err(error) => eprintln!("plex-rust: show not listed: {}", with_causes(&error)),
             }
         });
     }
@@ -861,10 +862,9 @@ impl PlayerScreen {
     /// Works out which episodes are on either side of the one playing.
     fn find_neighbours(&self) {
         let (ivars, item) = (self.ivars(), self.item());
+        let episodes = ivars.episodes.borrow();
         let neighbours =
-            ivars.episodes.borrow().as_ref().and_then(|episodes| {
-                item.index.map(|number| Neighbours::of(episodes.clone(), number))
-            });
+            episodes.as_ref().map(|episodes| library::neighbours(episodes, &item.rating_key));
         if let Some(next) = neighbours.as_ref().and_then(|known| known.next.as_ref()) {
             ivars.controls.up_next.offer(next);
         }
@@ -902,7 +902,7 @@ impl PlayerScreen {
         Ok(())
     }
 
-    /// Goes to the next episode, if the season is known and has one.
+    /// Goes to the next episode, if the show is listed and has one.
     fn go_to_next(&self) {
         let next = match &*self.ivars().neighbours.borrow() {
             Some(known) => known.next.clone(),
@@ -911,7 +911,7 @@ impl PlayerScreen {
         match next {
             Some(next) => self.switch_to(next),
             None => {
-                self.notify("Last episode of the season");
+                self.notify("Last episode");
                 self.show_controls(true);
             }
         }

@@ -290,7 +290,8 @@ itself. Plex sidecar subtitles are added by URL with `sub-add`. Track menus
 come from `track-list`.
 
 **Skip intro / credits:** a button shown while the position is inside a
-marker. **Next episode:** on end of file, play the next sibling episode.
+marker. **Next episode:** on end of file, play the episode that follows in
+the show, into the next season when a season ends. Specials stay apart.
 
 ## 8. UI
 
