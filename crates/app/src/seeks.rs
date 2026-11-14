@@ -54,6 +54,15 @@ fn step(name: &str) -> Option<Step> {
     })
 }
 
+/// How a playback began.
+pub struct Start {
+    /// From asking for the file to its first picture being ready.
+    pub took: Duration,
+    /// How long sound takes from the audio device to the ear, if the device
+    /// said. Sound is heard this much later than every `audio_ms` below.
+    pub audio_latency: Option<Duration>,
+}
+
 /// How one jump went, as times since the key press.
 #[derive(Default)]
 struct Stall {
@@ -65,11 +74,19 @@ struct Stall {
     moving: Option<Duration>,
     /// Where the jump landed.
     landed: Option<f64>,
+    /// How far the sound was ahead of the picture, in seconds, at every
+    /// frame from the restart until the next press.
+    av_offsets: Vec<f64>,
 }
 
 impl Stall {
     fn is_over(&self) -> bool {
         self.restarted.is_some() && self.audio.is_some() && self.moving.is_some()
+    }
+
+    /// The time from mpv having the first picture until the picture moved.
+    fn hold(&self) -> Option<Duration> {
+        Some(self.moving?.saturating_sub(self.restarted?))
     }
 
     fn note(&mut self, moment: Moment, pressed: Instant, player: &Player) -> player::Result<()> {
@@ -98,18 +115,25 @@ impl Stall {
             // Whatever finished before mpv took up this press belongs to
             // an earlier one.
             Moment::Seeking => *self = Self::default(),
-            Moment::PictureShown | Moment::Shutdown => {}
+            Moment::AvOffset(offset) => {
+                if self.restarted.is_some() {
+                    self.av_offsets.push(offset);
+                }
+            }
+            Moment::PictureShown | Moment::AudioLatency(_) | Moment::Shutdown => {}
         }
         Ok(())
     }
 }
 
-/// Waits for the playback that `player` was just told to load and returns
-/// how long it took from `loading` to the first picture.
-pub fn started(probe: &mut Probe, loading: Instant) -> Option<Duration> {
+/// Waits for the playback that `player` was just told to load, which began
+/// at `loading`, and returns how it started.
+pub fn started(probe: &mut Probe, loading: Instant) -> Option<Start> {
+    let mut audio_latency = None;
     loop {
         match probe.wait(GIVE_UP.saturating_sub(loading.elapsed()))? {
-            Moment::Restarted => return Some(loading.elapsed()),
+            Moment::Restarted => return Some(Start { took: loading.elapsed(), audio_latency }),
+            Moment::AudioLatency(latency) => audio_latency = Some(latency),
             Moment::Shutdown => return None,
             _ => {}
         }
@@ -145,22 +169,42 @@ fn pressed(player: &Player, probe: &mut Probe, step: &Step) -> player::Result<Va
     let mut off_target: f64 = 0.0;
     for _ in 0..step.presses {
         let from = player.position()?.map(|position| position.as_secs_f64());
-        let stall = jump(player, probe, step.seconds, Player::seek_by)?;
+        let mut stall = jump(player, probe, step.seconds, Player::seek_by)?;
         if let (Some(from), Some(landed)) = (from, stall.landed) {
             off_target = off_target.max((landed - from - step.seconds).abs());
         }
+        settle(probe, &mut stall);
         stalls.push(stall);
-        idle(probe, SETTLE);
     }
+    let ms = |offset: f64| offset.abs() * 1000.0;
+    let worst = stalls.iter().flat_map(|stall| &stall.av_offsets).copied().map(ms);
+    let settled = stalls.iter().filter_map(|stall| stall.av_offsets.last()).copied().map(ms);
     Ok(json!({
         "step": step.name,
         "restarted_ms": spread(stalls.iter().map(|stall| stall.restarted)),
         "audio_ms": spread(stalls.iter().map(|stall| stall.audio)),
         "moving_ms": spread(stalls.iter().map(|stall| stall.moving)),
+        // How long the picture a jump landed on stood still. One frame's
+        // duration means it did not wait for anything.
+        "hold_ms": spread(stalls.iter().map(Stall::hold)),
+        // The furthest apart that sound and picture were, in milliseconds:
+        // at any frame after a jump, and when the next jump was due.
+        "av_offset_ms": { "worst": worst.reduce(f64::max), "settled": settled.reduce(f64::max) },
         // The furthest a jump landed from where it was aimed, in seconds.
         "off_target": off_target,
         "unfinished": stalls.iter().filter(|stall| !stall.is_over()).count(),
     }))
+}
+
+/// Lets playback run on after a jump as [`idle`] does, noting how far apart
+/// sound and picture are meanwhile.
+fn settle(probe: &mut Probe, stall: &mut Stall) {
+    let until = Instant::now() + SETTLE;
+    while let Some(moment) = probe.wait(until.saturating_duration_since(Instant::now())) {
+        if let Moment::AvOffset(offset) = moment {
+            stall.av_offsets.push(offset);
+        }
+    }
 }
 
 /// A held key: what matters is how many pictures show while it is down and

@@ -9,7 +9,11 @@ use libmpv2_sys as sys;
 use crate::core::Player;
 use crate::error::{Error, Result, check};
 
-// mpv has no event or property for the next two moments, only log lines.
+/// Which observed property a change is for.
+const POSITION: u64 = 1;
+const AV_OFFSET: u64 = 2;
+
+// mpv has no event or property for the next moments, only log lines.
 
 /// Logged when the first picture after a start or a seek has been drawn
 /// (`write_video` in mpv's player/video.c).
@@ -19,10 +23,19 @@ const PICTURE_SHOWN: &CStr = c"first video frame after restart shown\n";
 /// audio device (`audio_start_ao` in mpv's player/audio.c).
 const AUDIO_STARTED: &CStr = c"starting audio playback\n";
 
+/// Logged by the CoreAudio output when it opens the device, one after the
+/// other (`ca_get_hardware_latency` in mpv's audio/out/ao_coreaudio.c).
+/// Their sum is how long sound takes from the output to the ear.
+const UNIT_LATENCY: &str = "audiounit latency [ns]: ";
+const DEVICE_LATENCY: &str = "device latency [ns]: ";
+
 /// A second listener on a [`Player`]. It sees the steps of a seek, which
 /// [`Player::wait_event`] leaves out, and takes no events away from it.
 pub struct Probe {
     client: NonNull<sys::mpv_handle>,
+    /// The audio unit's part of the output latency, until the device's part
+    /// is logged and both are reported as one.
+    unit_latency: Duration,
     /// Keeps the core alive for as long as the client is attached to it.
     _player: Player,
 }
@@ -53,6 +66,13 @@ pub enum Moment {
     AudioStarted,
     /// The playback position changed to this many seconds.
     Position(f64),
+    /// How far the sound being heard is ahead of the picture, in seconds,
+    /// as mpv works it out from what the audio device reports. mpv updates
+    /// it with every frame while picture and sound both play.
+    AvOffset(f64),
+    /// The audio device was opened. Sound handed to it is heard this much
+    /// later.
+    AudioLatency(Duration),
     /// mpv is shutting down. No further moments will arrive.
     Shutdown,
 }
@@ -63,18 +83,20 @@ impl Probe {
         // NUL-terminated.
         let client = unsafe { sys::mpv_create_client(player.raw(), c"probe".as_ptr()) };
         let client = NonNull::new(client).ok_or(Error::Create)?;
-        let probe = Self { client, _player: player.clone() };
+        let probe = Self { client, unit_latency: Duration::ZERO, _player: player.clone() };
 
-        // SAFETY: the client is valid and the name is NUL-terminated.
-        let status = unsafe {
-            sys::mpv_observe_property(
-                probe.client.as_ptr(),
-                0,
-                c"time-pos".as_ptr(),
-                sys::mpv_format_MPV_FORMAT_DOUBLE,
-            )
-        };
-        check(status, || "observe time-pos".into())?;
+        for (id, name) in [(POSITION, c"time-pos"), (AV_OFFSET, c"avsync")] {
+            // SAFETY: the client is valid and the name is NUL-terminated.
+            let status = unsafe {
+                sys::mpv_observe_property(
+                    probe.client.as_ptr(),
+                    id,
+                    name.as_ptr(),
+                    sys::mpv_format_MPV_FORMAT_DOUBLE,
+                )
+            };
+            check(status, || format!("observe {name:?}"))?;
+        }
         // SAFETY: the client is valid and the level is NUL-terminated.
         let status = unsafe { sys::mpv_request_log_messages(probe.client.as_ptr(), c"v".as_ptr()) };
         check(status, || "request log messages".into())?;
@@ -105,23 +127,53 @@ impl Probe {
                     if text == AUDIO_STARTED {
                         return Some(Moment::AudioStarted);
                     }
+                    let text = text.to_string_lossy();
+                    if let Some(latency) = nanoseconds(&text, UNIT_LATENCY) {
+                        self.unit_latency = latency;
+                    }
+                    if let Some(latency) = nanoseconds(&text, DEVICE_LATENCY) {
+                        return Some(Moment::AudioLatency(self.unit_latency + latency));
+                    }
                 }
                 sys::mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
                     // SAFETY: for PROPERTY_CHANGE, mpv sets `data` to a valid
                     // mpv_event_property.
                     let property = unsafe { &*event.data.cast::<sys::mpv_event_property>() };
-                    // Only the position is observed, and as a double. `data`
-                    // is null while nothing is loaded.
+                    // Both properties are observed as doubles. `data` is
+                    // null while the property has no value.
                     if property.format == sys::mpv_format_MPV_FORMAT_DOUBLE
                         && !property.data.is_null()
                     {
                         // SAFETY: for MPV_FORMAT_DOUBLE, `data` points to a
                         // double.
-                        return Some(Moment::Position(unsafe { *property.data.cast::<f64>() }));
+                        let value = unsafe { *property.data.cast::<f64>() };
+                        return Some(match event.reply_userdata {
+                            AV_OFFSET => Moment::AvOffset(value),
+                            _ => Moment::Position(value),
+                        });
                     }
                 }
                 _ => {}
             }
         }
+    }
+}
+
+/// The number of nanoseconds that a log line of the form `<label><number>`
+/// reports.
+fn nanoseconds(line: &str, label: &str) -> Option<Duration> {
+    line.strip_prefix(label)?.trim_end().parse().ok().map(Duration::from_nanos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latency_is_read_from_its_log_line() {
+        let line = "device latency [ns]: 171000000\n";
+        assert_eq!(nanoseconds(line, DEVICE_LATENCY), Some(Duration::from_millis(171)));
+        assert_eq!(nanoseconds(line, UNIT_LATENCY), None);
+        assert_eq!(nanoseconds("device latency [ns]: soon\n", DEVICE_LATENCY), None);
     }
 }

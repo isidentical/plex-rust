@@ -276,7 +276,12 @@ fn checked(
     };
     let mut report = state(player)?;
     // Seconds from asking for the file to its first picture being ready.
-    report["started_in"] = started.map(|time| time.as_secs_f64()).into();
+    report["started_in"] = started.as_ref().map(|start| start.took.as_secs_f64()).into();
+    // How much later than it is handed to the audio device sound is heard.
+    report["audio_latency_ms"] = started
+        .and_then(|start| start.audio_latency)
+        .map(|latency| latency.as_secs_f64() * 1000.0)
+        .into();
     report["seeks"] = seeks.into();
     Ok(report)
 }
