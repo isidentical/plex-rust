@@ -674,7 +674,10 @@ impl Detail {
         let mut beside: Vec<String> = Vec::new();
         beside.extend(is_show.then(|| playable.title.clone()));
         beside.extend(text::remaining(&playable));
-        hero.remaining.show(&beside.join(" · "), playable.progress());
+        // An episode's own page shows how far it was watched on its frame.
+        let watched =
+            if is_show || playable.kind == Kind::Movie { playable.progress() } else { 0.0 };
+        hero.remaining.show(&beside.join(" · "), watched);
     }
 }
 
@@ -813,14 +816,8 @@ impl Hero {
         let downloaded = line(theme::FONT_BODY, Weight::Regular, &secondary);
         downloaded.setHidden(true);
         let remaining = Remaining::new(main_thread);
-        let row: [&NSView; 6] = [
-            &play.button,
-            &restart.button,
-            &watched.button,
-            &download.button,
-            &downloaded,
-            &remaining.view,
-        ];
+        let row: [&NSView; 5] =
+            [&play.button, &restart.button, &watched.button, &download.button, &downloaded];
         let buttons = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
         buttons.setSpacing(theme::SPACE_M);
         buttons.setCustomSpacing_afterView(theme::SPACE_L, &download.button);
@@ -950,6 +947,12 @@ impl Hero {
         let lead = column(&[&headline, &self.facts, &self.badges, buttons], theme::SPACE_M);
         lead.setCustomSpacing_afterView(theme::SPACE_S, &headline);
         lead.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
+        // Beside the buttons, but for an episode: its frame takes that
+        // room in a narrow window, and has the bar on it.
+        match kind {
+            Kind::Episode => lead.addArrangedSubview(&self.remaining.view),
+            _ => buttons.addArrangedSubview(&self.remaining.view),
+        }
         let stage = NSView::new(main_thread);
         stage.setTranslatesAutoresizingMaskIntoConstraints(false);
         stage.addSubview(&self.art_link);
