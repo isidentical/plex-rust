@@ -126,7 +126,6 @@ pub fn run(player: &Player, probe: &mut Probe, steps: &[Step]) -> player::Result
 
 /// Separate presses: every one is timed.
 fn pressed(player: &Player, probe: &mut Probe, step: &Step) -> player::Result<Value> {
-    let dropped = player.dropped_frames()?;
     let mut stalls = Vec::new();
     let mut off_target: f64 = 0.0;
     for _ in 0..step.presses {
@@ -146,7 +145,6 @@ fn pressed(player: &Player, probe: &mut Probe, step: &Step) -> player::Result<Va
         // The furthest a jump landed from where it was aimed, in seconds.
         "off_target": off_target,
         "unfinished": stalls.iter().filter(|stall| !stall.is_over()).count(),
-        "dropped_frames": player.dropped_frames()? - dropped,
     }))
 }
 
