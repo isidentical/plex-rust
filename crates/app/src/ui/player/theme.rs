@@ -58,9 +58,15 @@ pub const TITLE_SPACING: f64 = 1.0;
 pub const SLIDER_HEIGHT: f64 = 24.0;
 pub const TRACK_THICKNESS: f64 = 5.0;
 /// The track swells under the pointer to show it can be grabbed.
-pub const TRACK_THICKNESS_HOVERED: f64 = 7.0;
+pub const TRACK_THICKNESS_HOVERED: f64 = 8.0;
 pub const KNOB_RADIUS: f64 = 7.0;
-pub const MARK_WIDTH: f64 = 1.0;
+/// The knob under the pointer, or in its grip.
+pub const KNOB_RADIUS_HELD: f64 = 9.0;
+/// The line across the track where the pointer is over it.
+pub const POINTER_WIDTH: f64 = 2.0;
+pub const POINTER_HEIGHT: f64 = 14.0;
+/// The gap in the track where a chapter starts.
+pub const MARK_WIDTH: f64 = 2.0;
 pub const VOLUME_WIDTH: f64 = 84.0;
 /// How far VoiceOver moves the scrubber at a time, in seconds, and the
 /// volume, out of 100.
@@ -146,7 +152,19 @@ pub fn track_filled() -> Retained<NSColor> {
     NSColor::whiteColor()
 }
 
-/// Where a chapter starts, cut into the track.
-pub fn mark() -> Retained<NSColor> {
-    NSColor::colorWithWhite_alpha(0.0, 0.55)
+/// Under the whole track. Over a white picture the shade alone leaves the
+/// unfilled part of the track too close to what is behind it.
+pub fn track_bed() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.0, 0.3)
+}
+
+/// From the start of the track to where the pointer is over it.
+pub fn track_pointed() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(1.0, 0.3)
+}
+
+/// Around the knob and the pointer's line, which are white on white where
+/// they cross the filled track.
+pub fn knob_rim() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.0, 0.35)
 }

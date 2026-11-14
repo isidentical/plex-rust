@@ -9,8 +9,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilitySliderRole, NSBezierPath, NSColor, NSEvent, NSLayoutConstraint,
-    NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilitySliderRole, NSBezierPath, NSColor, NSEvent, NSGraphicsContext,
+    NSLayoutConstraint, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindingRule,
 };
 use objc2_foundation::{NSArray, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
@@ -45,6 +45,8 @@ pub struct Ivars {
     /// Values at which the track is notched.
     marks: RefCell<Vec<f64>>,
     hovered: Cell<bool>,
+    /// Where along the slider the pointer is, in points from its left edge.
+    pointed: Cell<Option<f64>>,
     dragging: Cell<bool>,
     on_change: OnceCell<Box<dyn Fn(f64, Grip)>>,
     on_point: OnceCell<Box<dyn Fn(Option<Pointed>)>>,
@@ -65,23 +67,55 @@ define_class!(
             let ivars = self.ivars();
             let (start, end) = self.span();
             let (value, loaded) = (ivars.value.get(), ivars.loaded.get());
+            let pointed = ivars.pointed.get().filter(|_| !ivars.dragging.get());
+            let pointed = pointed.map(|x| x.clamp(start, end));
+
+            // A chapter starts at a gap in the track. A gap shows on the
+            // filled part and on the rest alike, which a line of any one
+            // colour would not. The gaps are left out of what may be drawn
+            // on: with the even-odd rule, a rectangle inside the bounds
+            // is a hole in them.
+            NSGraphicsContext::saveGraphicsState_class();
+            let drawable = NSBezierPath::bezierPathWithRect(self.bounds());
+            for mark in ivars.marks.borrow().iter() {
+                let x = self.x_of(*mark) - theme::MARK_WIDTH / 2.0;
+                drawable.appendBezierPathWithRect(self.track_rect(x, x + theme::MARK_WIDTH));
+            }
+            drawable.setWindingRule(NSWindingRule::EvenOdd);
+            drawable.addClip();
+            self.fill_track(start, end, &theme::track_bed());
             self.fill_track(start, end, &theme::track());
             if loaded > value {
                 self.fill_track(start, self.x_of(loaded), &theme::track_loaded());
             }
+            if let Some(x) = pointed {
+                self.fill_track(start, x, &theme::track_pointed());
+            }
             self.fill_track(start, self.x_of(value), &theme::track_filled());
+            NSGraphicsContext::restoreGraphicsState_class();
 
-            theme::mark().setFill();
-            for mark in ivars.marks.borrow().iter() {
-                let x = self.x_of(*mark) - theme::MARK_WIDTH / 2.0;
-                NSBezierPath::fillRect(self.track_rect(x, x + theme::MARK_WIDTH));
+            // Where a click would land, seen on the track itself and not
+            // only read off the bubble. Dark around white, to show on the
+            // filled part and on the rest.
+            if let Some(x) = pointed {
+                let height = theme::POINTER_HEIGHT;
+                let line = |width: f64| {
+                    let corner = NSPoint::new(x - width / 2.0, self.middle() - height / 2.0);
+                    NSRect::new(corner, NSSize::new(width, height))
+                };
+                theme::knob_rim().setFill();
+                NSBezierPath::fillRect(line(theme::POINTER_WIDTH + 2.0));
+                theme::track_filled().setFill();
+                NSBezierPath::fillRect(line(theme::POINTER_WIDTH));
             }
 
-            let radius = theme::KNOB_RADIUS;
-            let corner = NSPoint::new(self.x_of(value) - radius, self.middle() - radius);
-            let knob = NSRect::new(corner, NSSize::new(2.0 * radius, 2.0 * radius));
+            let center = NSPoint::new(self.x_of(value), self.middle());
+            // A dark rim keeps the knob apart from the filled track it
+            // sits on and from a white picture behind it.
+            theme::knob_rim().setFill();
+            NSBezierPath::bezierPathWithOvalInRect(disc(center, self.knob_radius() + 1.0)).fill();
             theme::track_filled().setFill();
-            NSBezierPath::bezierPathWithOvalInRect(knob).fill();
+            NSBezierPath::bezierPathWithOvalInRect(disc(center, self.knob_radius())).fill();
         }
 
         #[unsafe(method(mouseDown:))]
@@ -226,6 +260,9 @@ impl Slider {
     /// Reports the place `x` points from the left edge as pointed at.
     pub fn point_at(&self, x: f64) {
         self.set_hovered(true);
+        if self.ivars().pointed.replace(Some(x)) != Some(x) {
+            self.setNeedsDisplay(true);
+        }
         if let Some(on_point) = self.ivars().on_point.get() {
             on_point(Some(Pointed { value: self.value_at(x), x }));
         }
@@ -243,6 +280,9 @@ impl Slider {
             return;
         }
         self.setNeedsDisplay(true);
+        if !hovered {
+            self.ivars().pointed.set(None);
+        }
         if let (false, Some(on_point)) = (hovered, self.ivars().on_point.get()) {
             on_point(None);
         }
@@ -289,7 +329,17 @@ impl Slider {
     /// The two ends of the track. The knob's centre stays between them, so
     /// that the knob never hangs over the slider's edge.
     fn span(&self) -> (f64, f64) {
-        (theme::KNOB_RADIUS, self.bounds().size.width - theme::KNOB_RADIUS)
+        let inset = theme::KNOB_RADIUS_HELD + 1.0;
+        (inset, self.bounds().size.width - inset)
+    }
+
+    fn is_in_use(&self) -> bool {
+        self.ivars().hovered.get() || self.ivars().dragging.get()
+    }
+
+    /// The knob swells along with the track, to say it can be taken.
+    fn knob_radius(&self) -> f64 {
+        if self.is_in_use() { theme::KNOB_RADIUS_HELD } else { theme::KNOB_RADIUS }
     }
 
     fn x_of(&self, value: f64) -> f64 {
@@ -313,20 +363,25 @@ impl Slider {
 
     /// The part of the track between two x positions.
     fn track_rect(&self, from: f64, to: f64) -> NSRect {
-        let ivars = self.ivars();
-        let thickness = if ivars.hovered.get() || ivars.dragging.get() {
-            theme::TRACK_THICKNESS_HOVERED
-        } else {
-            theme::TRACK_THICKNESS
-        };
+        let thickness =
+            if self.is_in_use() { theme::TRACK_THICKNESS_HOVERED } else { theme::TRACK_THICKNESS };
         let corner = NSPoint::new(from, self.middle() - thickness / 2.0);
         NSRect::new(corner, NSSize::new(to - from, thickness))
     }
 
     fn fill_track(&self, from: f64, to: f64, color: &NSColor) {
+        if to <= from {
+            return;
+        }
         let rect = self.track_rect(from, to);
         let radius = rect.size.height / 2.0;
         color.setFill();
         NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, radius, radius).fill();
     }
+}
+
+/// The square around a circle of `radius` about `center`.
+fn disc(center: NSPoint, radius: f64) -> NSRect {
+    let corner = NSPoint::new(center.x - radius, center.y - radius);
+    NSRect::new(corner, NSSize::new(2.0 * radius, 2.0 * radius))
 }
