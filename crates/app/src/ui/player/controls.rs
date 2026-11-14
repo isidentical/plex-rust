@@ -66,29 +66,29 @@ pub struct Controls {
 impl Controls {
     /// Builds the controls for `item` on top of whatever `root` holds.
     pub fn new(main_thread: MainThreadMarker, root: &NSView, item: &Item) -> Self {
-        let button = |symbol, tooltip| Chip::button(main_thread, symbol, tooltip);
+        let button = |symbol, name, key| Chip::button(main_thread, symbol, name, key);
         let bubble = Chip::new(main_thread, Style::Caption);
-        let scrubber = Slider::new(main_thread, 0.0);
+        let scrubber = Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP);
         let controls = Self {
             top: Pane::new(main_thread, Edge::Top),
             bottom: Pane::new(main_thread, Edge::Bottom),
-            back: button("chevron.left", "Back (Esc)"),
-            toggle: button("pause.fill", "Pause or play (Space)"),
-            rewind: button("gobackward.10", "Back 10 seconds (Shift \u{2190})"),
-            forward: button("goforward.10", "Forward 10 seconds (Shift \u{2192})"),
-            previous: button("backward.end.fill", "Previous episode (P)"),
-            next: button("forward.end.fill", "Next episode (N)"),
-            mute: button("speaker.wave.2.fill", "Mute (M)"),
-            volume: Slider::new(main_thread, FULL_VOLUME),
+            back: button("chevron.left", "Back", "Esc"),
+            toggle: button("pause.fill", "Pause", "Space"),
+            rewind: button("gobackward.10", "Back 10 seconds", "Shift \u{2190}"),
+            forward: button("goforward.10", "Forward 10 seconds", "Shift \u{2192}"),
+            previous: button("backward.end.fill", "Previous episode", "P"),
+            next: button("forward.end.fill", "Next episode", "N"),
+            mute: button("speaker.wave.2.fill", "Mute", "M"),
+            volume: Slider::new(main_thread, "Volume", FULL_VOLUME, theme::VOLUME_STEP),
             elapsed: label(main_thread, theme::FONT_SIZE, regular(), &theme::text()),
             remaining: Chip::new(main_thread, Style::Plain),
             bubble_x: bubble.centerXAnchor().constraintEqualToAnchor(&scrubber.leadingAnchor()),
             bubble,
             scrubber,
             speed: Chip::new(main_thread, Style::Plain),
-            audio: button("waveform", "Audio track (A)"),
-            subtitles: button("captions.bubble", "Subtitles (C)"),
-            full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen (F)"),
+            audio: button("waveform", "Audio track", "A"),
+            subtitles: button("captions.bubble", "Subtitles", "C"),
+            full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread),
             spinner: NSProgressIndicator::new(main_thread),
@@ -98,7 +98,11 @@ impl Controls {
         controls.toggle.set_symbol("pause.fill", theme::MAIN_SYMBOL_SIZE);
         let tooltip = |text| Some(NSString::from_str(text));
         controls.remaining.setToolTip(tooltip("Time left or full length").as_deref());
-        controls.speed.setToolTip(tooltip("Playback speed (S, D, R)").as_deref());
+        controls.remaining.set_name("Time left or full length");
+        controls
+            .speed
+            .setToolTip(tooltip("Playback speed (S slower, D faster, R normal)").as_deref());
+        controls.speed.set_name("Playback speed");
         let is_episode = item.kind == Kind::Episode;
         controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);

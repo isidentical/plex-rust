@@ -1,16 +1,17 @@
 //! A rounded piece of the controls that holds a symbol, a few words, or
 //! both. Most chips are buttons.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSEvent, NSFont, NSFontWeightMedium, NSImage,
-    NSImageSymbolConfiguration, NSImageView, NSLayoutConstraint, NSLayoutPriorityDefaultLow,
-    NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
+    NSFontWeightMedium, NSImage, NSImageSymbolConfiguration, NSImageView, NSLayoutConstraint,
+    NSLayoutPriorityDefaultLow, NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
+    NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSString, ns_string};
 
@@ -34,6 +35,8 @@ pub struct Ivars {
     label: Retained<NSTextField>,
     /// The name of the symbol shown, to tell when setting it changes nothing.
     symbol: Cell<&'static str>,
+    /// What the chip is, for a viewer who cannot see its symbol.
+    name: RefCell<String>,
     hovered: Cell<bool>,
     pressed: Cell<bool>,
     enabled: Cell<bool>,
@@ -100,9 +103,17 @@ define_class!(
                 return;
             }
             self.set_pressed(false);
-            if let Some(on_click) = self.ivars().on_click.get() {
-                on_click();
+            self.click();
+        }
+
+        /// VoiceOver pressing the chip. Returns whether it could be.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn perform_press(&self) -> bool {
+            let can_press = self.ivars().style != Style::Caption && self.ivars().enabled.get();
+            if can_press {
+                self.click();
             }
+            can_press
         }
     }
 );
@@ -133,6 +144,7 @@ impl Chip {
             icon,
             label,
             symbol: Cell::new(""),
+            name: RefCell::new(String::new()),
             hovered: Cell::new(false),
             pressed: Cell::new(false),
             enabled: Cell::new(true),
@@ -143,21 +155,58 @@ impl Chip {
         chip.lay_out(main_thread);
         if style != Style::Caption {
             chip.track_pointer();
+            // VoiceOver meets one button, not a picture and a text in a
+            // group with no name.
+            chip.setAccessibilityElement(true);
+            // SAFETY: the role is a constant that AppKit provides.
+            chip.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+            chip.ivars().icon.setAccessibilityElement(false);
+            chip.ivars().label.setAccessibilityElement(false);
         }
         chip
     }
 
-    /// A button that shows the symbol named `symbol` and explains itself
-    /// with `tooltip` when the pointer rests on it.
+    /// A button that shows the symbol named `symbol`, is called `name`,
+    /// and adds `key`, the key that does the same, when the pointer rests
+    /// on it.
     pub fn button(
         main_thread: MainThreadMarker,
         symbol: &'static str,
-        tooltip: &str,
+        name: &str,
+        key: &str,
     ) -> Retained<Self> {
         let chip = Self::new(main_thread, Style::Plain);
         chip.set_symbol(symbol, theme::SYMBOL_SIZE);
-        chip.setToolTip(Some(&NSString::from_str(tooltip)));
+        chip.set_name(name);
+        chip.setToolTip(Some(&NSString::from_str(&format!("{name} ({key})"))));
         chip
+    }
+
+    /// Says what the chip is to a viewer who cannot see it. A chip with
+    /// text and no name goes by its text.
+    pub fn set_name(&self, name: &str) {
+        if *self.ivars().name.borrow() == name {
+            return;
+        }
+        name.clone_into(&mut self.ivars().name.borrow_mut());
+        self.describe();
+    }
+
+    /// Tells VoiceOver the chip's name, and its text if it has both.
+    fn describe(&self) {
+        let (name, title) = (self.ivars().name.borrow(), self.ivars().label.stringValue());
+        let label = match (name.is_empty(), title.is_empty()) {
+            (false, false) => format!("{name}, {title}"),
+            (false, true) => name.clone(),
+            (true, _) => title.to_string(),
+        };
+        self.setAccessibilityLabel(Some(&NSString::from_str(&label)));
+    }
+
+    fn click(&self) {
+        if let Some(on_click) = self.ivars().on_click.get() {
+            on_click();
+        }
     }
 
     /// Sets what a click does. Can be called once.
@@ -188,14 +237,19 @@ impl Chip {
     /// button that has nothing to do right now.
     pub fn set_enabled(&self, enabled: bool) {
         self.ivars().enabled.set(enabled);
+        self.setAccessibilityEnabled(enabled);
         self.setAlphaValue(if enabled { 1.0 } else { theme::DISABLED_ALPHA });
         self.setNeedsDisplay(true);
     }
 
     pub fn set_title(&self, title: &str) {
         let label = &self.ivars().label;
+        if label.stringValue().to_string() == title {
+            return;
+        }
         label.setStringValue(&NSString::from_str(title));
         label.setHidden(title.is_empty());
+        self.describe();
     }
 
     /// Puts the symbol and the text side by side in the middle, and makes

@@ -48,6 +48,10 @@ pub const TRACK_THICKNESS_HOVERED: f64 = 7.0;
 pub const KNOB_RADIUS: f64 = 7.0;
 pub const MARK_WIDTH: f64 = 1.0;
 pub const VOLUME_WIDTH: f64 = 84.0;
+/// How far VoiceOver moves the scrubber at a time, in seconds, and the
+/// volume, out of 100.
+pub const SCRUBBER_STEP: f64 = 10.0;
+pub const VOLUME_STEP: f64 = 5.0;
 pub const BUBBLE_GAP: f64 = 2.0;
 /// Space between the scrubber and the Skip Intro button above it.
 pub const SKIP_GAP: f64 = 16.0;

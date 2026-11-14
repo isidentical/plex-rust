@@ -6,12 +6,13 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSEvent, NSLayoutConstraint, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibility, NSAccessibilitySliderRole, NSBezierPath, NSColor, NSEvent, NSLayoutConstraint,
+    NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSArray, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
 use super::theme;
 
@@ -37,6 +38,8 @@ pub struct Ivars {
     /// Between 0 and `limit`.
     value: Cell<f64>,
     limit: Cell<f64>,
+    /// How far VoiceOver moves the knob at a time.
+    step: f64,
     /// Up to where the track is drawn as loaded. Nothing below `value`.
     loaded: Cell<f64>,
     /// Values at which the track is notched.
@@ -101,6 +104,28 @@ define_class!(
             }
         }
 
+        /// How far along the knob is, in percent, for VoiceOver.
+        #[unsafe(method_id(accessibilityValue))]
+        fn accessibility_value(&self) -> Option<Retained<AnyObject>> {
+            let limit = self.ivars().limit.get();
+            let percent = if limit > 0.0 { 100.0 * self.ivars().value.get() / limit } else { 0.0 };
+            let number: Retained<NSObject> =
+                Retained::into_super(Retained::into_super(NSNumber::new_f64(percent.round())));
+            Some(Retained::into_super(number))
+        }
+
+        #[unsafe(method(accessibilityPerformIncrement))]
+        fn perform_increment(&self) -> bool {
+            self.step_by(self.ivars().step);
+            true
+        }
+
+        #[unsafe(method(accessibilityPerformDecrement))]
+        fn perform_decrement(&self) -> bool {
+            self.step_by(-self.ivars().step);
+            true
+        }
+
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, event: &NSEvent) {
             self.set_hovered(true);
@@ -123,13 +148,18 @@ define_class!(
 );
 
 impl Slider {
-    /// A slider from 0 to `limit`, with the knob at 0.
-    pub fn new(main_thread: MainThreadMarker, limit: f64) -> Retained<Self> {
-        let ivars = Ivars { limit: Cell::new(limit), ..Ivars::default() };
+    /// A slider called `name` from 0 to `limit`, with the knob at 0.
+    /// VoiceOver moves the knob `step` at a time.
+    pub fn new(main_thread: MainThreadMarker, name: &str, limit: f64, step: f64) -> Retained<Self> {
+        let ivars = Ivars { limit: Cell::new(limit), step, ..Ivars::default() };
         let this = Self::alloc(main_thread).set_ivars(ivars);
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         let slider: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         slider.setTranslatesAutoresizingMaskIntoConstraints(false);
+        slider.setAccessibilityElement(true);
+        // SAFETY: the role is a constant that AppKit provides.
+        slider.setAccessibilityRole(Some(unsafe { NSAccessibilitySliderRole }));
+        slider.setAccessibilityLabel(Some(&NSString::from_str(name)));
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[slider
             .heightAnchor()
             .constraintEqualToConstant(theme::SLIDER_HEIGHT)]));
@@ -215,6 +245,16 @@ impl Slider {
         self.setNeedsDisplay(true);
         if let (false, Some(on_point)) = (hovered, self.ivars().on_point.get()) {
             on_point(None);
+        }
+    }
+
+    /// Moves the knob by `amount` and lets it go there.
+    fn step_by(&self, amount: f64) {
+        let ivars = self.ivars();
+        let value = (ivars.value.get() + amount).clamp(0.0, ivars.limit.get());
+        self.show(&ivars.value, value);
+        if let Some(on_change) = ivars.on_change.get() {
+            on_change(value, Grip::Released);
         }
     }
 

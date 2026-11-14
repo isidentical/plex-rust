@@ -89,7 +89,7 @@ const CLOSING_CREDITS_END_WITHIN: Duration = Duration::from_secs(10);
 const RESTART_AFTER: Duration = Duration::from_secs(5);
 
 /// How much the up and down arrow keys change the volume, out of 100.
-const VOLUME_STEP: f64 = 5.0;
+const VOLUME_STEP: f64 = theme::VOLUME_STEP;
 
 /// Why the player is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1152,8 +1152,9 @@ impl PlayerScreen {
         let player = &self.ivars().player;
         let pause = !player.is_paused()?;
         player.set_paused(pause)?;
-        let symbol = if pause { "play.fill" } else { "pause.fill" };
+        let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
+        self.ivars().controls.toggle.set_name(name);
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);
         Ok(())
@@ -1167,14 +1168,17 @@ impl PlayerScreen {
         let volume = player.volume()?;
         let silent = player.is_muted()? || volume == 0.0;
         controls.volume.set_value(volume);
-        let speaker = if silent { "speaker.slash.fill" } else { "speaker.wave.2.fill" };
+        let (speaker, name) =
+            if silent { ("speaker.slash.fill", "Unmute") } else { ("speaker.wave.2.fill", "Mute") };
         controls.mute.set_symbol(speaker, theme::SYMBOL_SIZE);
-        let arrows = if self.is_full_screen() {
-            "arrow.down.right.and.arrow.up.left"
+        controls.mute.set_name(name);
+        let (arrows, name) = if self.is_full_screen() {
+            ("arrow.down.right.and.arrow.up.left", "Leave full screen")
         } else {
-            "arrow.up.left.and.arrow.down.right"
+            ("arrow.up.left.and.arrow.down.right", "Full screen")
         };
         controls.full_screen.set_symbol(arrows, theme::SYMBOL_SIZE);
+        controls.full_screen.set_name(name);
 
         let (Some(position), Some(duration)) = (player.position()?, player.duration()?) else {
             return Ok(());
