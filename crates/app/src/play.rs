@@ -1,6 +1,6 @@
 //! `plex-rust play`: one file, URL or library item in a bare window.
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use objc2_foundation::{
     NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
     NSSize, ns_string,
 };
-use player::{EndReason, Event, Player, Probe, Source};
+use player::{EndReason, Event, Offscreen, Player, Probe, Source};
 use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
@@ -56,8 +56,14 @@ pub enum Check {
     /// The playback state after this long.
     State(Duration),
     /// How long these jumps stall playback, and then the playback state.
+    /// The video is drawn offscreen, because a window that the owner's other
+    /// windows cover is not drawn at all, and that changes the timings.
     Seeks(Vec<Step>),
 }
+
+/// The size in pixels that the window of a check draws at on a Retina
+/// display.
+const OFFSCREEN_SIZE: (i32, i32) = (2560, 1440);
 
 /// Plays `source` in a window until it ends or the window is closed.
 ///
@@ -76,8 +82,13 @@ pub fn run(
     let playback = Arc::new(Playback { player: Player::new()?, progress });
     let player = &playback.player;
 
+    let offscreen = matches!(check, Some(Check::Seeks(_)));
     let app = NSApplication::sharedApplication(main_thread);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.setActivationPolicy(if offscreen {
+        NSApplicationActivationPolicy::Accessory
+    } else {
+        NSApplicationActivationPolicy::Regular
+    });
     let delegate = AppDelegate::new(main_thread, Arc::clone(&playback));
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
@@ -87,7 +98,12 @@ pub fn run(
         ns_string!("Playing video"),
     );
 
-    let window = video_window(main_thread, player)?;
+    let window = if offscreen {
+        draw_offscreen(player)?;
+        None
+    } else {
+        Some(video_window(main_thread, player)?)
+    };
     player.set_muted(check.is_some())?;
     // Made before loading, so that it sees the playback start.
     let probe = check.is_some().then(|| Probe::new(player)).transpose()?;
@@ -96,18 +112,22 @@ pub fn run(
 
     spawn(&playback, exit_when_playback_ends);
     spawn(&playback, report_periodically);
-    match check.zip(probe) {
-        Some((check, probe)) => {
-            window.orderFrontRegardless();
-            spawn(&playback, move |playback| {
-                print_check_and_exit(&playback.player, probe, loading, &check);
-            });
-        }
-        None => {
+    match (window, check.zip(probe)) {
+        (Some(window), None) => {
             window.makeKeyAndOrderFront(None);
             #[allow(deprecated)]
             app.activateIgnoringOtherApps(true);
         }
+        (window, Some((check, probe))) => {
+            if let Some(window) = window {
+                window.orderFrontRegardless();
+            }
+            spawn(&playback, move |playback| {
+                print_check_and_exit(&playback.player, probe, loading, &check);
+            });
+        }
+        // Without a check there is always a window.
+        (None, None) => {}
     }
 
     app.run();
@@ -117,6 +137,26 @@ pub fn run(
 fn spawn(playback: &Arc<Playback>, work: impl FnOnce(&Playback) + Send + 'static) {
     let playback = Arc::clone(playback);
     thread::spawn(move || work(&playback));
+}
+
+/// Starts drawing the video where nobody sees it. `player` can load video
+/// once this returns.
+fn draw_offscreen(player: &Player) -> player::Result<()> {
+    let (ready, is_ready) = mpsc::channel();
+    let player = player.clone();
+    thread::spawn(move || {
+        let (width, height) = OFFSCREEN_SIZE;
+        let offscreen = match Offscreen::new(&player, width, height) {
+            Ok(offscreen) => offscreen,
+            Err(error) => return drop(ready.send(Err(error))),
+        };
+        // The receiver waits for exactly this, so the send cannot fail.
+        drop(ready.send(Ok(())));
+        if let Err(error) = offscreen.draw_frames() {
+            eprintln!("plex-rust: {error}");
+        }
+    });
+    is_ready.recv().unwrap_or(Err(player::Error::OpenGl("the drawing thread died")))
 }
 
 fn video_window(
