@@ -166,6 +166,15 @@ pub const PILL_GLYPH_GAP: f64 = 6.0;
 pub const PILL_WASH_OPACITY: f64 = 0.16;
 pub const HERO_POSTER_WIDTH: f64 = 232.0;
 pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
+/// An episode's page leads with a frame of the episode: this much of the
+/// page's width, within these bounds.
+pub const HERO_STILL_SHARE: f64 = 0.38;
+pub const HERO_STILL_MIN_WIDTH: f64 = 240.0;
+pub const HERO_STILL_MAX_WIDTH: f64 = 420.0;
+pub const HERO_STILL_REQUEST: (u32, u32) = (420, 236);
+/// The poster of the show beside the title of one of its episodes.
+pub const HERO_SHOW_POSTER_WIDTH: f64 = 44.0;
+pub const HERO_SHOW_POSTER_REQUEST: (u32, u32) = (44, 66);
 pub const HERO_TEXT_WIDTH: f64 = 640.0;
 pub const HERO_TITLE_LINES: isize = 3;
 pub const HERO_FACTS_LINES: isize = 2;

@@ -9,9 +9,10 @@ use std::rc::{Rc, Weak};
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityLinkRole, NSAttributedStringNSExtendedStringDrawing, NSButton,
-    NSCellImagePosition, NSColor, NSControlSize, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityLinkRole,
+    NSAttributedStringNSExtendedStringDrawing, NSButton, NSCellImagePosition, NSColor,
+    NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
     NSPopover, NSPopoverBehavior, NSStackView, NSStackViewGravity,
     NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView, NSViewController,
@@ -64,6 +65,8 @@ pub enum Link {
 enum Event {
     /// A link from an episode was clicked.
     Follow(Link),
+    /// The frame of an episode was clicked, which plays it.
+    Play,
     /// A genre was clicked.
     OpenGenre(Tag),
     /// The header was laid out, and its content takes this many points.
@@ -98,10 +101,16 @@ pub struct Detail {
 
 /// The views at the top of the page.
 struct Hero {
-    view: Retained<NSView>,
-    poster: Rc<ArtView>,
-    /// Around the poster. On an episode's page it leads to the show.
-    poster_link: Retained<HoverView>,
+    view: Retained<HeaderView>,
+    /// What the page leads with: the poster of a film or show, or a frame
+    /// of an episode.
+    art: Rc<ArtView>,
+    /// Around it. On an episode's page a click on it plays the episode.
+    art_link: Retained<HoverView>,
+    /// On an episode's page, the poster of its show, small, beside the
+    /// way down to the episode. It leads to the show.
+    show_poster: Rc<ArtView>,
+    show_poster_link: Retained<HoverView>,
     /// The line above an episode's title, as a path down to it: its show
     /// and its season, both links, and its number.
     eyebrow: Retained<NSStackView>,
@@ -165,7 +174,7 @@ impl Detail {
                 target(Self::season_chosen),
             ];
             let heard = Weak::clone(page);
-            let hero = Hero::new(main_thread, kind == Kind::Show, move |event| {
+            let hero = Hero::new(main_thread, kind, move |event| {
                 if let Some(page) = heard.upgrade() {
                     page.hear(event);
                 }
@@ -194,7 +203,7 @@ impl Detail {
                 Kind::Show => theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT,
                 _ => theme::HERO_HEIGHT,
             };
-            let header = Header { view: hero.view.clone(), height };
+            let header = Header { view: Retained::into_super(hero.view.clone()), height };
             let (listed, from_list) = (Weak::clone(page), Rc::clone(&on_action));
             let list = Posters::new(
                 main_thread,
@@ -249,6 +258,7 @@ impl Detail {
     fn hear(&self, event: Event) {
         match event {
             Event::Follow(link) => self.follow_link(link),
+            Event::Play => self.press_play(),
             Event::OpenGenre(genre) => self.open_genre(&genre),
             Event::Resized(height) => self.fit_header(height),
         }
@@ -547,14 +557,10 @@ fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
 }
 
 impl Hero {
-    /// `has_seasons` leaves room for the season picker. `on_event` is
-    /// called when a link in the header is clicked and each time the
-    /// header is laid out.
-    fn new(
-        main_thread: MainThreadMarker,
-        has_seasons: bool,
-        on_event: impl Fn(Event) + 'static,
-    ) -> Self {
+    /// The header for an item of `kind`. `on_event` is called when a link
+    /// in the header is clicked and each time the header is laid out.
+    fn new(main_thread: MainThreadMarker, kind: Kind, on_event: impl Fn(Event) + 'static) -> Self {
+        let is_episode = kind == Kind::Episode;
         let on_event: Rc<dyn Fn(Event)> = Rc::new(on_event);
         let follow = |link| {
             let on_event = Rc::clone(&on_event);
@@ -563,20 +569,40 @@ impl Hero {
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
         let line = |size, weight, color| label::line(size, weight, color, main_thread);
 
-        let poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
-        let lifted = Rc::clone(&poster);
-        let poster_link =
-            HoverView::link(main_thread, move |over| lifted.set_hovered(over), follow(Link::Show));
-        poster_link.setTranslatesAutoresizingMaskIntoConstraints(false);
-        layout::cover(&poster_link, poster.view());
-        // The shadow sits on the link, since the poster's own layer swaps
-        // its shadow for the lift under the pointer.
-        poster_link.setWantsLayer(true);
-        if let Some(layer) = poster_link.layer() {
+        let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
+        art.set_flat();
+        art.set_playable(is_episode);
+        let (hovered, played) = (Rc::clone(&art), Rc::clone(&on_event));
+        let art_link = HoverView::pressable(
+            main_thread,
+            move |over| hovered.set_hovered(over),
+            move || played(Event::Play),
+        );
+        // A poster stands for the film. Only a frame of an episode, with
+        // the play glyph on it, is there to be pressed.
+        art_link.set_live(is_episode);
+        art_link.setAccessibilityElement(is_episode);
+        // SAFETY: the role is a constant that AppKit provides.
+        art_link.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        art_link.setAccessibilityLabel(Some(ns_string!("Play")));
+        art_link.setTranslatesAutoresizingMaskIntoConstraints(false);
+        layout::cover(&art_link, art.view());
+        // The shadow sits on the link, since the artwork's own layer has
+        // a shadow for the lift under the pointer.
+        art_link.setWantsLayer(true);
+        if let Some(layer) = art_link.layer() {
             layer.setShadowOpacity(theme::HERO_SHADOW_OPACITY);
             layer.setShadowRadius(theme::HERO_SHADOW_RADIUS);
             layer.setShadowOffset(CGSize { width: 0.0, height: -theme::HERO_SHADOW_DROP });
         }
+        let show_poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_S));
+        let lifted = Rc::clone(&show_poster);
+        let show_poster_link =
+            HoverView::link(main_thread, move |over| lifted.set_hovered(over), follow(Link::Show));
+        show_poster_link.setTranslatesAutoresizingMaskIntoConstraints(false);
+        layout::cover(&show_poster_link, show_poster.view());
+        show_poster_link.setHidden(!is_episode);
+        show_poster_link.setAccessibilityElement(true);
         let (show_link, show_name) = text_link(follow(Link::Show), main_thread);
         let (season_link, season_name) = text_link(follow(Link::Season), main_thread);
         let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
@@ -588,10 +614,22 @@ impl Hero {
             step
         };
         let (first_step, second_step) = (step(), step());
-        let eyebrow: [&NSView; 5] =
-            [&show_link, &first_step, &season_link, &second_step, &episode_number];
-        let eyebrow = NSStackView::stackViewWithViews(&NSArray::from_slice(&eyebrow), main_thread);
+        let last: [&NSView; 2] = [&second_step, &episode_number];
+        let last = NSStackView::stackViewWithViews(&NSArray::from_slice(&last), main_thread);
+        last.setSpacing(theme::SPACE_S);
+        let eyebrow: [&NSView; 4] = [&show_link, &first_step, &season_link, &last];
+        let path = NSArray::from_slice(&eyebrow);
+        let eyebrow = NSStackView::new(main_thread);
+        eyebrow.setViews_inGravity(&path, NSStackViewGravity::Leading);
         eyebrow.setSpacing(theme::SPACE_S);
+        // Where the two links do not fit beside the number, the number
+        // goes: the title under it is the episode's own.
+        eyebrow.setClippingResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
+        eyebrow.setVisibilityPriority_forView(if_necessary, &last);
         let title = label::paragraph(
             theme::FONT_LARGE_TITLE,
             Weight::Bold,
@@ -626,7 +664,6 @@ impl Hero {
             NSLayoutPriorityDefaultLow,
             NSLayoutConstraintOrientation::Horizontal,
         );
-        let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
         buttons.setVisibilityPriority_forView(if_necessary, &remaining);
 
         let seasons = NSPopUpButton::initWithFrame_pullsDown(
@@ -656,15 +693,17 @@ impl Hero {
         let menu = NSMenu::new(main_thread);
         menu.addItem(&menu_play);
         menu.addItem(&menu_watched);
-        let view = NSView::new(main_thread);
+        let view = HeaderView::new(main_thread);
         // SAFETY: the view keeps the menu, as a responder keeps the one it
         // is given.
         unsafe { view.setMenu(Some(&menu)) };
 
         let hero = Self {
             view,
-            poster,
-            poster_link,
+            art,
+            art_link,
+            show_poster,
+            show_poster_link,
             eyebrow,
             show_link,
             show_name,
@@ -698,29 +737,32 @@ impl Hero {
             on_event,
         };
         hero.season_bar_hidden(true);
-        hero.place(&buttons, has_seasons);
+        hero.place(&buttons, kind);
         hero
     }
 
-    /// The poster on the left, the text in a column beside it, and for a
+    /// The artwork on the left, the text in a column beside it, and for a
     /// show the season picker in a strip along the bottom, where the
     /// episode list begins.
-    fn place(&self, buttons: &NSStackView, has_seasons: bool) {
+    fn place(&self, buttons: &NSStackView, kind: Kind) {
         let main_thread = self.view.mtm();
-        let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
-        let season_bar = if has_seasons { theme::SEASON_BAR_HEIGHT } else { 0.0 };
         let (summary, more) = (self.summary.clone(), self.more.clone());
-        let on_event = Rc::clone(&self.on_event);
-        let column = Column::new(main_thread, move |column| {
-            offer_more(&summary, &more);
-            // The text may run past the poster: a long title in a narrow
-            // window takes three lines and leaves the rest no less room.
-            let content = column.frame().size.height.max(poster_height).ceil();
-            on_event(Event::Resized(2.0 * theme::SPACE_L + content + season_bar));
-        });
-        let lines: [&NSView; 9] = [
-            &self.eyebrow,
-            &self.title,
+        let column = Column::new(main_thread, move || offer_more(&summary, &more));
+
+        // The show's poster stands beside the lines that name the episode.
+        let titles: [&NSView; 2] = [&self.eyebrow, &self.title];
+        let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
+        titles.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        titles.setAlignment(NSLayoutAttribute::Leading);
+        titles.setSpacing(theme::SPACE_XS);
+        let headline: [&NSView; 2] = [&self.show_poster_link, &titles];
+        let headline =
+            NSStackView::stackViewWithViews(&NSArray::from_slice(&headline), main_thread);
+        headline.setAlignment(NSLayoutAttribute::Top);
+        headline.setSpacing(theme::SPACE_M);
+
+        let lines: [&NSView; 8] = [
+            &headline,
             &self.facts,
             &self.badges,
             buttons,
@@ -735,8 +777,7 @@ impl Hero {
         column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         column.setAlignment(NSLayoutAttribute::Leading);
         column.setSpacing(theme::SPACE_M);
-        column.setCustomSpacing_afterView(theme::SPACE_XS, &self.eyebrow);
-        column.setCustomSpacing_afterView(theme::SPACE_S, &self.title);
+        column.setCustomSpacing_afterView(theme::SPACE_S, &headline);
         column.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
         column.setCustomSpacing_afterView(theme::SPACE_L, buttons);
         column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
@@ -747,22 +788,57 @@ impl Hero {
         season.setSpacing(theme::SPACE_M);
         season.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let (view, poster) = (&self.view, &self.poster_link);
-        view.addSubview(poster);
+        let (view, art) = (&self.view, &self.art_link);
+        view.addSubview(art);
         view.addSubview(&column);
         view.addSubview(&season);
+        // The text may run past the artwork: a long title in a narrow
+        // window takes three lines and leaves the rest no less room.
+        let season_bar = if kind == Kind::Show { theme::SEASON_BAR_HEIGHT } else { 0.0 };
+        let (on_event, pictured, written) =
+            (Rc::clone(&self.on_event), art.clone(), column.clone());
+        view.on_layout(move || {
+            let content = written.frame().size.height.max(pictured.frame().size.height).ceil();
+            on_event(Event::Resized(2.0 * theme::SPACE_L + content + season_bar));
+        });
+
         let margin = theme::PAGE_MARGIN;
         // The strip is the last thing in the header.
         let bar_middle = -theme::SEASON_BAR_HEIGHT / 2.0;
+        let (wide, tall) = (art.widthAnchor(), art.heightAnchor());
+        let shape = match kind {
+            Kind::Episode => {
+                let share = wide.constraintEqualToAnchor_multiplier(
+                    &view.widthAnchor(),
+                    theme::HERO_STILL_SHARE,
+                );
+                // As much of the page as it can have within its bounds.
+                share.setPriority(NSLayoutPriorityDefaultHigh);
+                vec![
+                    share,
+                    wide.constraintGreaterThanOrEqualToConstant(theme::HERO_STILL_MIN_WIDTH),
+                    wide.constraintLessThanOrEqualToConstant(theme::HERO_STILL_MAX_WIDTH),
+                    tall.constraintEqualToAnchor_multiplier(&wide, theme::LANDSCAPE_ASPECT),
+                ]
+            }
+            _ => vec![
+                wide.constraintEqualToConstant(theme::HERO_POSTER_WIDTH),
+                tall.constraintEqualToAnchor_multiplier(&wide, theme::POSTER_ASPECT),
+            ],
+        };
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&shape));
+        let small = self.show_poster_link.widthAnchor();
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            poster.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            poster.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
-            poster.widthAnchor().constraintEqualToConstant(theme::HERO_POSTER_WIDTH),
-            poster.heightAnchor().constraintEqualToConstant(poster_height),
+            small.constraintEqualToConstant(theme::HERO_SHOW_POSTER_WIDTH),
+            self.show_poster_link
+                .heightAnchor()
+                .constraintEqualToAnchor_multiplier(&small, theme::POSTER_ASPECT),
+            art.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
+            art.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
             column
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&poster.trailingAnchor(), theme::SPACE_XXL),
-            column.topAnchor().constraintEqualToAnchor(&poster.topAnchor()),
+                .constraintEqualToAnchor_constant(&art.trailingAnchor(), theme::SPACE_XXL),
+            column.topAnchor().constraintEqualToAnchor(&art.topAnchor()),
             column
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&view.trailingAnchor(), -margin),
@@ -789,7 +865,6 @@ impl Hero {
         };
         let is_episode = item.kind == Kind::Episode;
         self.eyebrow.setHidden(!is_episode);
-        self.poster_link.set_live(is_episode);
         let show = item.grandparent_title.as_deref().unwrap_or_default();
         let season = item.parent_title.as_deref().unwrap_or_default();
         set(&self.show_name, show);
@@ -797,8 +872,7 @@ impl Hero {
         for (link, leads_to) in [(&self.show_link, show), (&self.season_link, season)] {
             link.setAccessibilityLabel(Some(&NSString::from_str(&format!("Go to {leads_to}"))));
         }
-        self.poster_link.setAccessibilityElement(is_episode);
-        self.poster_link
+        self.show_poster_link
             .setAccessibilityLabel(Some(&NSString::from_str(&format!("Poster. Go to {show}"))));
         let number = item.index.map(|number| format!("Episode {number}"));
         set(&self.episode_number, number.as_deref().unwrap_or_default());
@@ -851,13 +925,59 @@ impl Hero {
         self.menu_watched.setTitle(&NSString::from_str(toggle));
         self.watched.set_lit(item.is_watched());
 
-        // An episode's own artwork is a wide frame, so it borrows its show's.
-        let poster = match item.kind {
-            Kind::Episode => item.grandparent_thumb.as_deref().or(item.thumb.as_deref()),
-            _ => item.thumb.as_deref(),
+        // An episode's own artwork is a frame of it, a film's is its poster.
+        let request = match is_episode {
+            true => theme::HERO_STILL_REQUEST,
+            false => theme::HERO_POSTER_REQUEST,
         };
-        self.poster.show(poster, theme::HERO_POSTER_REQUEST, images);
-        self.poster.set_progress(item.progress());
+        self.art.show(item.thumb.as_deref(), request, images);
+        self.art.set_progress(item.progress());
+        if is_episode {
+            let poster = item.grandparent_thumb.as_deref();
+            self.show_poster.show(poster, theme::HERO_SHOW_POSTER_REQUEST, images);
+        }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView is designed to be subclassed, and `HeaderView` does
+    // not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustDetailHeader"]
+    #[ivars = OnceCell<Box<dyn Fn()>>]
+    struct HeaderView;
+
+    impl HeaderView {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
+            let this = this.set_ivars(OnceCell::new());
+            // SAFETY: forwards the designated initializer unchanged.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), layout] };
+            if let Some(on_layout) = self.ivars().get() {
+                on_layout();
+            }
+        }
+    }
+);
+
+impl HeaderView {
+    fn new(main_thread: MainThreadMarker) -> Retained<Self> {
+        // SAFETY: `initWithFrame:` is NSView's designated initializer.
+        unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// Has `on_layout` called each time the view has placed what is
+    /// directly in it, which is when it is known how tall each part is.
+    fn on_layout(&self, on_layout: impl Fn() + 'static) {
+        // Cannot matter if it fails: the header is placed once.
+        let _ = self.ivars().set(Box::new(on_layout));
     }
 }
 
@@ -867,7 +987,7 @@ define_class!(
     #[unsafe(super(NSStackView))]
     #[thread_kind = MainThreadOnly]
     #[name = "PlexRustDetailColumn"]
-    #[ivars = OnceCell<Box<dyn Fn(&Column)>>]
+    #[ivars = OnceCell<Box<dyn Fn()>>]
     struct Column;
 
     impl Column {
@@ -883,16 +1003,16 @@ define_class!(
             // SAFETY: forwards the call unchanged.
             let () = unsafe { msg_send![super(self), layout] };
             if let Some(on_layout) = self.ivars().get() {
-                on_layout(self);
+                on_layout();
             }
         }
     }
 );
 
 impl Column {
-    /// A stack that calls `on_layout` with itself each time it has placed
-    /// its lines, which is when it is known how much room each one got.
-    fn new(main_thread: MainThreadMarker, on_layout: impl Fn(&Self) + 'static) -> Retained<Self> {
+    /// A stack that calls `on_layout` each time it has placed its lines,
+    /// which is when it is known how much room each one got.
+    fn new(main_thread: MainThreadMarker, on_layout: impl Fn() + 'static) -> Retained<Self> {
         let column: Retained<Self> =
             // SAFETY: `initWithFrame:` is NSView's designated initializer.
             unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
