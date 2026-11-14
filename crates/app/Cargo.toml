@@ -30,4 +30,3 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "time"] }
 objc2-image-io = "0.3.2"
-block2 = "0.6.2"

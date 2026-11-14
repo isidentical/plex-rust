@@ -65,7 +65,7 @@ impl Offscreen {
                 glBindFramebuffer(GL_FRAMEBUFFER, self.framebuffer);
                 glViewport(0, 0, self.width, self.height);
             }
-            self.renderer.render()?;
+            self.renderer.render(None)?;
         }
         Ok(())
     }

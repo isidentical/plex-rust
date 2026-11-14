@@ -17,4 +17,6 @@ pub use crate::cadence::{Cadence, Refresh};
 pub use crate::clock::{HostTime, cpu_time, run_thread_at_interactive_priority};
 pub use crate::core::{Chapter, Colors, EndReason, Event, Player, Source, Track, TrackKind};
 pub use crate::error::{Error, Result};
+pub use crate::offscreen::Offscreen;
+pub use crate::probe::{Moment, Probe};
 pub use crate::render::{FrameTiming, Pending, Renderer};
