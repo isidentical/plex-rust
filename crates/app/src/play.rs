@@ -8,11 +8,12 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationOcclusionState, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, ns_string,
+    NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
+    NSSize, ns_string,
 };
 use player::{EndReason, Event, Player, Source};
 use plex::playback::PlaybackState;
@@ -74,6 +75,12 @@ pub fn run(
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     let delegate = AppDelegate::new(main_thread, Arc::clone(&playback));
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+
+    // Held until the process exits: the display must not sleep mid-film.
+    let _watching = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+        NSActivityOptions::UserInitiated | NSActivityOptions::IdleDisplaySleepDisabled,
+        ns_string!("Playing video"),
+    );
 
     let window = video_window(main_thread, player)?;
     player.set_muted(unattended.is_some())?;
@@ -186,7 +193,18 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         "buffered": seconds(player.buffered()?),
         "hardware_decoder": player.hardware_decoder()?,
         "dropped_frames": player.dropped_frames()?,
+        // macOS does not draw windows that are covered or on another Space,
+        // and mpv counts every frame that was not drawn as dropped. A drop
+        // count only says something about playback when this is true.
+        "window_visible": window_is_visible(),
     }))
+}
+
+fn window_is_visible() -> bool {
+    dispatch2::run_on_main(|main_thread| {
+        let state = NSApplication::sharedApplication(main_thread).occlusionState();
+        state.contains(NSApplicationOcclusionState::Visible)
+    })
 }
 
 define_class!(
