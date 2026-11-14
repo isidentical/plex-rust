@@ -628,11 +628,22 @@ impl Shell {
             let remembered = kept.server.remembered();
             // Home is read in the same go. Asked for only once its screen
             // is built, it arrives after the screen has been drawn empty.
+            // So is the item whose page the viewer was on: read only once
+            // Home is in the window, it leaves Home there for a moment.
+            let on_item = match &place {
+                Some(Place::Item { key }) => Some(RatingKey::new(key.as_str())),
+                _ => None,
+            };
             let ask = async move {
                 let sections = remembered.sections().await;
-                (sections, remembered.home(SHELF_LENGTH).await.ok())
+                let home = remembered.home(SHELF_LENGTH).await.ok();
+                let item = match &on_item {
+                    Some(key) => remembered.item(key).await.ok(),
+                    None => None,
+                };
+                (sections, home, item)
             };
-            self.background.run(self.main_thread, ask, move |(sections, home)| {
+            self.background.run(self.main_thread, ask, move |(sections, home, item)| {
                 if let (Ok(sections), None) = (sections, shell.session()) {
                     *shell.saved_home.borrow_mut() = home;
                     shell.connected(kept, sections, subject.as_ref());
@@ -642,7 +653,7 @@ impl Shell {
                     if shell.reach.get().is_away() {
                         shell.fall_back_on_downloads();
                     } else {
-                        shell.resume(place);
+                        shell.resume(place, item);
                     }
                 }
             });
@@ -699,7 +710,7 @@ impl Shell {
                         if let Some(route) = was.filter(|route| *route != Route::Home) {
                             shell.go(route);
                         } else if first {
-                            shell.resume(place);
+                            shell.resume(place, None);
                         }
                     }
                     // Last, so that what follows from the server being
@@ -820,8 +831,10 @@ impl Shell {
     }
 
     /// Goes from Home, where every launch starts, on to `place`. Home
-    /// stays one step back.
-    fn resume(self: &Rc<Self>, place: Option<Place>) {
+    /// stays one step back. `saved` is the item of a page, if what was
+    /// saved of it has been read already: the page is then in the window
+    /// before Home has been drawn.
+    fn resume(self: &Rc<Self>, place: Option<Place>, saved: Option<Item>) {
         let Some(session) = self.session() else {
             return;
         };
@@ -834,6 +847,11 @@ impl Shell {
             }
             Some(Place::List { title, path }) => self.go(Route::List { title, path }),
             Some(Place::Downloads) => self.go(Route::Downloads),
+            Some(Place::Item { .. }) if saved.is_some() => {
+                if let Some(item) = saved {
+                    self.go(Route::Item(Box::new(item), Opening::default()));
+                }
+            }
             Some(Place::Item { key }) => {
                 // From what was saved of it, which is there at once. An
                 // item that cannot be had, deleted since or another
