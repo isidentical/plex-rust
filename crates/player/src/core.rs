@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString};
+use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,8 +72,9 @@ impl Drop for Handle {
     }
 }
 
-/// Something to play.
-#[derive(Debug, Clone, Default)]
+/// Something to play. Its `Debug` output names the headers without their
+/// values, one of which is a token.
+#[derive(Clone, Default)]
 pub struct Source {
     /// A file path or URL.
     pub location: String,
@@ -88,6 +90,19 @@ pub struct Source {
     /// The subtitle track to show, by its id. `None` shows no subtitles,
     /// even when the file marks a track as its default.
     pub subtitles: Option<i64>,
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("Source")
+            .field("location", &self.location)
+            .field("headers", &names)
+            .field("start", &self.start)
+            .field("audio", &self.audio)
+            .field("subtitles", &self.subtitles)
+            .finish()
+    }
 }
 
 impl Source {
@@ -689,6 +704,17 @@ mod tests {
 
     fn rendering(player: &Player) -> Vec<Option<String>> {
         QUALITY.iter().map(|(name, _)| player.string(name).unwrap()).collect()
+    }
+
+    #[test]
+    fn a_source_does_not_print_its_token() {
+        let source = Source {
+            headers: vec![("X-Plex-Token".to_owned(), "s3cret".to_owned())],
+            ..Source::new("http://192.168.1.10:32400/library/parts/1/0/file.mkv")
+        };
+        let printed = format!("{source:?}");
+        assert!(!printed.contains("s3cret"), "{printed}");
+        assert!(printed.contains("X-Plex-Token") && printed.contains("file.mkv"));
     }
 
     /// `QUALITY` is copied from mpv's source. This fails when the mpv that

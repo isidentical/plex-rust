@@ -1,6 +1,7 @@
 //! Playing an item: where its file is, and telling the server how far the
 //! viewer got.
 
+use std::fmt;
 use std::time::Duration;
 
 use reqwest::Method;
@@ -13,13 +14,21 @@ use crate::server::MediaServer;
 /// The identifier of the server's library, which several endpoints require.
 const LIBRARY: &str = "com.plexapp.plugins.library";
 
-/// An HTTP request that returns a file from the server.
-#[derive(Debug, Clone)]
+/// An HTTP request that returns a file from the server. Its `Debug`
+/// output names the headers without their values.
+#[derive(Clone)]
 pub struct FileRequest {
     pub url: String,
     /// Headers the request must carry, as name and value. The token is one
     /// of them, so it never appears in the URL.
     pub headers: Vec<(String, String)>,
+}
+
+impl fmt::Debug for FileRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("FileRequest").field("url", &self.url).field("headers", &names).finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,5 +127,30 @@ impl MediaServer {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{Client, Identity, Token};
+
+    #[test]
+    fn a_file_request_does_not_print_its_token() {
+        let identity =
+            Identity { client_identifier: "identifier".to_owned(), device_name: "Mac".to_owned() };
+        let client = Client::new(identity).unwrap();
+        let server =
+            MediaServer::at(&client, "http://192.168.1.10:32400".to_owned(), Token::new("s3cret"));
+        let part: Part = serde_json::from_value(serde_json::json!({
+            "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 1,
+        }))
+        .unwrap();
+
+        let printed = format!("{:?}", server.original_file(&part));
+        assert!(!printed.contains("s3cret"), "{printed}");
+        assert!(
+            printed.contains("X-Plex-Token") && printed.contains("/library/parts/1/0/file.mkv")
+        );
     }
 }
