@@ -36,6 +36,8 @@ pub enum Step {
     Search(String),
     /// Type this in the search field letter by letter, without a pause.
     Type(String),
+    /// Come back to the app from another one.
+    Activate,
     /// Do nothing for one more pause.
     Wait,
 }
@@ -50,6 +52,7 @@ impl Step {
             None if name == "refresh" => Some(Self::Refresh),
             None if name == "back" => Some(Self::Back),
             None if name == "forward" => Some(Self::Forward),
+            None if name == "activate" => Some(Self::Activate),
             None if name == "wait" => Some(Self::Wait),
             Some(("library", index)) => index.parse().ok().map(Self::Library),
             Some(("list", path)) => Some(Self::List(path.to_owned())),
@@ -107,6 +110,7 @@ impl Shell {
                     self.search(&query[..end]);
                 }
             }
+            (Step::Activate, _) => self.activated(),
             (Step::Wait | Step::Scroll(_) | Step::Press(_), _) => {}
         }
     }

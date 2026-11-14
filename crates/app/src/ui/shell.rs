@@ -7,7 +7,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -71,6 +71,12 @@ const RELATED_LENGTH: u32 = 20;
 /// on the way to another.
 const REST_BEFORE_ASKING_AHEAD: Duration = Duration::from_millis(120);
 
+/// How old what is on screen may be when the viewer comes back to the app
+/// without it being asked about again. Coming back after a film watched
+/// elsewhere should show where that film was left. Switching windows
+/// back and forth should not ask every time.
+const FRESH_FOR: Duration = Duration::from_secs(30);
+
 /// How many results a search shows of each kind.
 const SEARCH_LIMIT: u32 = 30;
 
@@ -130,6 +136,8 @@ struct Shell {
     /// What the place on screen has asked the server and may not have
     /// heard back about. None of it is wanted once the viewer moves on.
     asked: RefCell<Vec<Task>>,
+    /// When the place on screen last asked the server about itself.
+    asked_at: Cell<Instant>,
     /// The asking ahead for the card the pointer or keyboard is on.
     asked_ahead: RefCell<Option<Task>>,
     /// A message shown in place of the current entry, such as an error.
@@ -536,6 +544,7 @@ impl Shell {
                 position: Cell::new(0),
                 moves: Cell::new(0),
                 asked: RefCell::new(Vec::new()),
+                asked_at: Cell::new(Instant::now()),
                 asked_ahead: RefCell::new(None),
                 notice: RefCell::new(None),
                 stale,
@@ -1015,7 +1024,19 @@ impl Shell {
     fn refresh(&self) {
         let reload = self.current(|entry| Rc::clone(&entry.reload));
         if let Some(reload) = reload {
+            self.asked_at.set(Instant::now());
             reload();
+        }
+    }
+
+    /// Brings the place on screen up to date when the viewer comes back
+    /// to the app after a while: what they watched on another device in
+    /// the meantime has moved things. The screen changes only where the
+    /// answer differs, so nothing flashes.
+    fn activated(self: &Rc<Self>) {
+        let browsing = self.playing.borrow().is_none() && self.notice.borrow().is_none();
+        if browsing && self.asked_at.get().elapsed() >= FRESH_FOR {
+            self.refresh();
         }
     }
 
@@ -1146,6 +1167,7 @@ impl Shell {
             (Route::Search(query), Some(session)) => self.search_results(session, query),
         };
         if !self.holds_loads.get() {
+            self.asked_at.set(Instant::now());
             reload();
         }
         Some(Entry { route, screen, reload })
@@ -2396,6 +2418,11 @@ define_class!(
         fn dock_menu(&self, _app: &NSApplication) -> Option<Retained<NSMenu>> {
             let shell = self.ivars();
             Some(menus::dock(shell.main_thread, &shell.places.borrow()))
+        }
+
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn did_become_active(&self, _notification: &NSNotification) {
+            self.ivars().activated();
         }
 
         /// Quitting mid-film must still leave the server with the place
