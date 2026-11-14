@@ -4,6 +4,7 @@ mod artwork;
 mod backdrop;
 mod callback;
 mod detail;
+mod downloads;
 mod episode;
 mod failure;
 mod heading;

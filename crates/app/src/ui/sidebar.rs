@@ -22,6 +22,7 @@ use super::theme;
 pub enum Destination {
     Home,
     Section(Section),
+    Downloads,
 }
 
 impl Destination {
@@ -29,6 +30,7 @@ impl Destination {
         match self {
             Self::Home => "Home",
             Self::Section(section) => &section.title,
+            Self::Downloads => "Downloads",
         }
     }
 
@@ -38,6 +40,7 @@ impl Destination {
             Self::Home => "house",
             Self::Section(section) if section.kind == Kind::Show => "tv",
             Self::Section(_) => "film",
+            Self::Downloads => "arrow.down.circle",
         }
     }
 }

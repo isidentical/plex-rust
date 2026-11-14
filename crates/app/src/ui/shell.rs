@@ -26,6 +26,7 @@ use plex::{Client, MediaServer, Token};
 use super::callback::Callback;
 pub use super::detail::Link;
 use super::detail::{Detail, Opening};
+use super::downloads::{Act, DownloadList};
 pub use super::failure::Failure;
 use super::hero::{self, Hero};
 use super::layout;
@@ -43,6 +44,7 @@ use super::theme;
 use super::toolbar::Toolbar;
 use crate::account;
 use crate::background::Background;
+use crate::downloads::{Downloads, State};
 use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
 use crate::settings::{Listings, Settings};
@@ -123,6 +125,8 @@ struct Shell {
     /// Set for a snapshot of a screen that is still waiting: screens are
     /// then built and never loaded.
     holds_loads: Cell<bool>,
+    /// What is kept on this Mac, and what is on its way to it.
+    downloads: Rc<Downloads>,
 }
 
 /// What exists only while a server is known.
@@ -147,6 +151,7 @@ enum Route {
     /// The page of an item. For a show, with how it opens.
     Item(Box<Item>, Opening),
     Search(String),
+    Downloads,
 }
 
 struct Entry {
@@ -160,6 +165,7 @@ struct Entry {
 enum Screen {
     Posters(Retained<Posters>),
     Detail(Rc<Detail>),
+    Downloads(Retained<DownloadList>),
 }
 
 impl Screen {
@@ -167,6 +173,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.view(),
             Self::Detail(detail) => detail.view(),
+            Self::Downloads(list) => list.view(),
         }
     }
 
@@ -174,6 +181,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.focus(),
             Self::Detail(detail) => detail.focus(),
+            Self::Downloads(list) => list.focus(),
         }
     }
 
@@ -181,6 +189,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.scroll_to(y),
             Self::Detail(detail) => detail.scroll_to(y),
+            Self::Downloads(list) => list.scroll_to(y),
         }
     }
 }
@@ -231,6 +240,8 @@ pub enum Subject {
     Search(String),
     /// The whole list at this server path, as a shelf's heading leads to.
     List(String),
+    /// What is kept on this Mac.
+    Downloads,
     /// The screen a signed-out viewer starts on.
     SignIn,
 }
@@ -262,6 +273,8 @@ pub struct Tweaks {
     pub looking: bool,
     /// The sign-in screen once the browser has been opened.
     pub approving: bool,
+    /// On the page of a film or an episode, the download button pressed.
+    pub download: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -288,8 +301,9 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
     let dark = unsafe { NSAppearanceNameDarkAqua };
     app.setAppearance(NSAppearance::appearanceNamed(dark).as_deref());
 
-    let shell =
-        Shell::new(main_thread, Rc::clone(&background), Settings::load()?, Listings::load()?);
+    let downloads = Downloads::open(main_thread, Rc::clone(&background))?;
+    let (settings, listings) = (Settings::load()?, Listings::load()?);
+    let shell = Shell::new(main_thread, Rc::clone(&background), settings, listings, downloads);
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
@@ -331,6 +345,7 @@ impl Shell {
         background: Rc<Background>,
         settings: Settings,
         listings: Listings,
+        downloads: Rc<Downloads>,
     ) -> Rc<Self> {
         let content = NSView::new(main_thread);
         // The fade from one screen to the next is drawn by its layer.
@@ -404,6 +419,7 @@ impl Shell {
                 command.set_enabled(false);
             }
             menus::install(main_thread, &commands, &[], settings.low_power);
+            downloads.listen(Self::command(shell, Self::downloads_changed));
 
             Self {
                 main_thread,
@@ -426,6 +442,7 @@ impl Shell {
                 settings: Cell::new(settings),
                 listings: RefCell::new(listings),
                 holds_loads: Cell::new(false),
+                downloads,
             }
         })
     }
@@ -557,6 +574,7 @@ impl Shell {
 
         let mut destinations = vec![Destination::Home];
         destinations.extend(sections.iter().cloned().map(Destination::Section));
+        destinations.push(Destination::Downloads);
         self.install_places(&destinations);
         self.sidebar.show(destinations);
 
@@ -584,6 +602,7 @@ impl Shell {
             Some(Subject::List(path)) => {
                 self.go(Route::List { title: "List".to_owned(), path: path.clone() });
             }
+            Some(Subject::Downloads) => self.go(Route::Downloads),
             Some(Subject::Home | Subject::SignIn) | None => self.go(Route::Home),
         }
     }
@@ -773,6 +792,7 @@ impl Shell {
             Destination::Section(section) => {
                 Route::Library(section.clone(), self.listings.borrow().of(&section.key))
             }
+            Destination::Downloads => Route::Downloads,
         };
         // Selecting the row of the place already on screen, as `display`
         // does to keep the sidebar in step, must not go there again.
@@ -800,6 +820,11 @@ impl Shell {
         self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
         self.enable_commands();
         self.sidebar.select(destination_of(&route).as_ref());
+        // A page left in the history has not heard what became of its
+        // item's download since.
+        if let Screen::Detail(detail) = &screen {
+            detail.show_download();
+        }
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.
         if !matches!(route, Route::Search(_)) {
@@ -842,13 +867,18 @@ impl Shell {
 
     /// Creates the screen for `route` and starts loading what it shows.
     fn build(self: &Rc<Self>, route: Route) -> Option<Entry> {
-        let session = self.session()?;
-        let (screen, reload) = match &route {
-            Route::Home => self.home(&session),
-            Route::Library(section, listing) => self.library(&session, section, *listing),
-            Route::List { title, path } => self.list(&session, &route, title, path),
-            Route::Item(item, opening) => self.item_page(&session, item, opening),
-            Route::Search(query) => self.search_results(&session, query),
+        let session = self.session();
+        let (screen, reload) = match (&route, &session) {
+            // The one place that is there without a server.
+            (Route::Downloads, _) => self.download_list(),
+            (_, None) => return None,
+            (Route::Home, Some(session)) => self.home(session),
+            (Route::Library(section, listing), Some(session)) => {
+                self.library(session, section, *listing)
+            }
+            (Route::List { title, path }, Some(session)) => self.list(session, &route, title, path),
+            (Route::Item(item, opening), Some(session)) => self.item_page(session, item, opening),
+            (Route::Search(query), Some(session)) => self.search_results(session, query),
         };
         if !self.holds_loads.get() {
             reload();
@@ -1006,6 +1036,7 @@ impl Shell {
         let detail = Detail::new(
             self.main_thread,
             &session.images,
+            &self.downloads,
             item.kind,
             opening.clone(),
             self.actions(),
@@ -1064,6 +1095,18 @@ impl Shell {
             }
         });
         (Screen::Detail(detail), reload)
+    }
+
+    fn download_list(self: &Rc<Self>) -> (Screen, Rc<dyn Fn()>) {
+        let shell = Rc::downgrade(self);
+        let list = DownloadList::new(self.main_thread, move |act| {
+            if let Some(shell) = shell.upgrade() {
+                shell.act_on_download(act);
+            }
+        });
+        let (shown, downloads) = (list.clone(), Rc::clone(&self.downloads));
+        let reload = Rc::new(move || shown.show(&downloads.entries()));
+        (Screen::Downloads(list), reload)
     }
 
     fn search_results(self: &Rc<Self>, session: &Session, query: &str) -> (Screen, Rc<dyn Fn()>) {
@@ -1240,6 +1283,7 @@ impl Shell {
                 Action::Open(item) => shell.open(&item),
                 Action::Play(item) => shell.play(&item, Purpose::Watching),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
+                Action::ToggleDownload(item) => shell.toggle_download(&item.rating_key),
                 Action::OpenShow(episode) => {
                     let season = episode.parent_rating_key.clone();
                     shell.open_show_of(&episode, Opening { season, ..Opening::default() });
@@ -1301,6 +1345,68 @@ impl Shell {
             Ok(()) => shell.refresh(),
             Err(error) => shell.fail(moves, &error),
         });
+    }
+
+    // Downloads.
+
+    /// Does what the download button of an item's page does: downloads the
+    /// item, carries on with a download of it that stopped short, or
+    /// deletes one that is whole or on its way.
+    fn toggle_download(self: &Rc<Self>, key: &RatingKey) {
+        match self.downloads.find(key).map(|entry| entry.state) {
+            None => self.download(key),
+            Some(State::Incomplete { .. }) => self.act_on_download(Act::Resume(key.clone())),
+            Some(State::Downloading(_) | State::Downloaded) => self.downloads.remove(key),
+        }
+    }
+
+    /// Starts downloading the item with `key`. It is asked for in full
+    /// first, because that is what is kept next to its file.
+    fn download(self: &Rc<Self>, key: &RatingKey) {
+        let Some(session) = self.session() else {
+            return;
+        };
+        let (server, key) = (session.server.clone(), key.clone());
+        let asked = key.clone();
+        let ask = async move { server.item_json(&asked).await };
+        let (shell, moves) = (Rc::clone(self), self.moves.get());
+        self.background.run(self.main_thread, ask, move |item| {
+            // A second press while the first was still asking.
+            if shell.downloads.find(&key).is_some() {
+                return;
+            }
+            let added = item
+                .map_err(Error::from)
+                .and_then(|item| shell.downloads.add(&session.server, &item));
+            if let Err(error) = added {
+                shell.fail(moves, &error);
+            }
+        });
+    }
+
+    fn act_on_download(self: &Rc<Self>, act: Act) {
+        match act {
+            Act::Play(key) => {
+                if let Some(entry) = self.downloads.find(&key) {
+                    self.play(&entry.download.item, Purpose::Watching);
+                }
+            }
+            Act::Resume(key) => {
+                if let Some(session) = self.session() {
+                    self.downloads.start(&session.server, &key);
+                }
+            }
+            Act::Remove(key) => self.downloads.remove(&key),
+        }
+    }
+
+    /// Brings the screen up to date with what the downloads have done.
+    fn downloads_changed(self: &Rc<Self>) {
+        match self.current(|entry| entry.screen.clone()) {
+            Some(Screen::Downloads(_)) => self.refresh(),
+            Some(Screen::Detail(detail)) => detail.show_download(),
+            Some(Screen::Posters(_)) | None => {}
+        }
     }
 
     fn play_current(self: &Rc<Self>) {
@@ -1602,6 +1708,9 @@ impl Shell {
                 if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
                     detail.follow_link(link);
                 }
+                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.download, screen) {
+                    detail.press_download();
+                }
             }
             if let Some(failure) = snapshot.tweaks.fault {
                 let small_print = "error sending request for url (https://192.168.0.2:32400/hubs)";
@@ -1649,6 +1758,7 @@ fn title(route: &Route) -> &str {
         Route::List { title, .. } => title,
         Route::Item(item, _) => &item.title,
         Route::Search(_) => "Search",
+        Route::Downloads => "Downloads",
     }
 }
 
@@ -1657,6 +1767,7 @@ fn destination_of(route: &Route) -> Option<Destination> {
     match route {
         Route::Home => Some(Destination::Home),
         Route::Library(section, _) => Some(Destination::Section(section.clone())),
+        Route::Downloads => Some(Destination::Downloads),
         Route::List { .. } | Route::Item(..) | Route::Search(_) => None,
     }
 }

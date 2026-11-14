@@ -175,6 +175,12 @@ pub const HOME_HERO_FACTS_OPACITY: f64 = 0.8;
 pub const HOME_HERO_PROGRESS_WIDTH: f64 = 160.0;
 pub const HOME_HERO_TRACK_OPACITY: f64 = 0.3;
 
+/// A download in the list: its poster on the left, text beside it, and
+/// its buttons on the right.
+pub const DOWNLOAD_ROW_HEIGHT: f64 = 112.0;
+pub const DOWNLOAD_POSTER_WIDTH: f64 = 56.0;
+pub const DOWNLOAD_BAR_WIDTH: f64 = 240.0;
+
 /// The bar above a library's grid: its size on the left, order on the right.
 pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
 

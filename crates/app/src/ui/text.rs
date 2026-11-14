@@ -54,6 +54,12 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
+/// How many hundredths of `whole` `part` is, rounded down, so that only
+/// all of it is 100. All of nothing is there too.
+pub fn percent(part: u64, whole: u64) -> u64 {
+    part.saturating_mul(100).checked_div(whole).unwrap_or(100)
+}
+
 /// What kind of extra the server's `subtype` names.
 pub fn extra(subtype: Option<&str>) -> &'static str {
     match subtype {
@@ -88,5 +94,12 @@ mod tests {
         assert_eq!(size(1_000_000_000), "1.0 GB");
         assert_eq!(size(6_828_818_931), "6.8 GB");
         assert_eq!(size(58_960_000_000), "59.0 GB");
+    }
+
+    #[test]
+    fn a_download_is_at_a_hundred_percent_only_when_all_of_it_is_there() {
+        assert_eq!(percent(0, 1000), 0);
+        assert_eq!(percent(999, 1000), 99);
+        assert_eq!(percent(1000, 1000), 100);
     }
 }

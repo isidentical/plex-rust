@@ -100,6 +100,18 @@ impl Store {
         Ok(download)
     }
 
+    /// Deletes every file of `download`.
+    pub fn remove(&self, download: &Download) -> Result<()> {
+        for path in [&download.file, &download.partial, &download.poster, &download.record] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(source) => return Err(Error::File { path: path.clone(), source }),
+            }
+        }
+        Ok(())
+    }
+
     fn download(&self, record: &Record) -> Result<Download> {
         let item = item_from(record.item.clone())?;
         let part = item.media.first().and_then(|media| media.parts.first()).cloned();
@@ -256,6 +268,11 @@ mod tests {
         assert_eq!(store.list().unwrap(), std::slice::from_ref(&download));
         // A second download of it would write over the record of the first.
         assert!(matches!(store.add(&episode()), Err(Error::File { .. })));
+
+        // Removing it leaves what is not its own.
+        store.remove(&download).unwrap();
+        let left: Vec<_> = fs::read_dir(&store.directory).unwrap().collect();
+        assert_eq!(left.len(), 1);
         fs::remove_dir_all(&store.directory).unwrap();
     }
 }

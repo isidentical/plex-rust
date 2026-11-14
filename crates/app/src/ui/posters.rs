@@ -89,6 +89,8 @@ pub enum Action {
     Open(Item),
     Play(Item),
     SetWatched(Item, bool),
+    /// Download it, or if it is downloaded or on its way, delete that.
+    ToggleDownload(Item),
     /// Go from this episode to its show, with the episode's season chosen.
     OpenShow(Item),
     /// Go from this episode to its season: the list it is in.

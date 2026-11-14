@@ -52,6 +52,14 @@ that season's episodes. A member of the cast leads to everything else of
 theirs in the library. Each library keeps the order and the filter it was
 last given.
 
+## Downloads
+
+The page of a film or an episode has a Download button. It fetches the
+original file into `~/Movies/plex-rust`, with a poster and what the server
+says about the item beside it. Downloads, in the sidebar, lists what is there
+and what is on its way. A download that was cut short, by quitting or by the
+network, carries on from where it stopped when it is resumed.
+
 ## Keys in the player
 
 | Key | Action |

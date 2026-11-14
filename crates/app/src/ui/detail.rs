@@ -31,6 +31,7 @@ use super::poster::{Card, Shape};
 use super::posters::{Action, Header, OnAction, Outline, Posters, Shelf, Style};
 use super::text;
 use super::theme;
+use crate::downloads::{Downloads, State};
 use crate::images::Images;
 
 /// How many genres, directors and cast members a page names.
@@ -64,6 +65,7 @@ pub struct Detail {
     list: Retained<Posters>,
     hero: Hero,
     images: Rc<Images>,
+    downloads: Rc<Downloads>,
     on_action: Rc<OnAction>,
     item: RefCell<Option<Item>>,
     /// For a show, every episode in order. For an episode, those of its
@@ -77,7 +79,7 @@ pub struct Detail {
     /// Taken when that is done, so it happens once.
     opening: RefCell<Option<Opening>>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 3],
+    _targets: [Retained<Callback>; 4],
 }
 
 /// The views at the top of the page.
@@ -100,6 +102,10 @@ struct Hero {
     genres: Retained<NSTextField>,
     play: Pill,
     watched: Pill,
+    download: Pill,
+    /// Beside the download button while a download is on its way: how far
+    /// it has got.
+    downloaded: Retained<NSTextField>,
     /// What the two buttons do, again, in the menu a secondary click on
     /// the header opens.
     menu_play: Retained<NSMenuItem>,
@@ -120,6 +126,7 @@ impl Detail {
     pub fn new(
         main_thread: MainThreadMarker,
         images: &Rc<Images>,
+        downloads: &Rc<Downloads>,
         kind: Kind,
         opening: Opening,
         on_action: impl Fn(Action) + 'static,
@@ -141,6 +148,7 @@ impl Detail {
             let targets = [
                 target(Self::press_play),
                 target(Self::press_watched),
+                target(Self::press_download),
                 target(Self::season_chosen),
             ];
             let hero = Hero::new(
@@ -148,7 +156,7 @@ impl Detail {
                 on(|page| page.follow_link(Link::Show)),
                 on(|page| page.follow_link(Link::Season)),
             );
-            let [play, watched, season] = &targets;
+            let [play, watched, download, season] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -156,6 +164,8 @@ impl Detail {
                 hero.play.button.setAction(Some(Callback::action()));
                 hero.watched.button.setTarget(Some(watched));
                 hero.watched.button.setAction(Some(Callback::action()));
+                hero.download.button.setTarget(Some(download));
+                hero.download.button.setAction(Some(Callback::action()));
                 hero.menu_play.setTarget(Some(play));
                 hero.menu_play.setAction(Some(Callback::action()));
                 hero.menu_watched.setTarget(Some(watched));
@@ -195,6 +205,7 @@ impl Detail {
                 list,
                 hero,
                 images: Rc::clone(images),
+                downloads: Rc::clone(downloads),
                 on_action,
                 item: RefCell::new(None),
                 episodes: RefCell::new(Vec::new()),
@@ -223,6 +234,15 @@ impl Detail {
     pub fn press_play(&self) {
         if let Some(item) = self.playable() {
             (self.on_action)(Action::Play(item));
+        }
+    }
+
+    /// Downloads the item, or deletes its download if it has one, be it
+    /// whole or on its way. One that stopped short is carried on with.
+    pub fn press_download(&self) {
+        let item = self.item.borrow().clone();
+        if let Some(item) = item.filter(is_downloadable) {
+            (self.on_action)(Action::ToggleDownload(item));
         }
     }
 
@@ -266,7 +286,34 @@ impl Detail {
         }
         *self.item.borrow_mut() = Some(item.clone());
         self.show_play_button();
+        self.show_download();
         self.list.show(self.shelves());
+    }
+
+    /// Brings the download button up to date with where the download of
+    /// the item stands. Only a film or an episode has the button.
+    pub fn show_download(&self) {
+        let item = self.item.borrow();
+        let (pill, so_far) = (&self.hero.download, &self.hero.downloaded);
+        let entry = item
+            .as_ref()
+            .filter(|item| is_downloadable(item))
+            .map(|item| self.downloads.find(&item.rating_key));
+        pill.button.setHidden(entry.is_none());
+        let state = entry.flatten().map(|entry| (entry.state, entry.download.size));
+        let (symbol, title, percent) = match &state {
+            None => ("arrow.down.circle", "Download", None),
+            Some((State::Downloading(transfer), size)) => {
+                ("xmark", "Cancel Download", Some(text::percent(transfer.received(), *size)))
+            }
+            Some((State::Incomplete { .. }, _)) => ("arrow.clockwise", "Resume Download", None),
+            Some((State::Downloaded, _)) => ("arrow.down.circle.fill", "Delete Download", None),
+        };
+        pill.set_symbol(symbol);
+        pill.set_title(title);
+        pill.set_lit(matches!(state, Some((State::Downloaded, _))));
+        label::set(so_far, &percent.map(|percent| format!("{percent}%")).unwrap_or_default());
+        so_far.setHidden(percent.is_none());
     }
 
     /// Fills in the episodes: every one of the show on the page, in order,
@@ -433,6 +480,13 @@ impl Detail {
     }
 }
 
+/// Whether `item` is something to keep on this Mac: a film or an episode
+/// with a file whose size the server knows.
+fn is_downloadable(item: &Item) -> bool {
+    let part = item.media.first().and_then(|media| media.parts.first());
+    matches!(item.kind, Kind::Movie | Kind::Episode) && part.is_some_and(|part| part.size.is_some())
+}
+
 /// The seasons that `episodes` belong to, in order, as key and title.
 fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
     let mut seasons: Vec<(RatingKey, String)> = Vec::new();
@@ -503,10 +557,15 @@ impl Hero {
         // The default action of the page, which Return triggers.
         play.button.setKeyEquivalent(ns_string!("\r"));
         let watched = Pill::new("Mark as Watched", "checkmark", false, main_thread);
+        let download = Pill::new("Download", "arrow.down.circle", false, main_thread);
+        download.button.setHidden(true);
+        let downloaded = line(theme::FONT_BODY, Weight::Regular, &secondary);
+        downloaded.setHidden(true);
         let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
         // Placed by gravity, which is what lets the stack drop a view that
         // does not fit.
-        let row: [&NSView; 3] = [&play.button, &watched.button, &remaining];
+        let row: [&NSView; 5] =
+            [&play.button, &watched.button, &download.button, &downloaded, &remaining];
         let buttons = NSStackView::new(main_thread);
         buttons.setViews_inGravity(&NSArray::from_slice(&row), NSStackViewGravity::Leading);
         buttons.setSpacing(theme::SPACE_M);
@@ -575,6 +634,8 @@ impl Hero {
             genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
             play,
             watched,
+            download,
+            downloaded,
             menu_play,
             menu_watched,
             remaining,
