@@ -1,9 +1,11 @@
 //! Reel, a native macOS client for Plex.
 
 mod account;
+mod background;
 mod error;
 mod play;
 mod progress;
+mod ui;
 mod video_layer;
 
 use std::process::ExitCode;
@@ -16,7 +18,9 @@ use crate::error::{Error, Result};
 use crate::progress::Progress;
 
 const USAGE: &str = "\
-usage: reel login
+usage: reel
+       reel snapshot <png-path>
+       reel login
        reel servers [<address>]
        reel api <path>
        reel play <file-or-url> [--unattended <seconds>]
@@ -37,6 +41,8 @@ fn main() -> ExitCode {
 
 fn run(args: &[&str]) -> Result<()> {
     match args {
+        [] => ui::shell::run(None),
+        ["snapshot", path] => ui::shell::run(Some(path.into())),
         ["login"] => account::login(),
         ["servers"] => servers(None),
         ["servers", address] => servers(Some(address)),

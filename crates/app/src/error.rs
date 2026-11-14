@@ -26,6 +26,9 @@ pub enum Error {
     #[error("{0} has no file to play")]
     NotPlayable(String),
 
+    #[error("the window could not be drawn into an image")]
+    Snapshot,
+
     #[error("not signed in, run `reel login` first")]
     SignedOut,
 
