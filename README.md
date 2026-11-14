@@ -45,6 +45,12 @@ open target/plex-rust.app
 
 A secondary click on an item offers to play it or mark it.
 
+A shelf's heading with a chevron after it leads to the whole list. On an
+episode's page the show's name leads to the show and the season's name to
+that season's episodes. A member of the cast leads to everything else of
+theirs in the library. Each library keeps the order and the filter it was
+last given.
+
 ## Keys in the player
 
 | Key | Action |
