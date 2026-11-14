@@ -114,6 +114,8 @@ pub const SEASON_BAR_HEIGHT: f64 = 52.0;
 /// The buttons of a detail page, drawn as capsules.
 pub const PILL_HEIGHT: f64 = 36.0;
 pub const PILL_PADDING: f64 = SPACE_L;
+/// Between the glyph of a button and its title.
+pub const PILL_GLYPH_GAP: f64 = 6.0;
 /// How strongly white is laid under a button that is not the main one.
 pub const PILL_WASH_OPACITY: f64 = 0.16;
 pub const HERO_POSTER_WIDTH: f64 = 232.0;

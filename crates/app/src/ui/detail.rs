@@ -16,7 +16,7 @@ use objc2_app_kit::{
     NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSString, ns_string};
 use plex::library::{appearances, next_up};
 use plex::model::{Hub, Item, Kind, Media, RatingKey, Role, StreamKind};
 
@@ -665,6 +665,7 @@ impl Hero {
             true => "Mark as Unwatched",
             false => "Mark as Watched",
         });
+        self.watched.set_lit(item.is_watched());
 
         // An episode's own artwork is a wide frame, so it borrows its show's.
         let poster = match item.kind {
@@ -682,13 +683,17 @@ impl Hero {
 /// switched off.
 struct Pill {
     button: Retained<NSButton>,
-    /// As wide as the title needs. Replaced when the title changes.
+    prominent: bool,
+    /// For the prominent pill: as wide as the title needs. Replaced when
+    /// the title changes.
     width: RefCell<Option<Retained<NSLayoutConstraint>>>,
 }
 
 impl Pill {
     /// A prominent pill is white with dark text, for the one main action.
-    /// Any other is a faint wash with light text.
+    /// Any other is a round glyph on a faint wash, which says what it does
+    /// to a pointer resting on it and to VoiceOver, so that a row of them
+    /// fits beside the main action in the narrowest window.
     fn new(title: &str, symbol: &str, prominent: bool, main_thread: MainThreadMarker) -> Self {
         // SAFETY: the target and action are set once the page exists.
         let button = unsafe {
@@ -696,29 +701,63 @@ impl Pill {
         };
         button.setBordered(false);
         button.setFont(Some(&label::font(theme::FONT_BODY, Weight::Semibold)));
-        button.setImage(artwork::symbol(symbol, theme::FONT_BODY).as_deref());
-        button.setImagePosition(NSCellImagePosition::ImageLeading);
-        // Glyph and title together in the middle, not one at each end.
-        button.setImageHugsTitle(true);
-        let (fill, ink) = match prominent {
-            true => (NSColor::whiteColor(), NSColor::blackColor()),
-            false => (theme::white(theme::PILL_WASH_OPACITY), NSColor::whiteColor()),
-        };
-        button.setContentTintColor(Some(&ink));
         button.setWantsLayer(true);
         if let Some(layer) = button.layer() {
-            layer.setBackgroundColor(Some(&fill.CGColor()));
             layer.setCornerRadius(theme::PILL_HEIGHT / 2.0);
         }
         button.setTranslatesAutoresizingMaskIntoConstraints(false);
         button.heightAnchor().constraintEqualToConstant(theme::PILL_HEIGHT).setActive(true);
-        let pill = Self { button, width: RefCell::new(None) };
+        if !prominent {
+            button.widthAnchor().constraintEqualToConstant(theme::PILL_HEIGHT).setActive(true);
+        }
+        let pill = Self { button, prominent, width: RefCell::new(None) };
+        pill.set_symbol(symbol);
+        pill.set_lit(prominent);
         pill.set_title(title);
         pill
     }
 
+    fn set_symbol(&self, symbol: &str) {
+        let image = artwork::symbol(symbol, theme::FONT_BODY);
+        if let (Some(image), true) = (&image, self.prominent) {
+            // A button sets its title right against its image. Widening
+            // the rectangle the image is laid out by puts a gap between.
+            let mut size = image.size();
+            size.width += theme::PILL_GLYPH_GAP;
+            image.setAlignmentRect(NSRect::new(NSPoint::ZERO, size));
+        }
+        self.button.setImage(image.as_deref());
+        self.button.setImagePosition(match self.prominent {
+            true => NSCellImagePosition::ImageLeading,
+            false => NSCellImagePosition::ImageOnly,
+        });
+        // Glyph and title together in the middle, not one at each end.
+        self.button.setImageHugsTitle(true);
+    }
+
+    /// Lit, a pill is white with dark ink: the main action, or a switch
+    /// that is on. Unlit it is light ink on a faint wash.
+    fn set_lit(&self, lit: bool) {
+        let (fill, ink) = match lit {
+            true => (NSColor::whiteColor(), NSColor::blackColor()),
+            false => (theme::white(theme::PILL_WASH_OPACITY), NSColor::whiteColor()),
+        };
+        self.button.setContentTintColor(Some(&ink));
+        if let Some(layer) = self.button.layer() {
+            layer.setBackgroundColor(Some(&fill.CGColor()));
+        }
+    }
+
+    /// What the pill says: on its face if it is the prominent one, and
+    /// otherwise to a resting pointer and to VoiceOver.
     fn set_title(&self, title: &str) {
-        self.button.setTitle(&NSString::from_str(title));
+        let title = NSString::from_str(title);
+        if !self.prominent {
+            self.button.setToolTip(Some(&title));
+            self.button.setAccessibilityLabel(Some(&title));
+            return;
+        }
+        self.button.setTitle(&title);
         if let Some(old) = self.width.take() {
             old.setActive(false);
         }
