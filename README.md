@@ -1,34 +1,70 @@
-# plex-rust
+<p align="center">
+  <img src="assets/icon.png" width="160" alt="The plex-rust icon: a pixel art crab holding a play sign">
+</p>
 
-A native macOS client for Plex, written in Rust. It plays the original file
-from your server with hardware decoding, in HDR on displays that can show it,
-with a large read-ahead buffer and precise speed control.
+<h1 align="center">plex-rust</h1>
 
-The interface is AppKit through the [objc2](https://github.com/madsmtm/objc2)
-crates. Playback is [mpv](https://mpv.io), linked statically, so the app
-depends on nothing but macOS.
+<p align="center">
+  A native macOS client for Plex Media Server, written in Rust.
+</p>
 
-plex-rust is a personal, third-party client. It is not affiliated with Plex.
+plex-rust plays the original file from your server, with hardware decoding,
+in HDR on displays that can show it, with a large read-ahead buffer and
+precise speed control. The interface is AppKit, through the
+[objc2](https://github.com/madsmtm/objc2) crates. Playback is
+[mpv](https://mpv.io), linked statically, so the app depends on nothing but
+macOS.
+
+> plex-rust is an unofficial, third-party client. It is not affiliated with,
+> endorsed by or supported by Plex, Inc. Plex is a trademark of Plex, Inc.
+
+## What it does
+
+- Browses your libraries: Home with what you are watching, movie and TV
+  libraries, search, and pages for films, shows, seasons and episodes.
+- Plays the original file with no server transcoding, decoded by
+  VideoToolbox, with HDR10, HLG and Dolby Vision profile 8 shown in HDR.
+- Resumes where you stopped, reports progress to the server, skips intros
+  and credits, and goes on to the next episode, across seasons.
+- Downloads films and episodes, with their subtitle files, and plays them
+  without the server.
+- Keyboard first, with full support for a trackpad and a touch screen:
+  pinch to zoom the picture, media keys, Now Playing in Control Center.
+- A Low Power switch that trades picture quality for battery when you ask
+  for it. It never follows the Mac's own Low Power Mode on its own.
+
+## Requirements
+
+- A Mac with Apple silicon and macOS 26 or later.
+- A Plex Media Server you can reach directly, on your network or through a
+  VPN. Relayed connections are not used.
 
 ## Build
 
-Requires an Apple Silicon Mac, a Rust toolchain, and Homebrew for the build
-tools.
+You need a Rust toolchain (1.100 or later) and the build tools from
+Homebrew.
 
 ```sh
 brew install meson ninja nasm cmake
-scripts/build-libmpv.sh    # once: builds mpv and what it needs into vendor/
+scripts/build-libmpv.sh    # once: downloads and builds mpv, FFmpeg and their libraries into vendor/
 scripts/bundle.sh          # builds target/plex-rust.app
 ```
 
-## Use
+`scripts/build-libmpv.sh` downloads pinned releases of mpv 0.42.0, FFmpeg
+9.0.2, dav1d, libass and its text stack, and libplacebo, applies the
+patches in [`scripts/patches`](scripts/patches/README.md), and builds them
+as static libraries. Nothing of theirs is kept in this repository.
 
-Open the app. The first time, it asks you to sign in and opens plex.tv in
-your browser for it.
+## Use
 
 ```sh
 open target/plex-rust.app
 ```
+
+The first time, it asks you to sign in and opens plex.tv in your browser.
+The token Plex gives back is kept in
+`~/Library/Application Support/plex-rust/token`, readable only by your
+user. It is a plain file, not a Keychain item.
 
 It opens where you left it: the same window, and the library or page that
 was on screen. When the server cannot be reached, what was last seen stays,
@@ -120,8 +156,20 @@ back and forward, and has a scrubber of its own.
 
 Low Power in the plex-rust menu draws the picture more cheaply, with plain
 scaling and no dithering. It is off until you turn it on, changes what is
-playing at once, and stays as you left it. The picture never depends on
-whether the Mac itself is in Low Power Mode.
+playing at once, and stays as you left it.
+
+## Known limits
+
+- Dolby Vision profile 5 plays with wrong colours, and the player says so.
+  mpv's OpenGL renderer, the only one its embedding API offers, cannot
+  apply the Dolby Vision reshaping.
+- Picture in Picture is not available on this rendering path.
+- Image subtitles (PGS) move with the picture when it is zoomed.
+- The app is ad hoc signed. macOS may ask once for permission to reach
+  devices on the local network.
+
+[`SPEC.md`](SPEC.md) records the design, the decisions and what each was
+based on.
 
 ## Layout
 
@@ -131,8 +179,18 @@ whether the Mac itself is in Low Power Mode.
 | `crates/player` | Safe wrapper over libmpv: playback and OpenGL rendering. |
 | `crates/app` | The app: windows, views and the command line. |
 
-`SPEC.md` records the design decisions and what each was based on.
+## Contributing
+
+Issues and pull requests are welcome. Section 3 of [`SPEC.md`](SPEC.md) is
+the bar code is held to. Every commit should build, pass
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test`, and do one thing.
 
 ## License
 
-GPL-2.0-or-later, as required by the statically linked mpv.
+plex-rust is free software under the GNU General Public License, version 2
+or any later version. See [`LICENSE`](LICENSE). The GPL is required because
+the app links mpv statically, and mpv is built under the GPL. mpv, FFmpeg
+and the other libraries it builds keep their own licenses; the patches
+applied to them are listed with their origin in
+[`scripts/patches/README.md`](scripts/patches/README.md).
