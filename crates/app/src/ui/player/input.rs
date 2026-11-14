@@ -167,6 +167,27 @@ pub mod code {
     pub const UP: u16 = 126;
 }
 
+/// Whether `key` acts again on every repeat while it is held. A key that
+/// steps something, the position, the volume, the speed, the subtitles'
+/// size and timing or the picture's size, goes on stepping. A held Space
+/// must not pause and resume thirty times a second.
+pub fn repeats(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Left
+            | Key::Right
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::Up
+            | Key::Down
+            | Key::Tab
+            | Key::BackTab
+            | Key::ZoomIn
+            | Key::ZoomOut
+            | Key::Character('s' | 'd' | '-' | '=' | '[' | ']')
+    )
+}
+
 /// The modifiers that turn a letter into a command.
 const COMMANDS: NSEventModifierFlags =
     NSEventModifierFlags::Command.union(NSEventModifierFlags::Control);
@@ -493,5 +514,19 @@ fn key(event: &NSEvent) -> Option<Key> {
             // More than one character is not a plain key.
             characters.next().is_none().then(|| Key::Character(character.to_ascii_lowercase()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_that_steps_something_goes_on_while_held_and_a_toggle_does_not() {
+        let stepping = [Key::Character('s'), Key::Character('d'), Key::Left, Key::Up, Key::ZoomIn];
+        assert!(stepping.into_iter().all(repeats));
+        let toggles =
+            [Key::Space, Key::Escape, Key::Return, Key::Character('f'), Key::Character('n')];
+        assert!(!toggles.into_iter().any(repeats));
     }
 }

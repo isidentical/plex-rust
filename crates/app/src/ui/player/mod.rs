@@ -1075,20 +1075,7 @@ impl PlayerScreen {
             }
             return true;
         }
-        // Only the arrows mean something again and again while held. A
-        // held Space must not pause and resume thirty times a second.
-        let repeats = matches!(
-            key,
-            Key::Left
-                | Key::Right
-                | Key::ShiftLeft
-                | Key::ShiftRight
-                | Key::Up
-                | Key::Down
-                | Key::Tab
-                | Key::BackTab
-        );
-        if press == Press::Held && !repeats {
+        if press == Press::Held && !input::repeats(key) {
             return true;
         }
         // Changing the volume, the speed or a track says what it did in a
