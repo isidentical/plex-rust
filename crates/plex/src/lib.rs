@@ -15,5 +15,5 @@ mod server;
 
 pub use crate::client::{Client, Identity, Token};
 pub use crate::error::{Error, Result};
-pub use crate::server::MediaServer;
+pub use crate::server::{MediaServer, stable_hash};
 pub use reqwest::Method;

@@ -1,6 +1,7 @@
 //! The main window: sidebar on the left, the chosen place on the right.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -17,7 +18,8 @@ use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
 };
 use plex::MediaServer;
-use plex::model::{Item, Kind, RatingKey, Section};
+use plex::library::Page;
+use plex::model::{Hub, Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
 use super::input::Key;
@@ -57,8 +59,8 @@ struct Shell {
     // Set once, right after the shell exists, because the sidebar's
     // selection handler needs the shell.
     sidebar: OnceCell<Retained<Sidebar>>,
-    /// Set once the server has answered.
-    session: OnceCell<Session>,
+    /// Set once a server is known, from the last launch or from asking.
+    session: RefCell<Option<Session>>,
     /// What the content area shows. Held here because views do not keep
     /// their data sources and button targets alive.
     place: RefCell<Place>,
@@ -73,7 +75,8 @@ struct Shell {
     settings: Cell<Settings>,
 }
 
-/// What exists only while connected to a server.
+/// What exists only while a server is known.
+#[derive(Clone)]
 struct Session {
     server: MediaServer,
     images: Rc<Images>,
@@ -89,6 +92,7 @@ enum Place {
 }
 
 /// What a snapshot shows.
+#[derive(Clone)]
 pub enum Subject {
     Home,
     /// The library at this position in the sidebar, counting from zero.
@@ -125,21 +129,58 @@ pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
         app.activateIgnoringOtherApps(true);
     }
 
+    let responses = responses_directory()?;
+    let saved = account::saved_server(&client)?.map(|server| server.with_cache(responses.clone()));
+    let subject = snapshot.as_ref().map(|(subject, _)| subject.clone());
+
+    // First, what the last launch left: the same server and the libraries
+    // it had then. This puts the sidebar and Home on screen at once.
+    if let Some(server) = saved.clone() {
+        let (shell, subject) = (Rc::clone(&shell), subject.clone());
+        let remembered = server.remembered();
+        let ask = async move { remembered.sections().await };
+        background.run(main_thread, ask, move |sections| {
+            if let (Ok(sections), None) = (sections, shell.session()) {
+                shell.or_show(shell.connected(server, sections, subject.as_ref()));
+            }
+        });
+    }
+
+    // Then the truth. The saved server is asked directly, which is one
+    // request. Only if it does not answer, say on another network, is
+    // plex.tv asked where the server is now.
     let connect = async move {
+        if let Some(server) = saved
+            && let Ok(sections) = server.sections().await
+        {
+            return Ok((server, sections));
+        }
         let servers = plex::discovery::servers(&client, &token).await?;
         let server = servers.first().ok_or(Error::NoServer)?;
-        let server = MediaServer::connect(&client, server, None).await?;
+        let server = MediaServer::connect(&client, server, None).await?.with_cache(responses);
         let sections = server.sections().await?;
         Ok::<_, Error>((server, sections))
     };
     let loaded = Rc::clone(&shell);
     background.run(main_thread, connect, move |result| {
-        let connected = result.and_then(|(server, sections)| {
-            let subject = snapshot.as_ref().map(|(subject, _)| subject);
-            loaded.connected(server, sections, subject)
-        });
-        if let Err(error) = connected {
-            loaded.show_message(&with_causes(&error));
+        match result {
+            Ok((server, sections)) => {
+                if let Err(error) = account::save_server(&server) {
+                    eprintln!("plex-rust: {}", with_causes(&error));
+                }
+                // Showing the same server again would reload the screen the
+                // viewer is already looking at.
+                let known = loaded
+                    .session()
+                    .is_some_and(|session| session.server.address() == server.address());
+                if !known {
+                    loaded.or_show(loaded.connected(server, sections, subject.as_ref()));
+                }
+            }
+            Err(error) if loaded.session().is_some() => {
+                eprintln!("plex-rust: {}", with_causes(&error));
+            }
+            Err(error) => loaded.show_message(&with_causes(&error)),
         }
         if let Some((_, path)) = snapshot {
             // A timer can only be created on the runtime's own threads.
@@ -170,7 +211,7 @@ impl Shell {
             window: window(main_thread),
             content,
             sidebar: OnceCell::new(),
-            session: OnceCell::new(),
+            session: RefCell::new(None),
             place: RefCell::new(Place::Message),
             destination: RefCell::new(Destination::Home),
             split: NSSplitViewController::new(main_thread),
@@ -212,8 +253,7 @@ impl Shell {
         subject: Option<&Subject>,
     ) -> Result<()> {
         let images = Images::new(self.main_thread, Rc::clone(&self.background), server.clone())?;
-        // Cannot fail: the server is connected to once per launch.
-        let _ = self.session.set(Session { server, images: Rc::new(images) });
+        *self.session.borrow_mut() = Some(Session { server, images: Rc::new(images) });
 
         let mut destinations = vec![Destination::Home];
         destinations.extend(sections.into_iter().map(Destination::Section));
@@ -241,30 +281,74 @@ impl Shell {
         Ok(())
     }
 
+    fn session(&self) -> Option<Session> {
+        self.session.borrow().clone()
+    }
+
+    /// Asks the server something and shows the answer, twice over: first
+    /// what it answered the last time the app ran, so the screen is full at
+    /// once, then what it answers now.
+    fn load<T, F>(
+        self: &Rc<Self>,
+        session: &Session,
+        ask: impl Fn(MediaServer) -> F,
+        show: impl Fn(T) + 'static,
+    ) where
+        T: Send + 'static,
+        F: Future<Output = plex::Result<T>> + Send + 'static,
+    {
+        let show = Rc::new(show);
+        // Set once the server's own answer is on screen, so that a late
+        // answer from last time cannot replace it.
+        let is_current = Rc::new(Cell::new(false));
+        let was_shown = Rc::new(Cell::new(false));
+
+        let (show_old, current, shown) =
+            (Rc::clone(&show), Rc::clone(&is_current), Rc::clone(&was_shown));
+        self.background.run(self.main_thread, ask(session.server.remembered()), move |answer| {
+            if let (Ok(answer), false) = (answer, current.get()) {
+                shown.set(true);
+                show_old(answer);
+            }
+        });
+
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, ask(session.server.clone()), move |answer| {
+            match answer {
+                Ok(answer) => {
+                    is_current.set(true);
+                    show(answer);
+                }
+                // What is on screen from last time is better than an error.
+                Err(error) if was_shown.get() => eprintln!("plex-rust: {}", with_causes(&error)),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            }
+        });
+    }
+
     /// Shows a place from the sidebar.
     fn go_to(self: &Rc<Self>, destination: &Destination) {
         *self.destination.borrow_mut() = destination.clone();
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session() else {
             return;
         };
         match destination {
-            Destination::Home => self.show_home(session),
-            Destination::Section(section) => self.show_library(session, section),
+            Destination::Home => self.show_home(&session),
+            Destination::Section(section) => self.show_library(&session, section),
             Destination::Downloads => self.show_message("Downloads are not built yet"),
         }
     }
 
     fn show_home(self: &Rc<Self>, session: &Session) {
         let posters = self.posters(session, Arrangement::Shelves, || {});
-        let server = session.server.clone();
-        let load = async move { server.home(SHELF_LENGTH).await };
-        let shell = Rc::clone(self);
-        self.background.run(self.main_thread, load, move |hubs| match hubs {
-            Ok(hubs) => posters.show(
-                hubs.into_iter().map(|hub| Shelf { title: hub.title, items: hub.items }).collect(),
-            ),
-            Err(error) => shell.show_message(&with_causes(&error)),
-        });
+        self.load(
+            session,
+            |server| async move { server.home(SHELF_LENGTH).await },
+            move |hubs: Vec<Hub>| {
+                let shelf = |hub: Hub| Shelf { title: hub.title, items: hub.items };
+                posters.show(hubs.into_iter().map(shelf).collect());
+            },
+        );
     }
 
     fn show_library(self: &Rc<Self>, session: &Session, section: &Section) {
@@ -275,13 +359,20 @@ impl Shell {
                 shell.load_page(&more_of);
             }
         });
-        posters.show(vec![Shelf { title: String::new(), items: Vec::new() }]);
-        self.load_page(section);
+        let section = section.clone();
+        self.load(
+            session,
+            move |server| {
+                let section = section.clone();
+                async move { server.section_items(&section, 0, PAGE_SIZE).await }
+            },
+            move |page: Page| posters.show(vec![Shelf { title: String::new(), items: page.items }]),
+        );
     }
 
-    /// Fetches the next page of `section` into the grid on screen.
+    /// Fetches the next page of `section` and adds it to the grid on screen.
     fn load_page(self: &Rc<Self>, section: &Section) {
-        let (Some(session), Place::Posters(posters)) = (self.session.get(), &*self.place.borrow())
+        let (Some(session), Place::Posters(posters)) = (self.session(), &*self.place.borrow())
         else {
             return;
         };
@@ -318,7 +409,7 @@ impl Shell {
 
     /// Shows the detail page of `item`.
     fn open(self: &Rc<Self>, item: &Item) {
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session() else {
             return;
         };
         let (opened, played, back) =
@@ -350,18 +441,20 @@ impl Shell {
         if !matches!(item.kind, Kind::Show | Kind::Season) {
             return;
         }
-        let (server, key) = (session.server.clone(), item.rating_key.clone());
-        let load = async move { server.children(&key).await };
-        let shell = Rc::clone(self);
-        self.background.run(self.main_thread, load, move |children| match children {
-            Ok(children) => detail.show_children(children),
-            Err(error) => shell.show_message(&with_causes(&error)),
-        });
+        let key = item.rating_key.clone();
+        self.load(
+            &session,
+            move |server| {
+                let key = key.clone();
+                async move { server.children(&key).await }
+            },
+            move |children: Vec<Item>| detail.show_children(children),
+        );
     }
 
     /// Fetches the item with `key` and hands it to `then`.
     fn fetch(self: &Rc<Self>, key: RatingKey, then: impl FnOnce(&Rc<Self>, &Item) + 'static) {
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session() else {
             return;
         };
         let server = session.server.clone();
@@ -381,7 +474,7 @@ impl Shell {
         if self.playing.borrow().is_some() || self.opening_player.replace(true) {
             return;
         }
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session() else {
             self.opening_player.set(false);
             return;
         };
@@ -399,7 +492,7 @@ impl Shell {
 
     /// Replaces the whole window content with the player, playing `item`.
     fn open_player(self: &Rc<Self>, item: &Item, purpose: Purpose) {
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session() else {
             return;
         };
         // Replacing a player without closing it would leave it running
@@ -470,7 +563,7 @@ impl Shell {
     /// one. The end of a season is a natural place to stop.
     fn play_episode_after(self: &Rc<Self>, episode: &Item, purpose: Purpose) {
         let (Some(session), Some(season), Some(number)) =
-            (self.session.get(), episode.parent_rating_key.clone(), episode.index)
+            (self.session(), episode.parent_rating_key.clone(), episode.index)
         else {
             return;
         };
@@ -536,12 +629,26 @@ impl Shell {
         std::process::exit(0);
     }
 
+    fn or_show(&self, result: Result<()>) {
+        if let Err(error) = result {
+            self.show_message(&with_causes(&error));
+        }
+    }
+
     /// Fills the content area with one line of text.
     fn show_message(&self, message: &str) {
         let label = NSTextField::labelWithString(&NSString::from_str(message), self.main_thread);
         layout::center(&self.content, &label);
         *self.place.borrow_mut() = Place::Message;
     }
+}
+
+/// Where the server's answers are kept between launches.
+fn responses_directory() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
+    let path = PathBuf::from(home).join("Library/Caches/plex-rust/responses");
+    std::fs::create_dir_all(&path).map_err(|source| Error::File { path: path.clone(), source })?;
+    Ok(path)
 }
 
 fn window(main_thread: MainThreadMarker) -> Retained<NSWindow> {

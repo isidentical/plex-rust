@@ -53,48 +53,48 @@ struct RawHub {
 impl MediaServer {
     /// The movie and TV libraries, in the server's order.
     pub async fn sections(&self) -> Result<Vec<Section>> {
-        let Sections { sections } = self.get("/library/sections/all", &[]).await?;
+        let Sections { sections } = self.get("/library/sections/all", "", &[]).await?;
         let shown = |section: &Section| matches!(section.kind, Kind::Movie | Kind::Show);
         Ok(sections.into_iter().filter(shown).collect())
     }
 
     /// The rows of the home screen, each with up to `count` items.
     pub async fn home(&self, count: u32) -> Result<Vec<Hub>> {
-        let hubs: Hubs = self.get("/hubs", &[("count", &count.to_string())]).await?;
+        let hubs: Hubs = self.get("/hubs", "", &[("count", &count.to_string())]).await?;
         video_hubs(hubs, "/hubs")
     }
 
     /// Results for `query`, one row per kind of item, up to `limit` each.
     pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<Hub>> {
         let query = [("query", query), ("limit", &limit.to_string())];
-        let hubs: Hubs = self.get("/hubs/search", &query).await?;
+        let hubs: Hubs = self.get("/hubs/search", "", &query).await?;
         video_hubs(hubs, "/hubs/search")
     }
 
     /// `size` items of a library, starting at index `start`.
     pub async fn section_items(&self, section: &Section, start: u32, size: u32) -> Result<Page> {
-        let path = format!("/library/sections/{}/all", section.key);
+        let rest = format!("{}/all", section.key);
         let query = [
             ("X-Plex-Container-Start", start.to_string()),
             ("X-Plex-Container-Size", size.to_string()),
         ];
         let query: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let Items { items, total_size } = self.get(&path, &query).await?;
+        let Items { items, total_size } = self.get("/library/sections/", &rest, &query).await?;
         let total = total_size.unwrap_or_else(|| u32::try_from(items.len()).unwrap_or(u32::MAX));
         Ok(Page { items, total })
     }
 
     /// One item in full, including its markers and the tracks of its files.
     pub async fn item(&self, key: &RatingKey) -> Result<Item> {
-        let path = format!("/library/metadata/{key}");
-        let Items { items, .. } = self.get(&path, &[("includeMarkers", "1")]).await?;
+        let Items { items, .. } =
+            self.get("/library/metadata/", key.as_str(), &[("includeMarkers", "1")]).await?;
         items.into_iter().next().ok_or_else(|| Error::Missing(key.clone()))
     }
 
     /// The seasons of a show, or the episodes of a season.
     pub async fn children(&self, key: &RatingKey) -> Result<Vec<Item>> {
-        let path = format!("/library/metadata/{key}/children");
-        let Items { items, .. } = self.get(&path, &[]).await?;
+        let rest = format!("{key}/children");
+        let Items { items, .. } = self.get("/library/metadata/", &rest, &[]).await?;
         Ok(items)
     }
 }

@@ -17,6 +17,11 @@ pub enum Error {
     #[error("unexpected response from {path}: {source}")]
     Shape { path: &'static str, source: serde_json::Error },
 
+    /// Asked of [`MediaServer::remembered`](crate::MediaServer::remembered)
+    /// for something it never kept.
+    #[error("no answer to this was kept from an earlier launch")]
+    NotRemembered,
+
     #[error("the server has no item {0}")]
     Missing(crate::model::RatingKey),
 }

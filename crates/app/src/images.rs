@@ -52,7 +52,7 @@ impl Images {
         height: u32,
         then: impl FnOnce(&NSImage) + 'static,
     ) {
-        let name = format!("{:016x}-{width}x{height}.jpg", fnv1a(path));
+        let name = format!("{:016x}-{width}x{height}.jpg", plex::stable_hash(path));
         let key = NSString::from_str(&name);
         // SAFETY: the cache only holds images under string keys.
         if let Some(image) = unsafe { self.memory.objectForKey(&key) } {
@@ -88,12 +88,4 @@ impl Images {
             }
         });
     }
-}
-
-/// FNV-1a. Unlike the standard library's hasher it gives the same value in
-/// every build, which a name for a file on disk needs.
-fn fnv1a(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }

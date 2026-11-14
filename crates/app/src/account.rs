@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSProcessInfo, NSString, NSURL, NSUUID};
-use plex::{Client, Identity, Token, auth};
+use plex::{Client, Identity, MediaServer, Token, auth};
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -76,15 +77,7 @@ fn stored_token() -> Result<Option<Token>> {
 }
 
 fn store_token(token: &Token) -> Result<()> {
-    let path = token_path()?;
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .and_then(|mut file| file.write_all(token.secret().as_bytes()))
-        .map_err(|source| Error::File { path, source })
+    write_private(token_path()?, token.secret().as_bytes())
 }
 
 fn open_in_browser(url: &str) {
@@ -92,4 +85,50 @@ fn open_in_browser(url: &str) {
     if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
         NSWorkspace::sharedWorkspace().openURL(&url);
     }
+}
+
+/// What is kept of a server between launches: enough to talk to it again
+/// without asking plex.tv where it is.
+#[derive(Serialize, Deserialize)]
+struct SavedServer {
+    address: String,
+    token: String,
+}
+
+/// The server used the last time the app ran, if there was one. Nothing
+/// checks here that it still answers at that address.
+pub fn saved_server(client: &Client) -> Result<Option<MediaServer>> {
+    let path = support_directory()?.join("server.json");
+    let json = match fs::read_to_string(&path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(Error::File { path, source }),
+    };
+    let saved: SavedServer =
+        serde_json::from_str(&json).map_err(|source| Error::Settings { path, source })?;
+    Ok(Some(MediaServer::at(client, saved.address, Token::new(saved.token))))
+}
+
+/// Keeps `server` for the next launch. Its token goes into a file only the
+/// owner can read, like the account token.
+pub fn save_server(server: &MediaServer) -> Result<()> {
+    let path = support_directory()?.join("server.json");
+    let saved = SavedServer {
+        address: server.address().to_owned(),
+        token: server.token().secret().to_owned(),
+    };
+    let json = serde_json::to_string(&saved)
+        .map_err(|source| Error::Settings { path: path.clone(), source })?;
+    write_private(path, json.as_bytes())
+}
+
+fn write_private(path: PathBuf, contents: &[u8]) -> Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(contents))
+        .map_err(|source| Error::File { path, source })
 }
