@@ -252,12 +252,11 @@ impl Controls {
             pane.centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
             pane.widthAnchor().constraintLessThanOrEqualToConstant(theme::BAR_MAX_WIDTH),
             fills,
-            self.scrubber.topAnchor().constraintEqualToAnchor_constant(&bar.topAnchor(), inset),
+            // The scrubber's height is room to grab it in, most of it
+            // empty, and stands in for a margin above it and below.
+            self.scrubber.topAnchor().constraintEqualToAnchor(&bar.topAnchor()),
             transport.centerXAnchor().constraintEqualToAnchor(&bar.centerXAnchor()),
-            transport.topAnchor().constraintEqualToAnchor_constant(
-                &self.scrubber.bottomAnchor(),
-                theme::ROW_SPACING,
-            ),
+            transport.topAnchor().constraintEqualToAnchor(&self.scrubber.bottomAnchor()),
             bar.bottomAnchor().constraintEqualToAnchor_constant(&transport.bottomAnchor(), inset),
             sound.leadingAnchor().constraintEqualToAnchor_constant(&leading, inset),
             sound.centerYAnchor().constraintEqualToAnchor(&transport.centerYAnchor()),

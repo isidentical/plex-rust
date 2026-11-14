@@ -23,7 +23,6 @@ pub const BOTTOM_MARGIN: f64 = 16.0;
 /// Space between the title bar, or the top of the screen, and the controls.
 pub const TOP_GAP: f64 = 8.0;
 
-pub const ROW_SPACING: f64 = 2.0;
 pub const CONTROL_SPACING: f64 = 4.0;
 /// Between the buttons that move through the film, which are the ones
 /// reached for most and so get the most room.
@@ -31,9 +30,9 @@ pub const TRANSPORT_SPACING: f64 = 10.0;
 pub const GROUP_SPACING: f64 = 16.0;
 
 /// Width and height of a control that holds one symbol, and the height of
-/// one that holds text. Apple asks for at least 28 points to click on; the
-/// best players give more.
-pub const CHIP_SIZE: f64 = 42.0;
+/// one that holds text: the 44 points Apple asks for where a finger
+/// lands, which a Mac with a touch screen makes this.
+pub const CHIP_SIZE: f64 = 44.0;
 /// Width of the play and pause button, which fits the wider of its two
 /// symbols with the same padding as any chip.
 pub const TOGGLE_WIDTH: f64 = 56.0;
@@ -74,8 +73,9 @@ pub const CONTROL_FONT_SIZE: f64 = 15.0;
 pub const TITLE_FONT_SIZE: f64 = 16.0;
 pub const TITLE_SPACING: f64 = 1.0;
 
-/// The height a slider can be grabbed in, far more than what it draws.
-pub const SLIDER_HEIGHT: f64 = 28.0;
+/// The height a slider can be grabbed in, far more than what it draws,
+/// and enough for a finger.
+pub const SLIDER_HEIGHT: f64 = 44.0;
 pub const TRACK_THICKNESS: f64 = 5.0;
 /// The track swells under the pointer to show it can be grabbed.
 pub const TRACK_THICKNESS_HOVERED: f64 = 8.0;
