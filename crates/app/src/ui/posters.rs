@@ -450,6 +450,24 @@ impl Posters {
         &self.ivars().root
     }
 
+    /// Makes the header this many points tall for each point of the
+    /// page's width from now on, in place of the fixed height it was made
+    /// with. For a header that holds a picture, which then keeps its
+    /// proportions in a window of any size.
+    pub fn set_header_height_per_width(&self, fraction: f64) {
+        let layout = self.ivars().collection.collectionViewLayout();
+        let Some(Ok(layout)) =
+            layout.map(|layout| layout.downcast::<NSCollectionViewCompositionalLayout>())
+        else {
+            return;
+        };
+        let height = NSCollectionLayoutDimension::fractionalWidthDimension(fraction, self.mtm());
+        let header = boundary_item(PAGE_HEADER, &height, self.mtm());
+        let configuration = layout.configuration();
+        configuration.setBoundarySupplementaryItems(&NSArray::from_retained_slice(&[header]));
+        layout.setConfiguration(&configuration);
+    }
+
     /// Gives the keyboard to the collection, so the arrow keys move in it.
     pub fn focus(&self) {
         if let Some(window) = self.ivars().collection.window() {
@@ -982,7 +1000,8 @@ fn layout(
 
     let configuration = NSCollectionViewCompositionalLayoutConfiguration::new(main_thread);
     if let Some(height) = header_height {
-        let header = boundary_item(PAGE_HEADER, height, main_thread);
+        let height = NSCollectionLayoutDimension::absoluteDimension(height, main_thread);
+        let header = boundary_item(PAGE_HEADER, &height, main_thread);
         configuration.setBoundarySupplementaryItems(&NSArray::from_retained_slice(&[header]));
     }
     // SAFETY: the block has the signature the layout calls it with, and the
@@ -996,15 +1015,16 @@ fn layout(
     }
 }
 
-/// A full-width strip above a shelf or above the whole collection.
+/// A full-width strip of `height` above a shelf or above the whole
+/// collection.
 fn boundary_item(
     kind: &str,
-    height: f64,
+    height: &NSCollectionLayoutDimension,
     main_thread: MainThreadMarker,
 ) -> Retained<NSCollectionLayoutBoundarySupplementaryItem> {
     let size = NSCollectionLayoutSize::sizeWithWidthDimension_heightDimension(
         &NSCollectionLayoutDimension::fractionalWidthDimension(1.0, main_thread),
-        &NSCollectionLayoutDimension::absoluteDimension(height, main_thread),
+        height,
     );
     NSCollectionLayoutBoundarySupplementaryItem::boundarySupplementaryItemWithLayoutSize_elementKind_alignment(
         &size,
@@ -1111,7 +1131,8 @@ fn section(
     if has_heading {
         // SAFETY: the element kind is a constant that AppKit provides.
         let kind = unsafe { NSCollectionElementKindSectionHeader };
-        let heading = boundary_item(&kind.to_string(), theme::SHELF_HEADING_HEIGHT, main_thread);
+        let height = absolute(theme::SHELF_HEADING_HEIGHT);
+        let heading = boundary_item(&kind.to_string(), &height, main_thread);
         section.setBoundarySupplementaryItems(&NSArray::from_retained_slice(&[heading]));
     }
     section

@@ -7,6 +7,7 @@ mod detail;
 mod episode;
 mod failure;
 mod heading;
+mod hero;
 mod hover;
 mod label;
 mod layout;

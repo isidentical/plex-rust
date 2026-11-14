@@ -171,7 +171,7 @@ fn tint(color: Rgb) -> Retained<NSColor> {
     )
 }
 
-fn set_gradient(layer: &CAGradientLayer, from: &NSColor, to: &NSColor) {
+pub fn set_gradient(layer: &CAGradientLayer, from: &NSColor, to: &NSColor) {
     let (from, to) = (from.CGColor(), to.CGColor());
     let colors: [&AnyObject; 2] = [(*from).as_ref(), (*to).as_ref()];
     // SAFETY: a gradient layer takes an array of CGColors.

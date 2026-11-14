@@ -57,6 +57,8 @@ pub struct ArtView {
     /// picture must not land on the wrong item.
     wanted: Rc<RefCell<Option<String>>>,
     playable: Cell<bool>,
+    /// Whether the artwork grows and casts a shadow under the pointer.
+    lifts: Cell<bool>,
     hovered: Cell<bool>,
     pressed: Cell<bool>,
     focused: Cell<bool>,
@@ -185,6 +187,7 @@ impl ArtView {
             count,
             wanted: Rc::new(RefCell::new(None)),
             playable: Cell::new(false),
+            lifts: Cell::new(true),
             hovered: Cell::new(false),
             pressed: Cell::new(false),
             focused: Cell::new(false),
@@ -291,6 +294,13 @@ impl ArtView {
         self.playable.set(playable);
     }
 
+    /// Keeps the artwork flat under the pointer, where only its outline
+    /// brightens. For artwork too large to grow without covering what is
+    /// around it.
+    pub fn set_flat(&self) {
+        self.lifts.set(false);
+    }
+
     pub fn set_hovered(&self, hovered: bool) {
         self.hovered.set(hovered);
         self.restyle_animated();
@@ -337,15 +347,17 @@ impl ArtView {
     fn restyle(&self) {
         let (hovered, pressed, focused) =
             (self.hovered.get(), self.pressed.get(), self.focused.get());
+        let lifts = self.lifts.get();
         let scale = match (pressed, hovered) {
-            _ if theme::reduces_motion() => 1.0,
+            _ if !lifts || theme::reduces_motion() => 1.0,
             (true, _) => theme::PRESS_SCALE,
             (false, true) => theme::HOVER_SCALE,
             (false, false) => 1.0,
         };
         if let Some(layer) = self.root.layer() {
             layer.setAffineTransform(scaled_about_center(&layer, scale));
-            layer.setShadowOpacity(if hovered { theme::HOVER_SHADOW_OPACITY } else { 0.0 });
+            let lifted = hovered && lifts;
+            layer.setShadowOpacity(if lifted { theme::HOVER_SHADOW_OPACITY } else { 0.0 });
             layer.setShadowRadius(theme::HOVER_SHADOW_RADIUS);
             layer.setShadowOffset(CGSize { width: 0.0, height: -theme::HOVER_SHADOW_DROP });
         }

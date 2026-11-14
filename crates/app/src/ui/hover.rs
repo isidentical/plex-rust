@@ -16,6 +16,8 @@ pub struct Ivars {
     on_click: OnceCell<Box<dyn Fn()>>,
     /// Whether the link leads anywhere at the moment.
     is_live: Cell<bool>,
+    /// Whether the pointer turns into a hand over a live link.
+    shows_hand: Cell<bool>,
     /// Whether the pointer was over the view when last heard of.
     is_over: Cell<bool>,
 }
@@ -50,7 +52,7 @@ define_class!(
         /// A live link shows the pointing hand, as links do everywhere.
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
-            if self.ivars().is_live.get() {
+            if self.ivars().is_live.get() && self.ivars().shows_hand.get() {
                 self.addCursorRect_cursor(self.bounds(), &NSCursor::pointingHandCursor());
             }
         }
@@ -118,6 +120,18 @@ impl HoverView {
     /// A view that is also a link: `on_click` is called when it is clicked
     /// while [live](Self::set_live). It starts out live.
     pub fn link(
+        main_thread: MainThreadMarker,
+        on_hover: impl Fn(bool) + 'static,
+        on_click: impl Fn() + 'static,
+    ) -> Retained<Self> {
+        let view = Self::pressable(main_thread, on_hover, on_click);
+        view.ivars().shows_hand.set(true);
+        view
+    }
+
+    /// A view that takes clicks as a link does but keeps the arrow
+    /// pointer, for a surface that is pressed like a button.
+    pub fn pressable(
         main_thread: MainThreadMarker,
         on_hover: impl Fn(bool) + 'static,
         on_click: impl Fn() + 'static,

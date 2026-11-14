@@ -27,6 +27,7 @@ use super::callback::Callback;
 pub use super::detail::Link;
 use super::detail::{Detail, Opening};
 pub use super::failure::Failure;
+use super::hero::{self, Hero};
 use super::layout;
 use super::library_bar::LibraryBar;
 use super::menus::{self, Commands};
@@ -865,13 +866,21 @@ impl Shell {
             "Nothing to watch yet",
             "What you are in the middle of and what your server has just added will be here.",
         );
-        let posters = self.posters(session, None, outlines, nothing, || {});
+        let hero = Hero::new(self.main_thread, Rc::clone(&session.images), self.actions());
+        let header = Header { view: hero.view().retain(), height: theme::HOME_HERO_HEIGHT };
+        let posters = self.posters(session, Some(header), outlines, nothing, || {});
+        posters.set_header_height_per_width(theme::HOME_HERO_HEIGHT_PER_WIDTH);
         let shown = posters.clone();
         let reload = self.loader(
             session,
             Unanswered::ShowsTheError,
             |server| async move { server.home(SHELF_LENGTH).await },
-            move |hubs: &Vec<Hub>| shown.show(home_shelves(hubs)),
+            // The hero lives as long as this closure, which the entry keeps.
+            move |hubs: &Vec<Hub>| {
+                let mut shelves = home_shelves(hubs);
+                hero.show(hero::feature(&mut shelves));
+                shown.show(shelves);
+            },
         );
         (Screen::Posters(posters), reload)
     }
