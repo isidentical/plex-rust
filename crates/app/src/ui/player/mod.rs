@@ -25,7 +25,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
@@ -492,11 +492,7 @@ impl PlayerScreen {
         // its way. The screen is kept until it has arrived, for the sake
         // of `on_saved`.
         let screen = self.retain();
-        let send = async move { stopped.send(&server).await };
-        self.ivars().background.run(self.mtm(), send, move |sent| {
-            log_unsaved(sent);
-            (screen.ivars().on_saved)();
-        });
+        self.send(stopped, server, move || (screen.ivars().on_saved)());
     }
 
     /// Stops on a failure and says so, with `reason` in the player's own
@@ -2020,8 +2016,21 @@ impl PlayerScreen {
         let Some(server) = self.ivars().server.clone() else {
             return self.keep(&progress);
         };
-        let send = async move { progress.send(&server).await };
-        self.ivars().background.run(self.mtm(), send, log_unsaved);
+        self.send(progress, server, || {});
+    }
+
+    /// Sends `progress` to `server` and calls `then` once that has come
+    /// to something. A report the server did not take is kept next to
+    /// the item's download, if it has one, as is done with no server.
+    fn send(&self, progress: Progress, server: MediaServer, then: impl FnOnce() + 'static) {
+        let (downloads, made) = (Rc::clone(&self.ivars().downloads), Instant::now());
+        let send = async move { (progress.send(&server).await, progress) };
+        self.ivars().background.run(self.mtm(), send, move |(sent, progress)| {
+            let Progress { item, position, duration, .. } = &progress;
+            downloads.reported(item, *position, *duration, made, sent.is_ok());
+            log_unsaved(sent);
+            then();
+        });
     }
 
     /// Keeps `progress` next to the download it is of, for the server to

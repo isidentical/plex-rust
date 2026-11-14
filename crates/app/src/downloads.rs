@@ -2,9 +2,10 @@
 //! word to the screens whenever either changes.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2::MainThreadMarker;
 use objc2_foundation::NSUUID;
@@ -51,6 +52,30 @@ pub struct Downloads {
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
     /// Whether the screens are being told of progress once a second.
     reporting: Cell<bool>,
+    reports: RefCell<Reports>,
+}
+
+/// Which report about each item was the last to be heard of, by when it
+/// was made. Reports are sent one after another and come to something in
+/// any order: one the server never answers gives up half a minute later,
+/// after the next ones were taken. What it had to say is old by then.
+#[derive(Default)]
+struct Reports {
+    latest: HashMap<RatingKey, Instant>,
+}
+
+impl Reports {
+    /// Whether a report about `item` made at `made` is the newest heard
+    /// of so far. It then is the one that later ones are held against.
+    fn is_news(&mut self, item: &RatingKey, made: Instant) -> bool {
+        match self.latest.get(item) {
+            Some(latest) if made < *latest => false,
+            _ => {
+                self.latest.insert(item.clone(), made);
+                true
+            }
+        }
+    }
 }
 
 impl Downloads {
@@ -73,6 +98,7 @@ impl Downloads {
             entries: RefCell::new(entries),
             on_change: RefCell::new(None),
             reporting: Cell::new(false),
+            reports: RefCell::default(),
         }))
     }
 
@@ -111,11 +137,30 @@ impl Downloads {
     /// Keeps where a viewing of the download with `key` stopped, for the
     /// server to hear of when it is next there.
     pub fn keep_position(&self, key: &RatingKey, position: Duration, duration: Duration) {
+        self.reported(key, position, duration, Instant::now(), false);
+    }
+
+    /// Takes in what came of telling the server, in a report made at
+    /// `made`, where a viewing of the item with `key` was. If the server
+    /// did not take it and the item has a download, the place is kept
+    /// next to that for the server to hear of later. Once the server has
+    /// taken a report, it knows a later place than any kept before.
+    pub fn reported(
+        &self,
+        key: &RatingKey,
+        position: Duration,
+        duration: Duration,
+        made: Instant,
+        taken: bool,
+    ) {
         let Some(entry) = self.find(key) else {
             return;
         };
-        let unsent = Unsent::new(position, duration);
-        if let Err(error) = self.store.set_unsent(&entry.download, Some(unsent)) {
+        if !self.reports.borrow_mut().is_news(key, made) {
+            return;
+        }
+        let unsent = (!taken).then(|| Unsent::new(position, duration));
+        if let Err(error) = self.store.set_unsent(&entry.download, unsent) {
             eprintln!("plex-rust: progress was not kept: {}", with_causes(&error));
         }
     }
@@ -296,8 +341,11 @@ pub async fn fetch(server: &MediaServer, download: &Download, transfer: &Transfe
 }
 
 /// Tells `server` where each viewing it could not hear of stopped, with
-/// one report each, and forgets each one the server has taken.
+/// one report each, and forgets each one the server has taken. One it
+/// does not take is kept for the next time, and does not hold up the
+/// rest: the first such failure is what is returned.
 pub async fn send_unsent(server: &MediaServer, store: &Store) -> Result<()> {
+    let mut first_failure = Ok(());
     for download in store.list()? {
         let Some(unsent) = store.unsent(&download)? else {
             continue;
@@ -311,10 +359,12 @@ pub async fn send_unsent(server: &MediaServer, store: &Store) -> Result<()> {
             duration: Duration::from_millis(unsent.duration_ms),
             offline: true,
         };
-        server.report(&progress).await?;
-        store.set_unsent(&download, None)?;
+        match server.report(&progress).await {
+            Ok(()) => store.set_unsent(&download, None)?,
+            Err(error) => first_failure = first_failure.and(Err(error.into())),
+        }
     }
-    Ok(())
+    first_failure
 }
 
 #[cfg(test)]
@@ -329,9 +379,12 @@ mod tests {
     use crate::store::Unsent;
     use crate::store::tests::{episode, store};
 
-    /// Answers every request on a local port with `status` and no body.
-    /// Returns the server and the request lines as they arrive.
-    async fn serve(status: &'static str) -> (MediaServer, Arc<Mutex<Vec<String>>>) {
+    /// Answers every request on a local port with no body and the status
+    /// that `status` gives for its request line. Returns the server and
+    /// the request lines as they arrive.
+    async fn serve(
+        status: impl Fn(&str) -> &'static str + Send + 'static,
+    ) -> (MediaServer, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -344,8 +397,9 @@ mod tests {
                     head.push(socket.read_u8().await.unwrap());
                 }
                 let head = String::from_utf8(head).unwrap();
-                log.lock().unwrap().push(head.lines().next().unwrap().to_owned());
-                let answer = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n");
+                let asked = head.lines().next().unwrap().to_owned();
+                let answer = format!("HTTP/1.1 {}\r\nContent-Length: 0\r\n\r\n", status(&asked));
+                log.lock().unwrap().push(asked);
                 socket.write_all(answer.as_bytes()).await.unwrap();
             }
         });
@@ -362,11 +416,11 @@ mod tests {
         store.set_unsent(&download, Some(left)).unwrap();
 
         // A server that is there but refuses is told again later.
-        let (refusing, _) = serve("500 Internal Server Error").await;
+        let (refusing, _) = serve(|_| "500 Internal Server Error").await;
         assert!(send_unsent(&refusing, &store).await.is_err());
         assert_eq!(store.unsent(&download).unwrap(), Some(left));
 
-        let (server, seen) = serve("200 OK").await;
+        let (server, seen) = serve(|_| "200 OK").await;
         send_unsent(&server, &store).await.unwrap();
         send_unsent(&server, &store).await.unwrap();
         assert_eq!(store.unsent(&download).unwrap(), None);
@@ -379,5 +433,45 @@ mod tests {
             assert!(told.contains(said), "{said} is not in {told}");
         }
         std::fs::remove_dir_all(download.file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_report_the_server_refuses_does_not_hold_up_the_others() {
+        let store = store("refused");
+        let mut second = episode();
+        second["ratingKey"] = "5641".into();
+        second["index"] = 8.into();
+        let (first, second) =
+            (store.add(&episode(), None).unwrap(), store.add(&second, None).unwrap());
+        let left = Unsent { position_ms: 1000, duration_ms: 2000 };
+        store.set_unsent(&first, Some(left)).unwrap();
+        store.set_unsent(&second, Some(left)).unwrap();
+
+        // The first in the folder is one the server will not hear of.
+        let (server, seen) = serve(|asked| match asked.contains("ratingKey=5640") {
+            true => "404 Not Found",
+            false => "200 OK",
+        })
+        .await;
+        let failed = send_unsent(&server, &store).await.unwrap_err();
+        assert!(matches!(failed, Error::Plex(error) if error.is_missing()));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(store.unsent(&first).unwrap(), Some(left));
+        assert_eq!(store.unsent(&second).unwrap(), None);
+        std::fs::remove_dir_all(first.file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_report_heard_of_late_is_not_news() {
+        let (film, episode) = (RatingKey::new("1"), RatingKey::new("2"));
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut reports = Reports::default();
+        assert!(reports.is_news(&film, at(10)));
+        assert!(reports.is_news(&film, at(20)));
+        // The one made at 0 got no answer and gave up after those two.
+        assert!(!reports.is_news(&film, at(0)));
+        // What was heard about one item says nothing about another.
+        assert!(reports.is_news(&episode, at(0)));
     }
 }
