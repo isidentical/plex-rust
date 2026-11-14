@@ -968,15 +968,22 @@ impl Shell {
 
     /// Makes `view` the content, optionally fading from what was there.
     fn show_view(&self, view: &NSView, fade: bool) {
-        let fade = fade && !theme::reduces_motion();
-        if let (true, Some(layer)) = (fade, self.content.layer()) {
-            let transition = CATransition::new();
-            // SAFETY: the type is a constant that Core Animation provides.
-            transition.setType(unsafe { kCATransitionFade });
-            transition.setDuration(theme::MOTION_ARRIVE);
-            layer.addAnimation_forKey(&transition, Some(ns_string!("screen")));
+        if fade {
+            self.fade_content();
         }
         layout::fill(&self.content, view);
+    }
+
+    /// Has the next change of the content fade in over what is there now.
+    fn fade_content(&self) {
+        let Some(layer) = self.content.layer().filter(|_| !theme::reduces_motion()) else {
+            return;
+        };
+        let transition = CATransition::new();
+        // SAFETY: the type is a constant that Core Animation provides.
+        transition.setType(unsafe { kCATransitionFade });
+        transition.setDuration(theme::MOTION_ARRIVE);
+        layer.addAnimation_forKey(&transition, Some(ns_string!("screen")));
     }
 
     // The screens.
@@ -1778,6 +1785,8 @@ impl Shell {
     }
 
     fn show_notice(&self, notice: Notice) {
+        // A message arrives the way a page does.
+        self.fade_content();
         layout::centre(&self.content, notice.view());
         notice.announce(&self.window);
         *self.notice.borrow_mut() = Some(notice);
