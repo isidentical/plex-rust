@@ -1045,7 +1045,7 @@ impl Shell {
         listing: Listing,
     ) -> (Screen, Rc<dyn Fn()>) {
         let (relisted, of) = (Rc::downgrade(self), section.clone());
-        let noun = if section.kind == Kind::Show { "show" } else { "film" };
+        let noun = if section.kind == Kind::Show { "show" } else { "movie" };
         let bar = LibraryBar::new(self.main_thread, listing, noun, move |listing| {
             if let Some(shell) = relisted.upgrade() {
                 shell.relist(&of, listing);
