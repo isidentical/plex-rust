@@ -93,6 +93,27 @@ pub enum Colors {
     HdrDisplayP3,
 }
 
+/// Dolby Vision as the video track being played declares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DolbyVision {
+    /// The profile number: 5, 7 and 8 are the ones found in films and
+    /// series.
+    pub profile: u8,
+}
+
+impl DolbyVision {
+    /// Whether the picture comes out in the wrong colours.
+    ///
+    /// Profiles 7 and 8 lay their metadata over a picture that is HDR10,
+    /// HLG or SDR by itself, and that picture is what is drawn. Profile 5
+    /// has no such picture: its samples are in Dolby's own IPT-PQ-C2
+    /// space and only become colours once the metadata is applied, which
+    /// mpv's OpenGL renderer does not do. It reads them as BT.709.
+    pub fn is_shown_in_wrong_colors(self) -> bool {
+        self.profile == 5
+    }
+}
+
 /// One stream inside the loaded file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
@@ -345,6 +366,14 @@ impl Player {
             (true, "display-p3") => Colors::HdrDisplayP3,
             _ => Colors::Sdr,
         }))
+    }
+
+    /// The Dolby Vision profile of the video track being played. `None`
+    /// when the track is not Dolby Vision, or its container does not say
+    /// that it is.
+    pub fn dolby_vision(&self) -> Result<Option<DolbyVision>> {
+        let profile = self.number("current-tracks/video/dolby-vision-profile")?;
+        Ok(profile.map(|profile| DolbyVision { profile }))
     }
 
     /// Sets what the rendered frames are encoded as. It must agree with

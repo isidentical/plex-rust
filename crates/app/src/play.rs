@@ -295,6 +295,7 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         "hardware_decoder": player.hardware_decoder()?,
         "dropped_frames": player.dropped_frames()?,
         "colors": player.video_colors()?.map(|colors| format!("{colors:?}")),
+        "dolby_vision_profile": player.dolby_vision()?.map(|dolby_vision| dolby_vision.profile),
         // Whether the layer asked the display for more than SDR brightness.
         "hdr_output": shows_hdr(),
         "drawn_size": drawn_size(),
