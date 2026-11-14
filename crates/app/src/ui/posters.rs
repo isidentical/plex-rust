@@ -497,6 +497,12 @@ impl Posters {
         ivars.awaiting_more.set(false);
     }
 
+    /// Hears that the cards asked for through `on_near_end` did not come.
+    /// The next card drawn near the end asks for them again.
+    pub fn more_failed(&self) {
+        self.ivars().awaiting_more.set(false);
+    }
+
     /// How many cards are shown, across all shelves.
     pub fn len(&self) -> usize {
         let content = self.ivars().content.borrow();

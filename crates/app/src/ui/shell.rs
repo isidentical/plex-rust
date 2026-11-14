@@ -840,7 +840,10 @@ impl Shell {
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |page| match page {
             Ok(page) => posters.append(start, page.items),
-            Err(error) => shell.fail(moves, &error),
+            Err(error) => {
+                posters.more_failed();
+                shell.fail(moves, &error);
+            }
         });
     }
 
