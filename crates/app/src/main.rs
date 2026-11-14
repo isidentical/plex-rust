@@ -41,9 +41,8 @@ usage: plex-rust
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
          keys: space, left, d, ..., and idle, end, hover, drag, bright,
                small, wide, marker
-         tweaks: narrow, wide, hover, link, season, download,
-                 scroll=<points>,
-                 across=<points>, unwatched,
+         tweaks: narrow, wide, collapsed, hover, link, season, download,
+                 scroll=<points>, across=<points>, unwatched,
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
@@ -126,6 +125,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
         match tweak.split_once('=') {
             None if *tweak == "narrow" => parsed.narrow = true,
             None if *tweak == "wide" => parsed.wide = true,
+            None if *tweak == "collapsed" => parsed.collapsed = true,
             None if *tweak == "hover" => parsed.hover = true,
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),

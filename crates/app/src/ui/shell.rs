@@ -265,6 +265,8 @@ pub struct Tweaks {
     pub narrow: bool,
     /// The window as large as a big display lets it be.
     pub wide: bool,
+    /// The sidebar put away.
+    pub collapsed: bool,
     /// These keys pressed among the cards, in order.
     pub presses: Vec<Press>,
     /// The pointer over the first item.
@@ -400,9 +402,13 @@ impl Shell {
             sidebar_item.setMinimumThickness(theme::SIDEBAR_WIDTH);
             sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
             split.addSplitViewItem(&sidebar_item);
-            split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
-                &content_controller,
-            ));
+            let content_item =
+                NSSplitViewItem::splitViewItemWithViewController(&content_controller);
+            // The sidebar is glass laid over the content, so that a page's
+            // colours run under it to the window's edge. What a page
+            // scrolls stays clear of it by the safe area.
+            content_item.setAutomaticallyAdjustsSafeAreaInsets(true);
+            split.addSplitViewItem(&content_item);
             window.setContentViewController(Some(&split));
             window.setContentSize(theme::WINDOW_SIZE);
             window.center();
@@ -1838,6 +1844,9 @@ impl Shell {
         let settle = async move { tokio::time::sleep(settle).await };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, settle, move |()| {
+            if snapshot.tweaks.collapsed {
+                shell.sidebar_item.setCollapsed(true);
+            }
             let screen = shell.current(|entry| entry.screen.clone());
             if let Some(screen) = &screen {
                 if snapshot.tweaks.scroll > 0.0 {

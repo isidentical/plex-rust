@@ -36,10 +36,13 @@ pub fn float(parent: &NSView, child: &NSView) {
     place_in_middle(parent, child);
 }
 
+/// The middle is that of the part of `parent` nothing lies over: the
+/// sidebar and the toolbar are glass on top of the content.
 fn place_in_middle(parent: &NSView, child: &NSView) {
+    let clear = parent.safeAreaLayoutGuide();
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child.centerXAnchor().constraintEqualToAnchor(&parent.centerXAnchor()),
-        child.centerYAnchor().constraintEqualToAnchor(&parent.centerYAnchor()),
+        child.centerXAnchor().constraintEqualToAnchor(&clear.centerXAnchor()),
+        child.centerYAnchor().constraintEqualToAnchor(&clear.centerYAnchor()),
     ]));
 }
 

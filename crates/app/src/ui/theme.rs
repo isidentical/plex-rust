@@ -37,7 +37,9 @@ pub const SHELF_SPACING: f64 = SPACE_XL;
 pub const SHELF_HEADING_HEIGHT: f64 = 44.0;
 
 pub const SIDEBAR_WIDTH: f64 = 220.0;
-pub const SIDEBAR_ROW_HEIGHT: f64 = 30.0;
+/// The column the rows' symbols are centred in, so that titles line up
+/// whatever the width of the symbol before them.
+pub const SIDEBAR_ICON_WIDTH: f64 = 22.0;
 pub const SIDEBAR_ICON_GAP: f64 = SPACE_S;
 
 /// Artwork is requested at twice the point size so it is sharp on Retina
