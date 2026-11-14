@@ -851,8 +851,8 @@ fn whole_summary(title: &NSTextField, summary: &NSTextField) -> Retained<NSView>
 /// window that is not in front: AppKit greys the coloured bezel of a
 /// system button there, and the main action of a page must not look
 /// switched off.
-struct Pill {
-    button: Retained<NSButton>,
+pub(super) struct Pill {
+    pub(super) button: Retained<NSButton>,
     prominent: bool,
     /// For the prominent pill: as wide as the title needs. Replaced when
     /// the title changes.
@@ -864,7 +864,12 @@ impl Pill {
     /// Any other is a round glyph on a faint wash, which says what it does
     /// to a pointer resting on it and to VoiceOver, so that a row of them
     /// fits beside the main action in the narrowest window.
-    fn new(title: &str, symbol: &str, prominent: bool, main_thread: MainThreadMarker) -> Self {
+    pub(super) fn new(
+        title: &str,
+        symbol: &str,
+        prominent: bool,
+        main_thread: MainThreadMarker,
+    ) -> Self {
         // SAFETY: the target and action are set once the page exists.
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, main_thread)
@@ -920,7 +925,7 @@ impl Pill {
 
     /// What the pill says: on its face if it is the prominent one, and
     /// otherwise to a resting pointer and to VoiceOver.
-    fn set_title(&self, title: &str) {
+    pub(super) fn set_title(&self, title: &str) {
         let title = NSString::from_str(title);
         if !self.prominent {
             self.button.setToolTip(Some(&title));

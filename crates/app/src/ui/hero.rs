@@ -7,17 +7,17 @@ use std::rc::Rc;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSButton, NSCellImagePosition, NSColor,
-    NSLayoutConstraint, NSTextField, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSColor, NSLayoutConstraint, NSTextField, NSView,
 };
 use objc2_core_foundation::CGPoint;
-use objc2_foundation::{NSArray, NSString, ns_string};
+use objc2_foundation::{NSArray, NSString};
 use objc2_quartz_core::{CAAutoresizingMask, CAGradientLayer, kCACornerCurveContinuous};
 use plex::model::{Item, Kind};
 
 use super::artwork::{self, ArtView};
 use super::backdrop;
 use super::callback::Callback;
+use super::detail::Pill;
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
@@ -59,7 +59,7 @@ pub struct Hero {
     shelf: Retained<NSTextField>,
     title: Retained<NSTextField>,
     facts: Retained<NSTextField>,
-    play: Retained<NSButton>,
+    play: Pill,
     /// How much was watched, beside the button: a track and its filled
     /// part.
     track: Retained<NSView>,
@@ -120,7 +120,13 @@ impl Hero {
 
         let press = act(Action::Play);
         let pressed = Callback::new(main_thread, move |_| press());
-        let play = play_button(&pressed, main_thread);
+        let play = Pill::new("Play", "play.fill", true, main_thread);
+        // SAFETY: the hero keeps the target for as long as it keeps the
+        // button.
+        unsafe {
+            play.button.setTarget(Some(&pressed));
+            play.button.setAction(Some(Callback::action()));
+        }
 
         let track = artwork::layered(main_thread);
         artwork::fill_with(&track, &theme::white(theme::HOME_HERO_TRACK_OPACITY));
@@ -134,7 +140,7 @@ impl Hero {
         overlay.addSubview(&track);
         track.addSubview(&fill);
 
-        for view in [&**shelf, &**title, &**facts, &**play] {
+        for view in [&**shelf, &**title, &**facts, &**play.button] {
             let view: &NSView = view;
             overlay.addSubview(view);
             view.leadingAnchor()
@@ -146,8 +152,8 @@ impl Hero {
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             track
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&play.trailingAnchor(), theme::SPACE_L),
-            track.centerYAnchor().constraintEqualToAnchor(&play.centerYAnchor()),
+                .constraintEqualToAnchor_constant(&play.button.trailingAnchor(), theme::SPACE_L),
+            track.centerYAnchor().constraintEqualToAnchor(&play.button.centerYAnchor()),
             track.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PROGRESS_WIDTH),
             track.heightAnchor().constraintEqualToConstant(theme::PROGRESS_BAR_HEIGHT),
             fill.leadingAnchor().constraintEqualToAnchor(&track.leadingAnchor()),
@@ -158,11 +164,12 @@ impl Hero {
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             // From the bottom up: the button, the facts, the title and
             // the shelf's name.
-            play.bottomAnchor()
+            play.button
+                .bottomAnchor()
                 .constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -theme::SPACE_XXL),
             facts
                 .bottomAnchor()
-                .constraintEqualToAnchor_constant(&play.topAnchor(), -theme::SPACE_L),
+                .constraintEqualToAnchor_constant(&play.button.topAnchor(), -theme::SPACE_L),
             title
                 .bottomAnchor()
                 .constraintEqualToAnchor_constant(&facts.topAnchor(), -theme::SPACE_XS),
@@ -242,8 +249,8 @@ impl Hero {
         label::set(&self.title, title);
         label::set(&self.facts, &facts);
         let verb = if item.view_offset.is_some() { "Resume" } else { "Play" };
-        self.play.setTitle(&NSString::from_str(verb));
-        self.play.setHidden(!poster::is_playable(&item));
+        self.play.set_title(verb);
+        self.play.button.setHidden(!poster::is_playable(&item));
         let spoken = format!("{shelf}, {title}, {facts}");
         self.card.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
         self.shown.replace(Some(item));
@@ -307,37 +314,6 @@ fn scrim(main_thread: MainThreadMarker) -> Retained<NSView> {
         layer.addSublayer(&gradient);
     }
     view
-}
-
-/// A white capsule with a play glyph, drawn by us so that it looks the
-/// same in a window that is not in front.
-fn play_button(pressed: &Callback, main_thread: MainThreadMarker) -> Retained<NSButton> {
-    // SAFETY: the hero keeps the target for as long as it keeps the button.
-    let button = unsafe {
-        NSButton::buttonWithTitle_target_action(
-            ns_string!("Play"),
-            Some(pressed),
-            Some(Callback::action()),
-            main_thread,
-        )
-    };
-    button.setBordered(false);
-    button.setFont(Some(&label::font(theme::FONT_BODY, Weight::Semibold)));
-    button.setImage(artwork::symbol("play.fill", theme::FONT_BODY).as_deref());
-    button.setImagePosition(NSCellImagePosition::ImageLeading);
-    button.setImageHugsTitle(true);
-    button.setContentTintColor(Some(&NSColor::blackColor()));
-    button.setWantsLayer(true);
-    if let Some(layer) = button.layer() {
-        layer.setBackgroundColor(Some(&NSColor::whiteColor().CGColor()));
-        layer.setCornerRadius(theme::PILL_HEIGHT / 2.0);
-    }
-    button.setTranslatesAutoresizingMaskIntoConstraints(false);
-    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        button.heightAnchor().constraintEqualToConstant(theme::PILL_HEIGHT),
-        button.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_BUTTON_WIDTH),
-    ]));
-    button
 }
 
 #[cfg(test)]

@@ -170,8 +170,6 @@ pub const HOME_HERO_FACTS_OPACITY: f64 = 0.8;
 /// The bar beside the hero's button that shows how much was watched.
 pub const HOME_HERO_PROGRESS_WIDTH: f64 = 160.0;
 pub const HOME_HERO_TRACK_OPACITY: f64 = 0.3;
-/// Wide enough for "Resume" beside its glyph, and the same for "Play".
-pub const HOME_HERO_BUTTON_WIDTH: f64 = 120.0;
 
 /// The bar above a library's grid: its size on the left, order on the right.
 pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
