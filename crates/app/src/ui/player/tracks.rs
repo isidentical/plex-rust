@@ -2,7 +2,7 @@
 
 use objc2_foundation::{NSLocale, NSString};
 use player::{Track, TrackKind};
-use plex::model::{Part, StreamKind};
+use plex::model::{Part, Stream, StreamKind};
 
 /// The server's kind of stream for the player's kind of track.
 pub fn stream_kind(kind: TrackKind) -> StreamKind {
@@ -13,18 +13,29 @@ pub fn stream_kind(kind: TrackKind) -> StreamKind {
     }
 }
 
+/// The server's entry for `track` among the streams of `part`.
+///
+/// For a track of the file itself, the player's id is its position among
+/// the tracks of its kind, which is also the order the server lists them
+/// in. Subtitles added from a file of their own are found by where that
+/// file is, which ends in the server's path for it.
+pub fn stream<'a>(track: &Track, part: &'a Part) -> Option<&'a Stream> {
+    if let Some(location) = &track.external {
+        let is_it =
+            |stream: &&Stream| stream.key.as_deref().is_some_and(|key| location.ends_with(key));
+        return part.sidecars().find(is_it);
+    }
+    let position = usize::try_from(track.id).ok()?.checked_sub(1)?;
+    part.embedded(stream_kind(track.kind)).nth(position)
+}
+
 /// What `track` is called in a menu.
 ///
 /// The server's description is the best there is, such as "English (EAC3
-/// 5.1)", and it is what every other Plex app shows. The player's id for a
-/// track is its position among the tracks of its kind in `part`, which is
-/// also the order the server lists them in. A track the server does not
-/// list there goes by what the file says about it.
+/// 5.1)", and it is what every other Plex app shows. A track the server
+/// does not list goes by what the file says about it.
 pub fn name(track: &Track, part: Option<&Part>) -> String {
-    let position = usize::try_from(track.id).ok().and_then(|id| id.checked_sub(1));
-    let stream = part
-        .zip(position)
-        .and_then(|(part, position)| part.embedded(stream_kind(track.kind)).nth(position));
+    let stream = part.and_then(|part| stream(track, part));
     if let Some(title) = stream.and_then(|stream| stream.display_title.clone()) {
         return title;
     }
@@ -72,7 +83,7 @@ mod tests {
     use player::{Track, TrackKind};
     use plex::model::Part;
 
-    use super::{described, detail};
+    use super::{described, detail, stream};
 
     fn subtitles(id: i64, title: Option<&str>) -> Track {
         Track {
@@ -81,6 +92,7 @@ mod tests {
             title: title.map(str::to_owned),
             language: Some("eng".to_owned()),
             selected: false,
+            external: None,
         }
     }
 
@@ -99,5 +111,31 @@ mod tests {
         assert_eq!(described(&subtitles(2, Some("SDH")), part), "English \u{b7} SDH");
         // Said once is enough.
         assert_eq!(detail(&subtitles(3, Some("sdh")), part), None);
+    }
+
+    #[test]
+    fn subtitles_from_their_own_file_are_found_by_where_it_is() {
+        let part: Part = serde_json::from_value(serde_json::json!({
+            "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 1, "Stream": [
+                { "id": 10, "streamType": 3, "displayTitle": "English" },
+                { "id": 11, "streamType": 3, "key": "/library/streams/11",
+                  "displayTitle": "Turkish (SRT External)" },
+                { "id": 12, "streamType": 3, "key": "/library/streams/12",
+                  "displayTitle": "German (SRT External)" },
+            ],
+        }))
+        .unwrap();
+        // The player numbers the added tracks after the file's own one.
+        let added = |id: i64, location: &str| Track {
+            external: Some(location.to_owned()),
+            ..subtitles(id, None)
+        };
+        let german = added(3, "https://server:32400/library/streams/12");
+
+        assert_eq!(stream(&german, &part).map(|stream| stream.id), Some(12));
+        assert_eq!(described(&german, Some(&part)), "German (SRT External)");
+        assert_eq!(stream(&subtitles(1, None), &part).map(|stream| stream.id), Some(10));
+        // A track from a file the server does not list is not guessed at.
+        assert_eq!(stream(&added(2, "/Users/anna/other.srt"), &part), None);
     }
 }

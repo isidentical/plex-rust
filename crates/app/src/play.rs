@@ -15,7 +15,7 @@ use objc2_foundation::{
     NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
     NSSize, ns_string,
 };
-use player::{EndReason, Event, Offscreen, Player, Probe, Source, cpu_time};
+use player::{EndReason, Event, Offscreen, Player, Probe, Sidecar, Source, cpu_time};
 use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
@@ -30,6 +30,8 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 struct Playback {
     player: Player,
     progress: Option<Progress>,
+    /// Subtitles to add once the file is open.
+    sidecars: Vec<Sidecar>,
 }
 
 impl Playback {
@@ -82,7 +84,8 @@ pub fn run(
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
 
-    let playback = Arc::new(Playback { player: Player::new()?, progress });
+    let sidecars = source.sidecars.clone();
+    let playback = Arc::new(Playback { player: Player::new()?, progress, sidecars });
     let player = &playback.player;
 
     let offscreen = matches!(check, Some(Check::Seeks(..)));
@@ -215,7 +218,12 @@ fn park_in_corner(window: &NSWindow, main_thread: MainThreadMarker) {
 fn exit_when_playback_ends(playback: &Playback) {
     loop {
         match playback.player.wait_event() {
-            Event::Loaded => playback.report(PlaybackState::Playing),
+            Event::Loaded => {
+                playback.report(PlaybackState::Playing);
+                if let Err(error) = playback.player.add_sidecars(&playback.sidecars) {
+                    eprintln!("plex-rust: subtitles not added: {error}");
+                }
+            }
             Event::VideoChanged => match_video(&playback.player),
             Event::Restarted | Event::Buffering(_) => {}
             Event::Ended(EndReason::Failed(error)) => {
@@ -339,7 +347,9 @@ fn track(track: &player::Track) -> serde_json::Value {
         "id": track.id,
         "kind": format!("{:?}", track.kind),
         "language": track.language,
+        "title": track.title,
         "selected": track.selected,
+        "external": track.external.is_some(),
     })
 }
 

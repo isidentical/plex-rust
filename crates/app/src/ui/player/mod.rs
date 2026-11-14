@@ -36,7 +36,7 @@ use objc2_foundation::{
     NSActivityOptions, NSDate, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
 };
-use player::{Chapter, DolbyVision, EndReason, Event, Player, Track, TrackKind};
+use player::{Chapter, DolbyVision, EndReason, Event, Player, Sidecar, Track, TrackKind};
 use plex::MediaServer;
 use plex::library::{self, Neighbours};
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
@@ -178,6 +178,8 @@ pub struct Ivars {
     /// length, and not what is left of it.
     shows_length: Cell<bool>,
     chapters: RefCell<Vec<Chapter>>,
+    /// The subtitle files to add to the file being opened, once it is.
+    sidecars: RefCell<Vec<Sidecar>>,
     /// Every episode of the show being played, in the server's order,
     /// once the server has listed them.
     episodes: RefCell<Option<Vec<Item>>>,
@@ -324,6 +326,7 @@ impl PlayerScreen {
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
+            sidecars: RefCell::new(Vec::new()),
             episodes: RefCell::new(None),
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
@@ -409,6 +412,7 @@ impl PlayerScreen {
             self.show_progress(source.start, duration.into());
         }
         ivars.player.load(&source)?;
+        *ivars.sidecars.borrow_mut() = source.sidecars;
         ivars.phase.set(Phase::Opening);
         self.set_zoom(Zoom::FIT)?;
         // An episode that takes over from a paused one plays.
@@ -1546,20 +1550,15 @@ impl PlayerScreen {
             Ok(tracks) => tracks,
             Err(error) => return eprintln!("plex-rust: {error}"),
         };
-        // The player's id for a track is its position among the tracks of
-        // its kind, which is also the order the server lists them in.
         let selected = tracks.iter().find(|track| track.kind == kind && track.selected);
-        let stream = selected.and_then(|track| {
-            let position = usize::try_from(track.id).ok()?.checked_sub(1)?;
-            part.embedded(tracks::stream_kind(kind)).nth(position).map(|stream| stream.id)
-        });
+        let stream = selected.and_then(|track| tracks::stream(track, part)).map(|stream| stream.id);
         let (audio, subtitles) = match (kind, selected, stream) {
             (TrackKind::Audio, _, Some(stream)) => (Some(stream), None),
             (TrackKind::Subtitles, _, Some(stream)) => (None, Some(Some(stream))),
             // No subtitle track is selected: the viewer turned them off.
             (TrackKind::Subtitles, None, None) => (None, Some(None)),
-            // A track the server does not list at that position. Saving a
-            // guess would be worse than saving nothing.
+            // A track the server does not list. Saving a guess would be
+            // worse than saving nothing.
             _ => return,
         };
 
@@ -1845,6 +1844,7 @@ impl PlayerScreen {
             Event::Loaded => {
                 ivars.phase.set(Phase::Playing);
                 self.report(PlaybackState::Playing);
+                self.add_sidecars();
                 self.or_log(self.show_chapters());
                 self.or_log(self.refresh());
                 self.or_log(self.warn_of_wrong_colors());
@@ -1874,6 +1874,27 @@ impl PlayerScreen {
             // Stopped is our own doing, and shutdown follows `close`.
             Event::Buffering(_) | Event::Ended(_) | Event::Shutdown => {}
         }
+    }
+
+    /// Adds the subtitles the server keeps in files of their own to the
+    /// tracks of the file that has just opened, so that they are in the
+    /// subtitle menu with the rest, and the one last chosen is shown.
+    fn add_sidecars(&self) {
+        let ivars = self.ivars();
+        let sidecars = ivars.sidecars.take();
+        if sidecars.is_empty() {
+            return;
+        }
+        // The player fetches each file before it answers.
+        let player = ivars.player.clone();
+        let add = async move {
+            tokio::task::spawn_blocking(move || player.add_sidecars(&sidecars)).await
+        };
+        ivars.background.run(self.mtm(), add, |added| match added {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("plex-rust: subtitles not added: {error}"),
+            Err(error) => eprintln!("plex-rust: subtitles not added: {error}"),
+        });
     }
 
     /// Notches the scrubber where the file's chapters start.

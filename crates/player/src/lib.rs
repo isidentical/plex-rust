@@ -18,7 +18,7 @@ pub use crate::clock::{
     HostTime, cpu_time, cpu_time_by_thread, run_thread_at_interactive_priority,
 };
 pub use crate::core::{
-    Chapter, Colors, DolbyVision, EndReason, Event, Player, Source, Track, TrackKind,
+    Chapter, Colors, DolbyVision, EndReason, Event, Player, Sidecar, Source, Track, TrackKind,
 };
 pub use crate::error::{Error, Result};
 pub use crate::offscreen::Offscreen;

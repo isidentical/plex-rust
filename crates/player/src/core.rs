@@ -90,6 +90,21 @@ pub struct Source {
     /// The subtitle track to show, by its id. `None` shows no subtitles,
     /// even when the file marks a track as its default.
     pub subtitles: Option<i64>,
+    /// Subtitles that are not in the file. They become tracks through
+    /// [`Player::add_sidecars`], once the file is open.
+    pub sidecars: Vec<Sidecar>,
+}
+
+/// Subtitles in a file of their own, next to the video.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sidecar {
+    /// A file path or URL. A URL is fetched with the headers of the
+    /// [`Source`] that is playing.
+    pub location: String,
+    /// What to call the track, such as "English (SRT External)".
+    pub title: Option<String>,
+    /// Whether to show these subtitles as soon as they are added.
+    pub selected: bool,
 }
 
 impl fmt::Debug for Source {
@@ -101,6 +116,7 @@ impl fmt::Debug for Source {
             .field("start", &self.start)
             .field("audio", &self.audio)
             .field("subtitles", &self.subtitles)
+            .field("sidecars", &self.sidecars)
             .finish()
     }
 }
@@ -156,6 +172,9 @@ pub struct Track {
     pub language: Option<String>,
     /// Whether this is the track being played or shown.
     pub selected: bool,
+    /// For a track added from a file of its own, where that file is: the
+    /// [`Sidecar::location`] it was added with.
+    pub external: Option<String>,
 }
 
 /// A named point in the loaded file, such as the start of a scene.
@@ -253,6 +272,26 @@ impl Player {
             .push(source.subtitles.map_or_else(|| "sid=no".to_owned(), |id| format!("sid={id}")));
         // "-1" is the playlist index argument, which "replace" ignores.
         self.command(&["loadfile", &source.location, "replace", "-1", &options.join(",")])
+    }
+
+    /// Makes tracks of `sidecars`, in order, for the file that is open:
+    /// call it after [`Event::Loaded`]. A track's id follows those the
+    /// file has of its own.
+    ///
+    /// Each one is fetched and read before this returns, so it is not for
+    /// the main thread. One that cannot be read is an error, and the ones
+    /// after it are still added.
+    pub fn add_sidecars(&self, sidecars: &[Sidecar]) -> Result<()> {
+        let mut first_error = Ok(());
+        for sidecar in sidecars {
+            // "auto" adds the track without showing it.
+            let flag = if sidecar.selected { "select" } else { "auto" };
+            let mut command = vec!["sub-add", sidecar.location.as_str(), flag];
+            command.extend(sidecar.title.as_deref());
+            let added = self.command(&command);
+            first_error = first_error.and(added);
+        }
+        first_error
     }
 
     /// Asks mpv to shut down. [`Event::Shutdown`] follows.
@@ -525,6 +564,7 @@ impl Player {
             title: field("title")?,
             language: field("lang")?,
             selected: field("selected")?.as_deref() == Some("yes"),
+            external: field("external-filename")?,
         })
     }
 

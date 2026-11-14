@@ -2,18 +2,30 @@
 
 use std::path::Path;
 
-use player::Source;
+use player::{Sidecar, Source};
 use plex::MediaServer;
-use plex::model::{Item, Part, StreamKind};
+use plex::model::{Item, Part, Stream, StreamKind};
 
 use crate::error::{Error, Result};
 
 /// The original file of `item` on `server`, starting where the viewer left
-/// off, with the audio and subtitle tracks they last chose.
+/// off, with the audio and subtitle tracks they last chose and the
+/// subtitles the server keeps in files of their own.
 pub fn of(server: &MediaServer, item: &Item) -> Result<Source> {
     let part = part(item).ok_or_else(|| Error::NotPlayable(item.title.clone()))?;
     let file = server.original_file(part);
-    Ok(Source { location: file.url, headers: file.headers, ..as_left(item) })
+    let sidecars = part.sidecars().filter_map(|stream| sidecar(server, stream)).collect();
+    Ok(Source { location: file.url, headers: file.headers, sidecars, ..as_left(item) })
+}
+
+/// The subtitle file the server keeps as `stream`, to be fetched from it
+/// with the same headers as the video.
+fn sidecar(server: &MediaServer, stream: &Stream) -> Option<Sidecar> {
+    Some(Sidecar {
+        location: format!("{}{}", server.address(), stream.key.as_deref()?),
+        title: stream.display_title.clone(),
+        selected: stream.selected,
+    })
 }
 
 /// The same file of `item` as it was downloaded to `file`, so that nothing

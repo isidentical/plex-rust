@@ -264,6 +264,12 @@ impl Part {
         self.streams.iter().filter(move |stream| stream.kind == kind && stream.key.is_none())
     }
 
+    /// The subtitles that are in files of their own, next to the video.
+    pub fn sidecars(&self) -> impl Iterator<Item = &Stream> {
+        let is_subtitle = |stream: &&Stream| stream.kind == StreamKind::Subtitle;
+        self.streams.iter().filter(is_subtitle).filter(|stream| stream.key.is_some())
+    }
+
     /// The position, from 1, of the track of `kind` that the viewer last
     /// chose, among the embedded tracks of that kind.
     pub fn chosen(&self, kind: StreamKind) -> Option<i64> {
@@ -435,6 +441,8 @@ mod tests {
         // the file's own tracks and does not count.
         assert_eq!(part.chosen(StreamKind::Subtitle), Some(2));
         assert_eq!(part.chosen(StreamKind::Video), None);
+        let sidecars: Vec<u64> = part.sidecars().map(|stream| stream.id).collect();
+        assert_eq!(sidecars, [12]);
     }
 
     #[test]
