@@ -688,6 +688,32 @@ impl Posters {
         self.fill_scrolled_shelves();
     }
 
+    /// Scrolls the shelf of the card the keyboard is on until the card is
+    /// a page margin clear of the shelf's edges. The collection view
+    /// scrolls a shelf only until the card is in view, which leaves a
+    /// card at the end of a long shelf flush against the window's edge
+    /// with half its focus ring outside.
+    fn give_selection_room(&self) {
+        let ivars = self.ivars();
+        let selected = ivars.collection.selectionIndexPaths().anyObject();
+        let cell = selected.and_then(|at| ivars.collection.itemAtIndexPath(&at));
+        let Some(card) = cell.map(|cell| cell.view()) else {
+            return;
+        };
+        // A card of a grid is in no scroller but the page's own.
+        let Some(shelf) = card.enclosingScrollView().filter(|shelf| *shelf != ivars.scroll) else {
+            return;
+        };
+        let (clip, margin) = (shelf.contentView(), theme::PAGE_MARGIN);
+        let (card, seen) = (clip.convertRect_fromView(card.bounds(), Some(&card)), clip.bounds());
+        let (near, far) = (card.origin.x - margin, card.origin.x + card.size.width + margin);
+        let x = seen.origin.x.max(far - seen.size.width).min(near);
+        if x != seen.origin.x {
+            clip.scrollToPoint(NSPoint { x, y: seen.origin.y });
+            shelf.reflectScrolledClipView(&clip);
+        }
+    }
+
     /// A shelf scrolled by the program, not by the viewer, does not fetch
     /// the cards that came into view by itself. Laying the collection out
     /// again does.
@@ -1074,6 +1100,7 @@ define_class!(
             // An arrow key may have scrolled a shelf sideways to follow
             // the keyboard.
             if let Some(posters) = owner {
+                posters.give_selection_room();
                 posters.fill_scrolled_shelves();
             }
         }
