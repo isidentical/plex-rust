@@ -5,6 +5,7 @@
 //! [`Probe`] times what the core does and [`Offscreen`] draws where nobody
 //! sees it, both for measuring.
 
+mod cadence;
 mod clock;
 mod core;
 mod error;
@@ -12,6 +13,7 @@ mod offscreen;
 mod probe;
 mod render;
 
+pub use crate::cadence::{Cadence, Refresh};
 pub use crate::clock::{HostTime, cpu_time};
 pub use crate::core::{Chapter, Colors, EndReason, Event, Player, Source, Track, TrackKind};
 pub use crate::error::{Error, Result};
