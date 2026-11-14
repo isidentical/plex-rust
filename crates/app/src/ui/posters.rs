@@ -31,6 +31,7 @@ use objc2_foundation::{
 use plex::model::Item;
 
 use super::episode::EpisodeItem;
+use super::hover::HoverView;
 use super::layout;
 use super::poster::{self, PosterItem, Shape};
 use super::text;
@@ -443,7 +444,7 @@ impl Posters {
     pub fn hover_first(&self) {
         let first = NSIndexPath::indexPathForItem_inSection(0, 0);
         if let Some(cell) = self.ivars().collection.itemAtIndexPath(&first)
-            && let Some(view) = cell.view().downcast_ref::<super::hover::HoverView>()
+            && let Some(view) = cell.view().downcast_ref::<HoverView>()
         {
             view.hovered(true);
         }
@@ -648,6 +649,19 @@ define_class!(
             }
             // SAFETY: forwards the event unchanged.
             let () = unsafe { msg_send![super(self), keyDown: event] };
+        }
+
+        /// Scrolling moves the cards under a pointer that stays where it
+        /// is, so the highlight has to move to the card now under it.
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            // SAFETY: forwards the event unchanged.
+            let () = unsafe { msg_send![super(self), scrollWheel: event] };
+            for cell in self.visibleItems() {
+                if let Some(view) = cell.view().downcast_ref::<HoverView>() {
+                    view.follow(event.locationInWindow());
+                }
+            }
         }
 
         #[unsafe(method_id(menuForEvent:))]

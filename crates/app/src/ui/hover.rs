@@ -7,7 +7,7 @@ use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
 use objc2_app_kit::{NSCursor, NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSView};
-use objc2_foundation::NSRect;
+use objc2_foundation::{NSPoint, NSRect};
 
 #[derive(Default)]
 pub struct Ivars {
@@ -16,6 +16,8 @@ pub struct Ivars {
     on_click: OnceCell<Box<dyn Fn()>>,
     /// Whether the link leads anywhere at the moment.
     is_live: Cell<bool>,
+    /// Whether the pointer was over the view when last heard of.
+    is_over: Cell<bool>,
 }
 
 define_class!(
@@ -138,8 +140,20 @@ impl HoverView {
     /// Tells the view the pointer came over it or left. AppKit calls this
     /// through the tracking area, and a snapshot calls it to show the state.
     pub fn hovered(&self, hovered: bool) {
+        self.ivars().is_over.set(hovered);
         if let Some(on_hover) = self.ivars().on_hover.get() {
             on_hover(hovered);
+        }
+    }
+
+    /// Checks whether `pointer`, in the window's coordinates, is over the
+    /// view, and reports it if that changed. AppKit reports entering and
+    /// leaving only when the pointer moves, not when the view is scrolled
+    /// out from under it.
+    pub fn follow(&self, pointer: NSPoint) {
+        let over = self.mouse_inRect(self.convertPoint_fromView(pointer, None), self.bounds());
+        if over != self.ivars().is_over.get() {
+            self.hovered(over);
         }
     }
 }
