@@ -222,13 +222,13 @@ enum Paged {
 }
 
 impl Paged {
-    /// The page that starts at index `start`.
-    async fn page(self, server: MediaServer, start: u32) -> plex::Result<Page> {
+    /// The `size` items from index `start` on.
+    async fn page(self, server: MediaServer, start: u32, size: u32) -> plex::Result<Page> {
         match self {
             Self::Library(section, listing) => {
-                server.section_items(&section, listing, start, PAGE_SIZE).await
+                server.section_items(&section, listing, start, size).await
             }
-            Self::Path(path) => server.list(&path, start, PAGE_SIZE).await,
+            Self::Path(path) => server.list(&path, start, size).await,
         }
     }
 }
@@ -1129,11 +1129,14 @@ impl Shell {
             }
         });
 
-        let (shown, title) = (posters.clone(), title.to_owned());
+        let (shown, asked, title) = (posters.clone(), posters.clone(), title.to_owned());
         let reload = self.loader(
             session,
             Unanswered::ShowsTheError,
-            move |server| source.clone().page(server, 0),
+            // Everything the grid holds is asked for again, not its first
+            // page alone: showing one page would drop the cards after it,
+            // and what changed among those would never be seen.
+            move |server| source.clone().page(server, 0, whole_pages(asked.len())),
             move |page: &Page| {
                 on_total(page.total);
                 let style = Style::Grid(Shape::Poster);
@@ -1152,7 +1155,8 @@ impl Shell {
             return;
         };
         let start = posters.len();
-        let load = source.page(session.server.clone(), u32::try_from(start).unwrap_or(u32::MAX));
+        let from = u32::try_from(start).unwrap_or(u32::MAX);
+        let load = source.page(session.server.clone(), from, PAGE_SIZE);
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |page| match page {
             Ok(page) => {
@@ -1956,6 +1960,14 @@ impl Shell {
     }
 }
 
+/// How many items to ask for to get every page of a grid that holds
+/// `cards`: at least the first page, and whole pages, so that the next
+/// page still starts where this answer ends.
+fn whole_pages(cards: usize) -> u32 {
+    let cards = u32::try_from(cards).unwrap_or(u32::MAX);
+    cards.max(1).div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE)
+}
+
 /// The words in the window's title bar for `route`.
 fn title(route: &Route) -> &str {
     match route {
@@ -2132,6 +2144,16 @@ mod tests {
             items: vec![item.unwrap()],
             more: None,
         }
+    }
+
+    #[test]
+    fn a_grid_is_asked_for_again_in_whole_pages() {
+        assert_eq!(whole_pages(0), PAGE_SIZE);
+        assert_eq!(whole_pages(49), PAGE_SIZE);
+        assert_eq!(whole_pages(100), PAGE_SIZE);
+        assert_eq!(whole_pages(300), 3 * PAGE_SIZE);
+        // The last page of a list came short.
+        assert_eq!(whole_pages(250), 3 * PAGE_SIZE);
     }
 
     #[test]
