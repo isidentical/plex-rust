@@ -28,8 +28,8 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSString, NSTimer,
-    NSUUID, ns_string,
+    NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
+    NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
 };
 use player::{Chapter, EndReason, Event, Player, Track, TrackKind};
 use plex::MediaServer;
@@ -146,6 +146,9 @@ pub struct Ivars {
     /// long as it rests there.
     pointer_on_controls: Cell<bool>,
     ticks_idle: Cell<u32>,
+    /// Whether one of the pop-up menus is up. The controls it hangs from
+    /// stay for as long as it is.
+    menu_open: Cell<bool>,
     ticks_of_scrub_settling_left: Cell<u32>,
     /// Whether the time to the right of the scrubber is the file's full
     /// length, and not what is left of it.
@@ -257,6 +260,7 @@ impl PlayerScreen {
             controls_shown: Cell::new(true),
             pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
+            menu_open: Cell::new(false),
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
@@ -291,7 +295,7 @@ impl PlayerScreen {
         // SAFETY: `tick:` is defined above. The timer retains the screen
         // until `close` invalidates it.
         let timer = unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
                 TICK.as_secs_f64(),
                 &screen,
                 sel!(tick:),
@@ -299,6 +303,11 @@ impl PlayerScreen {
                 true,
             )
         };
+        // In the common modes, so that it also runs while a menu is open
+        // and while the window is being resized. In the default mode alone
+        // the times stood still through both, and the server heard nothing.
+        // SAFETY: the mode is a constant that Foundation provides.
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
         *screen.ivars().timer.borrow_mut() = Some(timer);
         screen.keep_display_awake(true);
         screen.follow_events(main_thread);
@@ -666,7 +675,9 @@ impl PlayerScreen {
         ivars.ticks_idle.set(idle);
         // A paused picture keeps its controls, and so does a pointer that
         // is on them.
-        let in_use = ivars.pointer_on_controls.get() || ivars.controls.scrubber.is_dragging();
+        let in_use = ivars.pointer_on_controls.get()
+            || ivars.controls.scrubber.is_dragging()
+            || ivars.menu_open.get();
         if idle >= TICKS_UNTIL_HIDDEN && !in_use && !ivars.player.is_paused()? {
             self.show_controls(false);
         }
@@ -984,7 +995,9 @@ impl PlayerScreen {
         // of the chip it starts its own height above it.
         let above = NSPoint::new(0.0, chip.bounds().size.height + menu.size().height);
         // Blocks until the menu is dismissed.
+        self.ivars().menu_open.set(true);
         menu.popUpMenuPositioningItem_atLocation_inView(None, above, Some(chip));
+        self.ivars().menu_open.set(false);
         if self.ivars().timer.borrow().is_some() {
             self.show_controls(true);
         }
