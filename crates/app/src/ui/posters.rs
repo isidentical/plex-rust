@@ -181,6 +181,8 @@ const KEY_RETURN: u16 = 36;
 const KEY_SPACE: u16 = 49;
 
 pub struct Ivars {
+    /// Holds the scroll view and, over it, the words for an empty list.
+    root: Retained<NSView>,
     scroll: Retained<NSScrollView>,
     collection: Retained<ItemsView>,
     /// Shared with the layout, which asks it how each shelf is arranged.
@@ -376,17 +378,22 @@ impl Posters {
             label::line(theme::FONT_HEADLINE, Weight::Regular, &secondary, main_thread);
         label::set(&nothing_label, nothing);
         nothing_label.setHidden(true);
-        scroll.addSubview(&nothing_label);
+        // Beside the scroll view, not inside it: a scroll view places its
+        // own subviews and leaves any other where it was made, at no size.
+        let root = NSView::new(main_thread);
+        layout::fill(&root, &scroll);
+        root.addSubview(&nothing_label);
         nothing_label
             .centerXAnchor()
-            .constraintEqualToAnchor(&scroll.centerXAnchor())
+            .constraintEqualToAnchor(&root.centerXAnchor())
             .setActive(true);
         nothing_label
             .centerYAnchor()
-            .constraintEqualToAnchor(&scroll.centerYAnchor())
+            .constraintEqualToAnchor(&root.centerYAnchor())
             .setActive(true);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
+            root,
             scroll,
             collection,
             content,
@@ -411,7 +418,7 @@ impl Posters {
     }
 
     pub fn view(&self) -> &NSView {
-        &self.ivars().scroll
+        &self.ivars().root
     }
 
     /// Gives the keyboard to the collection, so the arrow keys move in it.
