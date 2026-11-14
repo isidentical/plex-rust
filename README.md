@@ -71,9 +71,11 @@ what the server says about the item beside it. Downloads, in the sidebar, lists 
 and what is on its way. A download that was cut short, by quitting or by the
 network, carries on from where it stopped when it is resumed.
 
-A downloaded item plays from disk. When the server cannot be reached the app
-opens on Downloads, and how far you got in what you watch is kept on the Mac
-and told to the server the next time it answers.
+A downloaded item plays from disk, with those subtitles. When the server
+cannot be reached the app opens on Downloads, the page of a downloaded item
+is all there, and how far you got in what you watch is kept on the Mac and
+told to the server the next time it answers. Downloads says at its foot how
+much room its files take and how much the disk has left.
 
 ## Keys in the player
 

@@ -140,6 +140,7 @@ crates/
     src/source.rs      a library item as something the player can load
     src/downloads.rs   downloads as they run
     src/store.rs       downloads on disk
+    src/reach.rs       whether the server is there, by what was last heard
     src/video_layer.rs the layer that shows the video, and its frame clock
     src/play.rs        `plex-rust play`, with progress.rs and seeks.rs
     src/pacing.rs      `plex-rust pacing`
@@ -423,7 +424,14 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
 - When the server does not answer, what was saved stays, with a line at the
   bottom that says so and a button to look for the server again. An error
   page takes the screen only when nothing was saved for it, or when the
-  sign-in is over.
+  sign-in is over. An item's page is never nothing: it stands as the card
+  it was opened from drew it, and for a downloaded item as the record next
+  to its file has it.
+- Whether the server is there is one state, `reach.rs`, moved by what every
+  request the app makes anyway comes to: any answer says it is, no
+  connection or no reply says it is not. Nothing polls. The line, the strip
+  on Downloads and whether a download plays from disk without asking all
+  go by it. Without any server known, search is greyed out and says why.
 
 ## 9. Offline downloads
 
@@ -432,6 +440,10 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
   mismatch is an error, not a retry loop.
 - Of an item in several versions, the one picked on its page. A version
   split across files is refused: a download is one file, as is what plays.
+- The folder is made by the first download. A download that cannot start
+  says why in a sheet, and one that stops says why in its row, a full
+  disk and a folder that may not be written to in so many words. Downloads
+  shows how much its files take and how much more the disk has room for.
 - The item's metadata JSON, with the downloaded version first, its poster
   and the subtitle files the server keeps beside the video are stored next
   to it so Downloads works with no server. Those files are the only record
