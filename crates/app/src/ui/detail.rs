@@ -86,8 +86,8 @@ struct Hero {
     poster: Rc<ArtView>,
     /// Around the poster. On an episode's page it leads to the show.
     poster_link: Retained<HoverView>,
-    /// The line above an episode's title: its show and its season, both
-    /// links, and its number.
+    /// The line above an episode's title, as a path down to it: its show
+    /// and its season, both links, and its number.
     eyebrow: Retained<NSStackView>,
     show_link: Retained<HoverView>,
     show_name: Retained<NSTextField>,
@@ -477,16 +477,16 @@ impl Hero {
         let (show_link, show_name) = text_link(move || open_show(), main_thread);
         let (season_link, season_name) = text_link(open_season, main_thread);
         let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
-        let dot = || {
-            let dot = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
-            label::set(&dot, "·");
+        let step = || {
+            let step = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
+            label::set(&step, "›");
             // Punctuation between links, not something to read out.
-            dot.setAccessibilityElement(false);
-            dot
+            step.setAccessibilityElement(false);
+            step
         };
-        let (first_dot, second_dot) = (dot(), dot());
+        let (first_step, second_step) = (step(), step());
         let eyebrow: [&NSView; 5] =
-            [&show_link, &first_dot, &season_link, &second_dot, &episode_number];
+            [&show_link, &first_step, &season_link, &second_step, &episode_number];
         let eyebrow = NSStackView::stackViewWithViews(&NSArray::from_slice(&eyebrow), main_thread);
         eyebrow.setSpacing(theme::SPACE_S);
         let title = label::paragraph(
@@ -931,19 +931,20 @@ impl Pill {
     }
 }
 
-/// A few words that lead somewhere: brighter under the pointer, which
-/// turns into a hand over them.
+/// A few words that lead somewhere. They are as bright as a title, which
+/// sets them apart from the plain text around them, and give way a little
+/// under the pointer, which turns into a hand over them.
 fn text_link(
     on_click: impl Fn() + 'static,
     main_thread: MainThreadMarker,
 ) -> (Retained<HoverView>, Retained<NSTextField>) {
-    let secondary = NSColor::secondaryLabelColor();
-    let label = label::line(theme::FONT_HEADLINE, Weight::Semibold, &secondary, main_thread);
+    let primary = NSColor::labelColor();
+    let label = label::line(theme::FONT_HEADLINE, Weight::Semibold, &primary, main_thread);
     let lit = label.clone();
     let link = HoverView::link(
         main_thread,
         move |over| {
-            let color = if over { NSColor::labelColor() } else { NSColor::secondaryLabelColor() };
+            let color = if over { NSColor::secondaryLabelColor() } else { NSColor::labelColor() };
             lit.setTextColor(Some(&color));
         },
         on_click,
