@@ -7,7 +7,9 @@ use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
 use objc2_app_kit::{NSCursor, NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSView};
-use objc2_foundation::{NSPoint, NSRect};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+use super::theme;
 
 #[derive(Default)]
 pub struct Ivars {
@@ -89,7 +91,7 @@ define_class!(
             let (Some(on_click), true, true) = (
                 self.ivars().on_click.get(),
                 self.ivars().is_live.get(),
-                self.mouse_inRect(point, self.bounds()),
+                self.mouse_inRect(point, self.touch_rect()),
             ) else {
                 // SAFETY: forwards the event unchanged.
                 return unsafe { msg_send![super(self), mouseUp: event] };
@@ -169,6 +171,26 @@ impl HoverView {
     pub fn set_on_press(&self, on_press: impl Fn() + 'static) {
         // Cannot matter if it fails: the first answer stands.
         let _ = self.ivars().on_press.set(Box::new(on_press));
+    }
+
+    /// Whether a click on the view does something at the moment.
+    pub fn takes_clicks(&self) -> bool {
+        self.ivars().is_live.get() && self.ivars().on_click.get().is_some()
+    }
+
+    /// The view's bounds, grown evenly to the least a finger needs to hit
+    /// where they are smaller: a link of one line of text is 16 points
+    /// tall. A press that began on the link and ends within this counts.
+    /// A view that holds small links may also send presses that land
+    /// within this, and on nothing else, to the link.
+    pub fn touch_rect(&self) -> NSRect {
+        let bounds = self.bounds();
+        let short = |side: f64| ((theme::TOUCH_TARGET - side) / 2.0).max(0.0);
+        let (across, down) = (short(bounds.size.width), short(bounds.size.height));
+        NSRect::new(
+            NSPoint::new(bounds.origin.x - across, bounds.origin.y - down),
+            NSSize::new(bounds.size.width + 2.0 * across, bounds.size.height + 2.0 * down),
+        )
     }
 
     /// Turns a link on or off. Off, it is a plain view: no hand, no click.

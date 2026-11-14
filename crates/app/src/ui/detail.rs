@@ -8,7 +8,7 @@ use std::rc::{Rc, Weak};
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityImageRole, NSAccessibilityLinkRole,
     NSAttributedStringNSExtendedStringDrawing, NSButton, NSCellImagePosition, NSColor,
@@ -931,7 +931,9 @@ impl Hero {
         let choices = NSStackView::stackViewWithViews(&NSArray::from_slice(&rows), main_thread);
         choices.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         choices.setAlignment(NSLayoutAttribute::Leading);
-        choices.setSpacing(theme::SPACE_S);
+        // Each menu is in a frame as tall as a finger needs, so the rows
+        // are apart already.
+        choices.setSpacing(0.0);
         choices.setHidden(true);
 
         let (menu_play, menu_watched) =
@@ -1596,6 +1598,12 @@ impl Seasons {
         );
         menu.setControlSize(NSControlSize::Large);
         menu.setAccessibilityLabel(Some(ns_string!("Season")));
+        // Both are drawn at their own height in the middle of a frame
+        // that is as tall as a finger needs.
+        menu.setTranslatesAutoresizingMaskIntoConstraints(false);
+        tabs.setTranslatesAutoresizingMaskIntoConstraints(false);
+        menu.heightAnchor().constraintEqualToConstant(theme::TOUCH_TARGET).setActive(true);
+        tabs.heightAnchor().constraintEqualToConstant(theme::TOUCH_TARGET).setActive(true);
         Self { tabs, menu, count: Cell::new(0) }
     }
 
@@ -1651,6 +1659,9 @@ impl Choice {
         picker.setFont(Some(&label::font(theme::FONT_CAPTION, Weight::Regular)));
         picker.setAccessibilityLabel(Some(&NSString::from_str(caption)));
         picker.setTranslatesAutoresizingMaskIntoConstraints(false);
+        // The menu is drawn at its own height in the middle of a frame
+        // that is as tall as a finger needs, all of which opens it.
+        picker.heightAnchor().constraintEqualToConstant(theme::TOUCH_TARGET).setActive(true);
         let widest = theme::CHOICE_MENU_MAX_WIDTH;
         picker.widthAnchor().constraintLessThanOrEqualToConstant(widest).setActive(true);
         Self { row: captioned(caption, &picker, main_thread), picker }
@@ -1793,10 +1804,86 @@ define_class!(
                 on_layout();
             }
         }
+
+        /// A press that lands on nothing that takes presses goes to a
+        /// link it only just missed: the links of the header are a line
+        /// of text or a capsule tall, which is less than a finger needs.
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            // SAFETY: forwards the call unchanged.
+            let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
+            self.or_link_nearby(hit, point)
+        }
     }
 );
 
+/// Whether a press on `view`, which is in `header`, does something: it
+/// is a button, a menu or a link, or is part of one.
+fn takes_presses(view: &NSView, header: &NSView) -> bool {
+    let mut at = Some(view.retain());
+    while let Some(view) = at.filter(|view| **view != *header) {
+        let is_link = view.downcast_ref::<HoverView>().is_some_and(HoverView::takes_clicks);
+        let is_control = view.downcast_ref::<NSButton>().is_some()
+            || view.downcast_ref::<NSSegmentedControl>().is_some();
+        if is_link || is_control {
+            return true;
+        }
+        // SAFETY: a view's superview is a view, alive while it holds this one.
+        at = unsafe { view.superview() };
+    }
+    false
+}
+
+/// The link in `view` whose [reach](HoverView::touch_rect) holds `point`,
+/// given in the window's coordinates, and whose middle is nearest to it.
+fn nearest_link(view: &NSView, point: NSPoint) -> Option<Retained<HoverView>> {
+    let mut nearest: Option<(f64, Retained<HoverView>)> = None;
+    let mut left = vec![view.retain()];
+    while let Some(view) = left.pop() {
+        if view.isHidden() {
+            continue;
+        }
+        left.extend(view.subviews().iter());
+        let Ok(link) = view.downcast::<HoverView>() else {
+            continue;
+        };
+        let (at, reach) = (link.convertPoint_fromView(point, None), link.touch_rect());
+        if !link.takes_clicks() || !link.mouse_inRect(at, reach) {
+            continue;
+        }
+        let bounds = link.bounds();
+        let middle =
+            (bounds.origin.x + bounds.size.width / 2.0, bounds.origin.y + bounds.size.height / 2.0);
+        let away = (at.x - middle.0).hypot(at.y - middle.1);
+        if nearest.as_ref().is_none_or(|(least, _)| away < *least) {
+            nearest = Some((away, link));
+        }
+    }
+    nearest.map(|(_, link)| link)
+}
+
 impl HeaderView {
+    /// What a press at `point`, in the coordinates of what holds the
+    /// header, goes to when `hit` is what lies there.
+    fn or_link_nearby(
+        &self,
+        hit: Option<Retained<NSView>>,
+        point: NSPoint,
+    ) -> Option<Retained<NSView>> {
+        let hit = hit?;
+        if takes_presses(&hit, self) {
+            return Some(hit);
+        }
+        // SAFETY: a view's superview is a view, alive while it holds this one.
+        let above = unsafe { self.superview() };
+        let in_window = match above {
+            Some(above) => above.convertPoint_toView(point, None),
+            None => point,
+        };
+        let near = nearest_link(self, in_window).map(Retained::into_super);
+        Some(near.unwrap_or(hit))
+    }
+
     fn new(main_thread: MainThreadMarker) -> Retained<Self> {
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] }
