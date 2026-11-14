@@ -146,8 +146,13 @@ impl ArtView {
         fill_with(&dot, &NSColor::controlAccentColor());
         if let Some(layer) = dot.layer() {
             layer.setCornerRadius(theme::BADGE_DOT_SIZE / 2.0);
-            layer.setBorderWidth(theme::SPACE_XXS);
-            layer.setBorderColor(Some(&theme::black(theme::BADGE_BACKGROUND_OPACITY).CGColor()));
+            // A white rim keeps the dot apart from dark artwork, and its
+            // own colour keeps it apart from light artwork.
+            layer.setBorderWidth(theme::BADGE_DOT_RIM_WIDTH);
+            layer.setBorderColor(Some(&theme::white(theme::BADGE_DOT_RIM_OPACITY).CGColor()));
+            layer.setShadowOpacity(theme::BADGE_SHADOW_OPACITY);
+            layer.setShadowRadius(theme::BADGE_SHADOW_RADIUS);
+            layer.setShadowOffset(CGSize::ZERO);
         }
         let (pill, count) = count_pill(main_thread);
         let inset = theme::BADGE_INSET;
