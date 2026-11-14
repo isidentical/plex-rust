@@ -40,6 +40,9 @@ pub struct Progress<'a> {
     pub state: PlaybackState,
     pub position: Duration,
     pub duration: Duration,
+    /// Whether this is told after the fact, about a viewing the server
+    /// could not hear of while it went on.
+    pub offline: bool,
 }
 
 impl MediaServer {
@@ -68,6 +71,7 @@ impl MediaServer {
             PlaybackState::Buffering => "buffering",
             PlaybackState::Stopped => "stopped",
         };
+        let offline: &[(&str, &str)] = if progress.offline { &[("offline", "1")] } else { &[] };
         self.request(Method::POST, "/:/timeline")
             .header(header("x-plex-session-identifier"), progress.session)
             .query(&[
@@ -77,6 +81,7 @@ impl MediaServer {
                 ("time", &progress.position.as_millis().to_string()),
                 ("duration", &progress.duration.as_millis().to_string()),
             ])
+            .query(offline)
             .send()
             .await?
             .error_for_status()?;

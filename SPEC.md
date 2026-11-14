@@ -316,8 +316,8 @@ icon and font assets:
   same source the current Plex apps use for their backgrounds.
 - **Motion:** system animations only: poster hover lift, shelf scrolling,
   cross fade between pages, controls fade. Nothing custom runs while idle.
-- Poster cells: rounded corners, progress bar for partly watched, unwatched
-  badge, title and year below.
+- Poster cells: rounded corners, progress bar for partly watched, a tick once
+  watched, the number of episodes left on a show, title and year below.
 
 - **Window:** `NSSplitViewController`. Sidebar: Home, one row per Movie/TV
   library, Downloads. Toolbar: back, search field. No `NSVisualEffectView` in
@@ -394,7 +394,7 @@ How each step is checked without a person:
 | --- | --- |
 | Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when signed in |
 | Video plays right | `plex-rust play <url> --for 20s --report` prints JSON: `hwdec-current`, dropped frames, cache seconds, HDR state. Asserted by a script |
-| UI looks right | `plex-rust snapshot <screen> <out.png>` renders a screen to a PNG from inside the app, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
+| UI looks right | `plex-rust snapshot <screen> <out.png>` puts the window where no display shows it and saves the window server's picture of it, glass included. An app may read back its own window, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
 | Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs plex-rust. `sudo powermetrics` needs a password [V] and stays optional |
 | Packaging | `otool -L`, then launch the bundled app and run the same play report |
 

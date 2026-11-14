@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Hub, Item, Kind, RatingKey, Role, Section};
+use crate::model::{Hub, Item, Kind, RatingKey, Role, Section, Tag};
 use crate::server::MediaServer;
 
 /// One page of a longer list.
@@ -92,6 +92,13 @@ struct Items {
     total_size: Option<u32>,
 }
 
+/// Items left as the server wrote them.
+#[derive(Deserialize)]
+struct RawItems {
+    #[serde(rename = "Metadata", default)]
+    items: Vec<serde_json::Value>,
+}
+
 #[derive(Deserialize)]
 struct Hubs {
     #[serde(rename = "Hub", default)]
@@ -177,9 +184,15 @@ impl MediaServer {
     /// One item in full, including its markers, its extras and the tracks
     /// of its files.
     pub async fn item(&self, key: &RatingKey) -> Result<Item> {
+        item_from(self.item_json(key).await?)
+    }
+
+    /// One item in full, as the server wrote it. For keeping on disk:
+    /// [`item_from`] reads it back.
+    pub async fn item_json(&self, key: &RatingKey) -> Result<serde_json::Value> {
         let path = format!("/library/metadata/{key}");
         let query = [("includeMarkers", "1"), ("includeExtras", "1")];
-        let Items { items, .. } = self.get(&path, &query).await?;
+        let RawItems { items } = self.get(&path, &query).await?;
         items.into_iter().next().ok_or_else(|| Error::Missing(key.clone()))
     }
 
@@ -206,11 +219,24 @@ impl MediaServer {
     }
 }
 
+/// Decodes an item from what [`MediaServer::item_json`] returned.
+pub fn item_from(json: serde_json::Value) -> Result<Item> {
+    let path = "/library/metadata".to_owned();
+    serde_json::from_value(json).map_err(|source| Error::Shape { path, source })
+}
+
 /// Server path of the list of everything in library `section` that
 /// `person` is in. `None` for a cast member the server gave no number,
 /// which is every one in a listing: only an item fetched in full has them.
 pub fn appearances(section: u32, person: &Role) -> Option<String> {
     Some(format!("/library/sections/{section}/all?actor={}", person.id?))
+}
+
+/// Server path of the list of everything in library `section` of the
+/// genre `genre`. `None` for a genre the server gave no number, which is
+/// every one in a listing.
+pub fn of_genre(section: u32, genre: &Tag) -> Option<String> {
+    Some(format!("/library/sections/{section}/all?genre={}", genre.id?))
 }
 
 /// The episode to offer when the viewer asks to play a show, given all its

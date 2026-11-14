@@ -10,8 +10,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityAnnouncementKey,
     NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityPostNotificationWithUserInfo,
-    NSAnimatablePropertyContainer, NSBezierPath, NSImageView, NSLayoutConstraintOrientation,
-    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSTextField, NSView,
+    NSAnimatablePropertyContainer, NSBezierPath, NSImageView, NSTextField, NSView,
 };
 use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
@@ -87,13 +86,6 @@ impl Badge {
             shown: Cell::new(false),
         };
         badge.icon.setContentTintColor(Some(&theme::text()));
-        // A long notice, such as a track with a long name, ends in an
-        // ellipsis where the badge may grow no wider.
-        badge.text.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        badge.text.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
         badge.view().setAlphaValue(0.0);
         // VoiceOver is told what the badge says when it says it, and has
         // no use for finding it afterwards.

@@ -1,5 +1,7 @@
-//! One episode as a row in a season's list: a frame on the left, its
-//! number, title, length and summary beside it.
+//! One episode as a row in a season's list: a frame on the left, and
+//! beside it its number and title, when it aired, how long it is, whether
+//! it is the one to watch next and the start of its summary. The frame
+//! says how much of it was watched.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -8,8 +10,8 @@ use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
-    NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
-    NSView,
+    NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSStackView,
+    NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
 use plex::model::{Item, RatingKey};
@@ -26,6 +28,8 @@ use crate::images::Images;
 pub struct Views {
     art: ArtView,
     title: Retained<NSTextField>,
+    /// Before the facts of the episode to watch next.
+    next: Retained<NSTextField>,
     facts: Retained<NSTextField>,
     summary: Retained<NSTextField>,
     /// Lights up the whole row under the pointer.
@@ -97,7 +101,9 @@ define_class!(
 impl EpisodeItem {
     pub const IDENTIFIER: &str = "episode";
 
-    pub fn show(&self, episode: &Item, images: &Rc<Images>) {
+    /// Fills the row with `episode`. `is_next` marks it as the one to
+    /// watch next, among the others of its show.
+    pub fn show(&self, episode: &Item, is_next: bool, images: &Rc<Images>) {
         // Asking for the view makes AppKit call `loadView` if it has not.
         let _ = self.view();
         let Some(views) = self.ivars().get() else {
@@ -108,6 +114,7 @@ impl EpisodeItem {
             None => episode.title.clone(),
         };
         label::set(&views.title, &title);
+        views.next.setHidden(!is_next);
         label::set(&views.facts, &facts(episode));
         label::set(&views.summary, episode.summary.as_deref().unwrap_or_default());
         // A row taken over by another episode starts at rest. One that is
@@ -120,8 +127,12 @@ impl EpisodeItem {
         views.art.set_playable(true);
         views.art.set_progress(episode.progress());
         views.art.set_badge(poster::badge(episode));
-        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, None, images);
-        let spoken = poster::spoken(&Card::Item(episode.clone()), &title, &facts(episode), false);
+        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, images);
+        let mut spoken =
+            poster::spoken(&Card::Item(episode.clone()), &title, &facts(episode), false);
+        if is_next {
+            spoken.push_str(", next to watch");
+        }
         self.view().setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
 
@@ -147,9 +158,12 @@ impl Views {
         let wash = artwork::layered(main_thread);
         artwork::fill_with(&wash, &theme::white(theme::ROW_HOVER_OPACITY));
         if let Some(layer) = wash.layer() {
-            layer.setCornerRadius(theme::RADIUS_L);
+            layer.setCornerRadius(theme::RADIUS_XL);
         }
         wash.setAlphaValue(0.0);
+        let accent = NSColor::controlAccentColor();
+        let next = label::line(theme::FONT_CAPTION, Weight::Semibold, &accent, main_thread);
+        label::set(&next, "UP NEXT");
         Self {
             art: ArtView::new(main_thread, theme::RADIUS_M),
             title: label::line(
@@ -158,6 +172,7 @@ impl Views {
                 &NSColor::labelColor(),
                 main_thread,
             ),
+            next,
             facts: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
             summary: label::paragraph(
                 theme::FONT_BODY,
@@ -181,7 +196,14 @@ impl Views {
         layout::cover(row, &self.wash);
         let art = self.art.view();
         row.addSubview(art);
-        for line in [&self.title, &self.facts, &self.summary] {
+        // The label goes when the row is not the one up next, and the
+        // facts move up to where it was.
+        let facts: [&NSView; 2] = [&self.next, &self.facts];
+        let facts = NSStackView::stackViewWithViews(&NSArray::from_slice(&facts), row.mtm());
+        facts.setSpacing(theme::SPACE_S);
+        facts.setTranslatesAutoresizingMaskIntoConstraints(false);
+        let lines: [&NSView; 3] = [&self.title, &facts, &self.summary];
+        for line in lines {
             row.addSubview(line);
         }
         let inset = theme::SPACE_S;
@@ -193,15 +215,15 @@ impl Views {
             art.heightAnchor().constraintEqualToConstant(still_height),
             self.title
                 .topAnchor()
-                .constraintEqualToAnchor_constant(&art.topAnchor(), theme::SPACE_XS),
-            self.facts
+                .constraintEqualToAnchor_constant(&art.topAnchor(), theme::SPACE_S),
+            facts
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&self.title.bottomAnchor(), theme::SPACE_XS),
             self.summary
                 .topAnchor()
-                .constraintEqualToAnchor_constant(&self.facts.bottomAnchor(), theme::SPACE_S),
+                .constraintEqualToAnchor_constant(&facts.bottomAnchor(), theme::SPACE_S),
         ]));
-        for line in [&self.title, &self.facts, &self.summary] {
+        for line in lines {
             let narrow = line.widthAnchor().constraintEqualToConstant(theme::EPISODE_TEXT_WIDTH);
             // As wide as the text column gets, but never past the row's edge.
             narrow.setPriority(objc2_app_kit::NSLayoutPriorityDefaultHigh);

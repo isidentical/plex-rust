@@ -15,7 +15,8 @@ use super::theme;
 
 pub struct Ivars {
     radius: f64,
-    /// Whether the panel paints itself. One that lies in glass does not.
+    /// Whether the panel is all there is. One that lies in glass only
+    /// dims it.
     opaque: bool,
 }
 
@@ -31,13 +32,17 @@ define_class!(
     impl Plate {
         #[unsafe(method(drawRect:))]
         fn draw(&self, _dirty: NSRect) {
-            if !self.ivars().opaque {
-                return;
-            }
-            let radius = self.ivars().radius;
-            theme::plate().setFill();
+            let (radius, opaque) = (self.ivars().radius, self.ivars().opaque);
+            // Glass over a white picture is a light grey, whatever its
+            // tint, and white text on it has a contrast of under 3 to 1.
+            // A shade laid into the glass brings that to over 5.
+            let fill = if opaque { theme::plate() } else { theme::glass_shade() };
+            fill.setFill();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), radius, radius)
                 .fill();
+            if !opaque {
+                return;
+            }
             // A dark panel on a dark scene has no edge without one.
             let inset = theme::RIM_WIDTH / 2.0;
             let rim = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
@@ -66,12 +71,10 @@ pub enum Material {
 
 impl Material {
     /// Glass, unless the viewer has asked the system for less
-    /// transparency, or the screen is `drawn_into_an_image`: glass is put
-    /// together by the window server, and a view drawing itself into an
-    /// image gets a white sheet in place of it.
-    pub fn choose(drawn_into_an_image: bool) -> Self {
+    /// transparency.
+    pub fn choose() -> Self {
         let reduced = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
-        if reduced || drawn_into_an_image { Self::Plain } else { Self::Glass }
+        if reduced { Self::Plain } else { Self::Glass }
     }
 }
 

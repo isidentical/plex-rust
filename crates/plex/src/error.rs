@@ -24,6 +24,26 @@ pub enum Error {
 
     #[error("the server has no item {0}")]
     Missing(crate::model::RatingKey),
+
+    #[error("{path}: {source}")]
+    File { path: std::path::PathBuf, source: std::io::Error },
+
+    /// A download, or the file the server offers for it, is not as long as
+    /// the server said the file is. Trying again would not change that.
+    #[error("the file should be {expected} bytes long, not {found}")]
+    SizeMismatch { expected: u64, found: u64 },
+
+    #[error("asked for the file from byte {asked} on, and the server answered {answer}")]
+    Resume { asked: u64, answer: String },
+
+    #[error("the server stopped sending the file")]
+    Stalled,
+
+    #[error("the download was cancelled")]
+    Cancelled,
+
+    #[error("the server holds no file for {0}")]
+    NoFile(String),
 }
 
 impl Error {

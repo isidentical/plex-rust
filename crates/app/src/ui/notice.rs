@@ -158,7 +158,7 @@ impl Notice {
 
 fn symbol(name: &str, tint: &NSColor, main_thread: MainThreadMarker) -> Retained<NSView> {
     let glyph = NSImageView::new(main_thread);
-    glyph.setImage(artwork::symbol(name, theme::NOTICE_SYMBOL_SIZE).as_deref());
+    glyph.setImage(artwork::symbol(name, theme::NOTICE_SYMBOL_SIZE, Weight::Regular).as_deref());
     glyph.setContentTintColor(Some(tint));
     // Decoration: the title under it says what happened.
     glyph.setAccessibilityElement(false);

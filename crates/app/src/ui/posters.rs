@@ -32,10 +32,10 @@ use objc2_foundation::{
     NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSet, NSString,
     ns_string,
 };
-use plex::model::{Item, Kind, RatingKey, Role};
+use plex::model::{Item, Kind, Part, RatingKey, Role};
 
 use super::episode::EpisodeItem;
-use super::heading;
+use super::heading::{self, Paging};
 use super::hover::HoverView;
 use super::layout;
 use super::notice::Notice;
@@ -63,7 +63,8 @@ pub struct Shelf {
     /// Server path of the whole list this shelf is the start of. With it,
     /// the heading is a link to that list.
     pub more: Option<String>,
-    /// The item the page is about, which is marked among the others.
+    /// The item the page is about, which is marked among the others. In
+    /// a list of episodes, the one to watch next.
     pub current: Option<RatingKey>,
 }
 
@@ -87,8 +88,22 @@ pub struct Outline {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Open(Item),
+    /// Go back to where the viewer came from.
+    Back,
     Play(Item),
+    /// Play it otherwise than it was left.
+    PlayAs(Item, Playback),
     SetWatched(Item, bool),
+    /// Download it, or if it is downloaded or on its way, delete that.
+    ToggleDownload(Item),
+    /// Remember which tracks of this file to play, by stream id, as
+    /// [`MediaServer::choose_streams`](plex::MediaServer::choose_streams)
+    /// takes them.
+    ChooseStreams {
+        part: Part,
+        audio: Option<u64>,
+        subtitles: Option<Option<u64>>,
+    },
     /// Go from this episode to its show, with the episode's season chosen.
     OpenShow(Item),
     /// Go from this episode to its season: the list it is in.
@@ -100,6 +115,30 @@ pub enum Action {
         title: String,
         path: String,
     },
+}
+
+/// How to play an item, where that is not how the server remembers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Playback {
+    /// From its beginning, wherever it was stopped.
+    pub from_start: bool,
+    /// This one of its versions, by the id of the media, and not the
+    /// first.
+    pub version: Option<u64>,
+}
+
+impl Playback {
+    /// Makes `item` play this way.
+    pub fn apply(self, item: &mut Item) {
+        if self.from_start {
+            item.view_offset = None;
+        }
+        if let Some(version) = self.version {
+            // The first version is the one that plays. The sort is stable,
+            // so the others keep their order behind it.
+            item.media.sort_by_key(|media| media.id != version);
+        }
+    }
 }
 
 /// A key the viewer moves through the cards with.
@@ -120,6 +159,18 @@ impl Press {
             "up" => Some(Self::Up),
             "down" => Some(Self::Down),
             "return" => Some(Self::Return),
+            _ => None,
+        }
+    }
+
+    /// The key an event with this code is. Space does what Return does.
+    fn coded(code: u16) -> Option<Self> {
+        match code {
+            KEY_LEFT => Some(Self::Left),
+            KEY_RIGHT => Some(Self::Right),
+            KEY_UP => Some(Self::Up),
+            KEY_DOWN => Some(Self::Down),
+            KEY_RETURN | KEY_SPACE => Some(Self::Return),
             _ => None,
         }
     }
@@ -145,13 +196,29 @@ pub struct Header {
     pub height: f64,
 }
 
-/// How the height of a header follows the page.
+/// What a header does with the keyboard, for one that the arrow keys can
+/// reach from the cards under it.
+pub struct HeaderKeys {
+    /// Told that the keyboard came onto the header or left it. Answers
+    /// whether the header took it: one with nothing to show does not.
+    pub focus: Box<dyn Fn(bool) -> bool>,
+    /// Hears each key pressed while the keyboard is on the header, but
+    /// for Down, which leaves it.
+    pub press: Box<dyn Fn(Press)>,
+}
+
+/// What the height of a header follows, when not the one it was made with.
 #[derive(Debug, Clone, Copy)]
-struct HeaderFit {
-    /// Points of height for each point of the page's width.
-    per_width: f64,
-    /// The most of the height in view the header may take, from 0 to 1.
-    most: f64,
+enum HeaderFit {
+    /// The size of the page.
+    Page {
+        /// Points of height for each point of the page's width.
+        per_width: f64,
+        /// The most of the height in view the header may take, from 0 to 1.
+        most: f64,
+    },
+    /// Its content, which takes this many points.
+    Content(f64),
 }
 
 /// What the collection shows: grey outlines until the first answer, then
@@ -246,10 +313,17 @@ pub struct Ivars {
     awaiting_more: Cell<bool>,
     /// The item a context menu is open on.
     menu_item: RefCell<Option<Item>>,
-    /// Set for a header whose height follows the page, with the height it
-    /// was last given.
+    /// Set for a header whose height follows the page or its content,
+    /// with the height it was last given.
     header_fit: Cell<Option<HeaderFit>>,
     header_height: Cell<f64>,
+    header_keys: OnceCell<HeaderKeys>,
+    /// Told how much of the page lies under the sidebar and the toolbar,
+    /// for a header that draws there too, and what it was last told.
+    header_reach: OnceCell<Box<dyn Fn(f64, f64)>>,
+    header_reached: Cell<(f64, f64)>,
+    /// Whether the keyboard is on the header, not on a card.
+    in_header: Cell<bool>,
 }
 
 define_class!(
@@ -328,6 +402,7 @@ define_class!(
             let (Some(click), Some(index_path)) = (click, index_paths.anyObject()) else {
                 return;
             };
+            self.leave_header();
             // SAFETY: the sender is optional.
             unsafe { collection.deselectAll(None) };
             let on_play = collection
@@ -346,6 +421,16 @@ define_class!(
         #[unsafe(method(menuPlay:))]
         fn menu_play(&self, _sender: Option<&AnyObject>) {
             self.act_on_menu_item(Action::Play);
+        }
+
+        #[unsafe(method(menuShow:))]
+        fn menu_show(&self, _sender: Option<&AnyObject>) {
+            self.act_on_menu_item(Action::OpenShow);
+        }
+
+        #[unsafe(method(menuSeason:))]
+        fn menu_season(&self, _sender: Option<&AnyObject>) {
+            self.act_on_menu_item(Action::OpenSeason);
         }
 
         #[unsafe(method(menuToggleWatched:))]
@@ -449,6 +534,10 @@ impl Posters {
             menu_item: RefCell::new(None),
             header_fit: Cell::new(None),
             header_height: Cell::new(0.0),
+            header_keys: OnceCell::new(),
+            header_reach: OnceCell::new(),
+            header_reached: Cell::new((0.0, 0.0)),
+            in_header: Cell::new(false),
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let posters: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -472,11 +561,48 @@ impl Posters {
     /// height in view. For a header that holds a picture, which then keeps
     /// its proportions as the window grows without taking the page over.
     pub fn fit_header_to_page(&self, per_width: f64, most: f64) {
-        self.ivars().header_fit.set(Some(HeaderFit { per_width, most }));
+        self.ivars().header_fit.set(Some(HeaderFit::Page { per_width, most }));
     }
 
-    /// Gives a header that follows the page the height the page now calls
-    /// for. Does nothing while that is the height it has, so it can be
+    /// Lets the arrow keys reach the header: Up from the first shelf puts
+    /// the keyboard on it, and Down brings it back to the cards.
+    pub fn set_header_keys(&self, keys: HeaderKeys) {
+        // Cannot matter if it fails: the first answer stands.
+        let _ = self.ivars().header_keys.set(keys);
+    }
+
+    /// Lets the header draw under the sidebar and the toolbar, which lie
+    /// over the left and the top of the page: `reach` hears how many
+    /// points of the page each covers, now and whenever that changes.
+    pub fn let_header_reach(&self, reach: impl Fn(f64, f64) + 'static) {
+        // Cannot matter if it fails: the first answer stands.
+        let _ = self.ivars().header_reach.set(Box::new(reach));
+    }
+
+    /// Tells a header that draws under the sidebar and the toolbar how
+    /// far they reach over the page, if that changed.
+    fn reach_header(&self) {
+        let ivars = self.ivars();
+        let insets = ivars.scroll.contentInsets();
+        let covered = (insets.left, insets.top);
+        if let (Some(reach), true) =
+            (ivars.header_reach.get(), ivars.header_reached.replace(covered) != covered)
+        {
+            reach(covered.0, covered.1);
+        }
+    }
+
+    /// Makes the header `height` points tall from now on, in place of the
+    /// height it was made with. For a header that knows how much room its
+    /// content takes, and may say so while it is being laid out: the
+    /// height is given at the next layout of the collection.
+    pub fn set_header_height(&self, height: f64) {
+        self.ivars().header_fit.set(Some(HeaderFit::Content(height)));
+        self.ivars().collection.setNeedsLayout(true);
+    }
+
+    /// Gives a header that follows the page or its content the height
+    /// that now calls for. Does nothing while that is the height it has, so it can be
     /// asked on every layout. Says whether the height changed under a page
     /// that was scrolled to its top, which then has to be
     /// [put back there](Self::scroll_to_top).
@@ -485,7 +611,12 @@ impl Posters {
         let (Some(fit), in_view) = (ivars.header_fit.get(), ivars.scroll.bounds().size) else {
             return false;
         };
-        let height = (in_view.width * fit.per_width).min(in_view.height * fit.most).round();
+        let height = match fit {
+            HeaderFit::Page { per_width, most } => {
+                (in_view.width * per_width).min(in_view.height * most).round()
+            }
+            HeaderFit::Content(height) => height,
+        };
         if height <= 0.0 || ivars.header_height.replace(height) == height {
             return false;
         }
@@ -650,6 +781,86 @@ impl Posters {
         self.fill_scrolled_shelves();
     }
 
+    /// Scrolls the shelf of the card the keyboard is on until the card is
+    /// a page margin clear of the shelf's edges. The collection view
+    /// scrolls a shelf only until the card is in view, which leaves a
+    /// card at the end of a long shelf flush against the window's edge
+    /// with half its focus ring outside.
+    fn give_selection_room(&self) {
+        let ivars = self.ivars();
+        let selected = ivars.collection.selectionIndexPaths().anyObject();
+        let cell = selected.and_then(|at| ivars.collection.itemAtIndexPath(&at));
+        let Some(card) = cell.map(|cell| cell.view()) else {
+            return;
+        };
+        // A card of a grid is in no scroller but the page's own.
+        let Some(shelf) = card.enclosingScrollView().filter(|shelf| *shelf != ivars.scroll) else {
+            return;
+        };
+        let (clip, margin) = (shelf.contentView(), theme::PAGE_MARGIN);
+        let (card, seen) = (clip.convertRect_fromView(card.bounds(), Some(&card)), clip.bounds());
+        let (near, far) = (card.origin.x - margin, card.origin.x + card.size.width + margin);
+        let x = seen.origin.x.max(far - seen.size.width).min(near);
+        if x != seen.origin.x {
+            clip.scrollToPoint(NSPoint { x, y: seen.origin.y });
+            shelf.reflectScrolledClipView(&clip);
+        }
+    }
+
+    /// The sideways scroller of each shelf that has a card in view.
+    fn shelf_scrollers(&self) -> Vec<(usize, Retained<NSScrollView>)> {
+        let ivars = self.ivars();
+        let mut scrollers: Vec<(usize, Retained<NSScrollView>)> = Vec::new();
+        for cell in ivars.collection.visibleItems() {
+            let Some(index_path) = ivars.collection.indexPathForItem(&cell) else {
+                continue;
+            };
+            let (shelf, _) = position(&index_path);
+            // A card of a grid or a list is in no scroller but the page's.
+            let scroller = cell.view().enclosingScrollView().filter(|it| *it != ivars.scroll);
+            let is_new = !scrollers.iter().any(|(at, _)| *at == shelf);
+            if let (Some(scroller), true) = (scroller, is_new) {
+                scrollers.push((shelf, scroller));
+            }
+        }
+        scrollers
+    }
+
+    /// Scrolls shelf number `shelf` sideways by nearly what is in view of
+    /// it, so that the card cut off at one edge is whole at the other.
+    fn page_shelf(&self, shelf: usize, forward: bool) {
+        let scrollers = self.shelf_scrollers();
+        let Some((_, scroller)) = scrollers.iter().find(|(at, _)| *at == shelf) else {
+            return;
+        };
+        let (clip, length) = (scroller.contentView(), shelf_length(scroller));
+        let seen = clip.bounds();
+        let step = (seen.size.width - 2.0 * theme::PAGE_MARGIN).max(theme::PAGE_MARGIN);
+        let x = seen.origin.x + if forward { step } else { -step };
+        let x = x.min(length - seen.size.width).max(0.0);
+        clip.scrollToPoint(NSPoint { x, y: seen.origin.y });
+        scroller.reflectScrolledClipView(&clip);
+        self.fill_scrolled_shelves();
+    }
+
+    /// Tells the heading of each shelf in view which way its shelf can
+    /// still be paged.
+    fn update_paging(&self) {
+        let collection = &self.ivars().collection;
+        for (shelf, scroller) in self.shelf_scrollers() {
+            // SAFETY: the element kind is a constant that AppKit provides.
+            let kind = unsafe { NSCollectionElementKindSectionHeader };
+            let at = NSIndexPath::indexPathForItem_inSection(0, shelf.cast_signed());
+            let Some(strip) = collection.supplementaryViewForElementKind_atIndexPath(kind, &at)
+            else {
+                continue;
+            };
+            let seen = scroller.contentView().bounds();
+            let (near, far) = (seen.origin.x, seen.origin.x + seen.size.width);
+            heading::set_paging(&strip, near > 0.5, far < shelf_length(&scroller) - 0.5);
+        }
+    }
+
     /// A shelf scrolled by the program, not by the viewer, does not fetch
     /// the cards that came into view by itself. Laying the collection out
     /// again does.
@@ -766,7 +977,7 @@ impl Posters {
         match (held.style, card) {
             (Style::List, Card::Item(item)) => {
                 if let Some(cell) = cell.downcast_ref::<EpisodeItem>() {
-                    cell.show(item, &ivars.images);
+                    cell.show(item, is_current, &ivars.images);
                 }
             }
             (Style::Shelf(shape) | Style::Grid(shape), card) => {
@@ -791,6 +1002,7 @@ impl Posters {
         let content = self.ivars().content.borrow();
         let title = content.title(shelf).to_owned();
         let more = content.shelf(shelf).and_then(|shelf| shelf.more.clone());
+        let pages = matches!(content.shelf(shelf).map(|shelf| shelf.style), Some(Style::Shelf(_)));
         drop(content);
         let on_more = more.map(|path| -> Box<dyn Fn()> {
             let (posters, title) = (Weak::new(self), title.clone());
@@ -800,29 +1012,89 @@ impl Posters {
                 }
             })
         });
-        heading::fill(strip, &title, on_more, self.mtm());
+        let paging = pages.then(|| {
+            let page = |forward: bool| -> Box<dyn Fn()> {
+                let posters = Weak::new(self);
+                Box::new(move || {
+                    if let Some(posters) = posters.load() {
+                        posters.page_shelf(shelf, forward);
+                    }
+                })
+            };
+            Paging { back: page(false), on: page(true) }
+        });
+        heading::fill(strip, &title, on_more, paging, self.mtm());
     }
 
     /// Return and Space open the card the keyboard is on. An arrow key
     /// pressed while it is on none puts it on the first card in view:
     /// the collection view only ever moves a selection it already has.
+    /// Up from the first shelf, or from nowhere, goes to a header that
+    /// takes keys, which then hears them until Down comes back.
     fn key_pressed(&self, event: &NSEvent) -> bool {
+        let Some(press) = Press::coded(event.keyCode()) else {
+            return false;
+        };
         let collection = &self.ivars().collection;
         let selected = collection.selectionIndexPaths().anyObject();
-        match (event.keyCode(), selected) {
-            (KEY_RETURN | KEY_SPACE, Some(index_path)) => self.open(&index_path, false),
-            (KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN, None) => {
-                let Some(first) = first_visible(collection) else {
-                    return false;
-                };
-                collection.selectItemsAtIndexPaths_scrollPosition(
-                    &NSSet::from_retained_slice(&[first]),
-                    NSCollectionViewScrollPosition::NearestVerticalEdge,
-                );
+        if self.ivars().in_header.get() {
+            match (press, self.ivars().header_keys.get()) {
+                (Press::Down, _) | (_, None) => {
+                    self.leave_header();
+                    self.select_first_visible();
+                }
+                (press, Some(keys)) => (keys.press)(press),
             }
-            _ => return false,
+            return true;
+        }
+        match (press, selected) {
+            (Press::Return, Some(index_path)) => self.open(&index_path, false),
+            (Press::Up, selected)
+                if selected.as_deref().is_none_or(|at| self.is_under_header(at))
+                    && self.enter_header() => {}
+            (Press::Return, None) | (_, Some(_)) => return false,
+            (_, None) => self.select_first_visible(),
         }
         true
+    }
+
+    /// Whether nothing but the header is above the card at `index_path`.
+    fn is_under_header(&self, index_path: &NSIndexPath) -> bool {
+        let (shelf, _) = position(index_path);
+        let style = self.ivars().content.borrow().style(shelf);
+        shelf == 0 && matches!(style, Some(Style::Shelf(_)))
+    }
+
+    /// Puts the keyboard on the header, if it takes keys and has
+    /// something to show. Says whether it did.
+    fn enter_header(&self) -> bool {
+        let ivars = self.ivars();
+        if !ivars.header_keys.get().is_some_and(|keys| (keys.focus)(true)) {
+            return false;
+        }
+        ivars.in_header.set(true);
+        // SAFETY: the sender is optional.
+        unsafe { ivars.collection.deselectAll(None) };
+        self.scroll_to_top();
+        true
+    }
+
+    fn leave_header(&self) {
+        if let (true, Some(keys)) =
+            (self.ivars().in_header.replace(false), self.ivars().header_keys.get())
+        {
+            (keys.focus)(false);
+        }
+    }
+
+    fn select_first_visible(&self) {
+        let collection = &self.ivars().collection;
+        if let Some(first) = first_visible(collection) {
+            collection.selectItemsAtIndexPaths_scrollPosition(
+                &NSSet::from_retained_slice(&[first]),
+                NSCollectionViewScrollPosition::NearestVerticalEdge,
+            );
+        }
     }
 
     /// The menu for a secondary click at the place of `event`.
@@ -855,6 +1127,13 @@ impl Posters {
         // A trailer has no page to open and no place in what was watched.
         if item.kind != Kind::Clip {
             add("Open", sel!(menuOpen:));
+            // An episode met on a shelf is two steps from the rest of its
+            // show by way of its own page.
+            if item.kind == Kind::Episode && item.grandparent_rating_key.is_some() {
+                menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+                add("Go to Show", sel!(menuShow:));
+                add("Go to Season", sel!(menuSeason:));
+            }
             menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
             let toggle = if item.is_watched() { "Mark as Unwatched" } else { "Mark as Watched" };
             add(toggle, sel!(menuToggleWatched:));
@@ -893,6 +1172,11 @@ fn index_set(indexes: &[usize]) -> Retained<NSMutableIndexSet> {
 
 fn index_range(range: &Range<usize>) -> Retained<NSIndexSet> {
     NSIndexSet::indexSetWithIndexesInRange(NSRange::new(range.start, range.len()))
+}
+
+/// How long the row of cards in `scroller` is, margins included.
+fn shelf_length(scroller: &NSScrollView) -> f64 {
+    scroller.documentView().map_or(0.0, |cards| cards.frame().size.width)
 }
 
 /// The first scroll view inside `view`, searching depth first. Inside a
@@ -987,6 +1271,7 @@ define_class!(
             // An arrow key may have scrolled a shelf sideways to follow
             // the keyboard.
             if let Some(posters) = owner {
+                posters.give_selection_room();
                 posters.fill_scrolled_shelves();
             }
         }
@@ -1000,6 +1285,9 @@ define_class!(
             // height the window now calls for.
             let owner = self.ivars().get().and_then(Weak::load);
             let moved_top = owner.as_ref().is_some_and(|posters| posters.fit_header());
+            if let Some(posters) = &owner {
+                posters.reach_header();
+            }
             // SAFETY: forwards the call unchanged.
             let () = unsafe { msg_send![super(self), layout] };
             if let (true, Some(posters)) = (moved_top, owner) {
@@ -1008,7 +1296,15 @@ define_class!(
             for view in self.subviews() {
                 if let Ok(shelf) = view.downcast::<NSScrollView>() {
                     shelf.setDrawsBackground(false);
+                    // A shelf is exactly as tall as its cards, and would
+                    // cut off the focus ring, the lift and the shadow of
+                    // a card that reaches past its own frame.
+                    shelf.setClipsToBounds(false);
+                    shelf.contentView().setClipsToBounds(false);
                 }
+            }
+            if let Some(posters) = self.ivars().get().and_then(Weak::load) {
+                posters.update_paging();
             }
         }
 
@@ -1025,6 +1321,9 @@ define_class!(
             let (true, Some(window)) = (is_ours, self.window()) else {
                 return;
             };
+            if let Some(posters) = self.ivars().get().and_then(Weak::load) {
+                posters.update_paging();
+            }
             let pointer = window.mouseLocationOutsideOfEventStream();
             for cell in self.visibleItems() {
                 if let Some(view) = cell.view().downcast_ref::<HoverView>() {

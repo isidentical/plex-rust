@@ -3,40 +3,47 @@
 //! episodes season by season, for an episode the rest of its season, and
 //! for all of them the cast and whatever the server finds related.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
 use objc2::rc::{Allocated, Retained};
+use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityLinkRole, NSAttributedStringNSExtendedStringDrawing, NSButton,
-    NSCellImagePosition, NSColor, NSControlSize, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
-    NSPopover, NSPopoverBehavior, NSStackView, NSStackViewGravity,
-    NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityLinkRole,
+    NSAttributedStringNSExtendedStringDrawing, NSButton, NSCellImagePosition, NSColor,
+    NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
+    NSPopover, NSPopoverBehavior, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView,
+    NSStackViewGravity, NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions,
+    NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
-use plex::library::{appearances, next_up};
-use plex::model::{Hub, Item, Kind, Media, RatingKey, Role, StreamKind};
+use plex::library::{appearances, next_up, of_genre};
+use plex::model::{Hub, Item, Kind, Media, Part, RatingKey, Role, Stream, StreamKind, Tag};
 
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
 use super::callback::Callback;
+use super::formats;
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
 use super::poster::{Card, Shape};
-use super::posters::{Action, Header, OnAction, Outline, Posters, Shelf, Style};
+use super::posters::{Action, Header, OnAction, Outline, Playback, Posters, Shelf, Style};
 use super::text;
 use super::theme;
+use crate::downloads::{Downloads, State};
 use crate::images::Images;
 
 /// How many genres, directors and cast members a page names.
 const GENRES_SHOWN: usize = 3;
 const DIRECTORS_SHOWN: usize = 3;
 const CAST_SHOWN: usize = 20;
+/// Up to this many seasons are side by side to click on, which the
+/// smallest window has room for. More are in a menu.
+const SEASON_TABS_MOST: usize = 5;
 
 /// How a show's page opens.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -58,12 +65,27 @@ pub enum Link {
     Season,
 }
 
+/// What the header tells the page.
+enum Event {
+    /// A link from an episode was clicked.
+    Follow(Link),
+    /// The frame of an episode was clicked, which plays it.
+    Play,
+    /// A genre was clicked.
+    OpenGenre(Tag),
+    /// The header was laid out, and its content takes this many points.
+    Resized(f64),
+}
+
 pub struct Detail {
+    /// Holds everything, and hears the keys the list has no use for.
+    view: Retained<PageView>,
     backdrop: Retained<Backdrop>,
     /// The header and, under it, the shelves.
     list: Retained<Posters>,
     hero: Hero,
     images: Rc<Images>,
+    downloads: Rc<Downloads>,
     on_action: Rc<OnAction>,
     item: RefCell<Option<Item>>,
     /// For a show, every episode in order. For an episode, those of its
@@ -76,16 +98,28 @@ pub struct Detail {
     /// Where to scroll and what to select once the episodes are there.
     /// Taken when that is done, so it happens once.
     opening: RefCell<Option<Opening>>,
+    /// The version the viewer picked to play, by the id of the media.
+    /// Without one it is the first.
+    version: Cell<Option<u64>>,
+    /// How tall the header is, which is as tall as its content takes at
+    /// the width of the window.
+    header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 3],
+    _targets: [Retained<Callback>; 8],
 }
 
 /// The views at the top of the page.
 struct Hero {
-    view: Retained<NSView>,
-    poster: Rc<ArtView>,
-    /// Around the poster. On an episode's page it leads to the show.
-    poster_link: Retained<HoverView>,
+    view: Retained<HeaderView>,
+    /// What the page leads with: the poster of a film or show, or a frame
+    /// of an episode.
+    art: Rc<ArtView>,
+    /// Around it. On an episode's page a click on it plays the episode.
+    art_link: Retained<HoverView>,
+    /// On an episode's page, the poster of its show, small, beside the
+    /// way down to the episode. It leads to the show.
+    show_poster: Rc<ArtView>,
+    show_poster_link: Retained<HoverView>,
     /// The line above an episode's title, as a path down to it: its show
     /// and its season, both links, and its number.
     eyebrow: Retained<NSStackView>,
@@ -97,20 +131,37 @@ struct Hero {
     title: Retained<NSTextField>,
     facts: Retained<NSTextField>,
     badges: Retained<NSStackView>,
-    genres: Retained<NSTextField>,
+    /// One capsule for each genre, which leads to the others of it.
+    genres: Retained<NSStackView>,
     play: Pill,
+    /// Beside the button that resumes: the way back to the beginning.
+    restart: Pill,
     watched: Pill,
+    download: Pill,
+    /// Beside the download button while a download is on its way: how far
+    /// it has got.
+    downloaded: Retained<NSTextField>,
     /// What the two buttons do, again, in the menu a secondary click on
     /// the header opens.
     menu_play: Retained<NSMenuItem>,
+    menu_restart: Retained<NSMenuItem>,
     menu_watched: Retained<NSMenuItem>,
     remaining: Retained<NSTextField>,
     summary: Retained<NSTextField>,
     /// Under a summary that is cut short. Leads to all of it.
     more: Retained<HoverView>,
-    directors: Retained<NSTextField>,
-    seasons: Retained<NSPopUpButton>,
+    /// Who directed it and who made it.
+    credits: Retained<NSTextField>,
+    /// What to play of a film or an episode: which version of it, with
+    /// which sound and which subtitles. Each is there only when there is
+    /// more than one to choose from.
+    choices: Retained<NSStackView>,
+    version: Choice,
+    audio: Choice,
+    subtitles: Choice,
+    seasons: Seasons,
     season_size: Retained<NSTextField>,
+    on_event: Rc<dyn Fn(Event)>,
 }
 
 impl Detail {
@@ -120,35 +171,38 @@ impl Detail {
     pub fn new(
         main_thread: MainThreadMarker,
         images: &Rc<Images>,
+        downloads: &Rc<Downloads>,
         kind: Kind,
         opening: Opening,
         on_action: impl Fn(Action) + 'static,
     ) -> Rc<Self> {
         let on_action: Rc<OnAction> = Rc::new(on_action);
         Rc::new_cyclic(|page: &Weak<Self>| {
-            let on = |act: fn(&Self)| {
+            let target = |act: fn(&Self)| {
                 let page = Weak::clone(page);
-                move || {
+                Callback::new(main_thread, move |_| {
                     if let Some(page) = page.upgrade() {
                         act(&page);
                     }
-                }
-            };
-            let target = |act: fn(&Self)| {
-                let act = on(act);
-                Callback::new(main_thread, move |_| act())
+                })
             };
             let targets = [
                 target(Self::press_play),
+                target(Self::press_restart),
                 target(Self::press_watched),
+                target(Self::press_download),
                 target(Self::season_chosen),
+                target(Self::version_chosen),
+                target(Self::audio_chosen),
+                target(Self::subtitles_chosen),
             ];
-            let hero = Hero::new(
-                main_thread,
-                on(|page| page.follow_link(Link::Show)),
-                on(|page| page.follow_link(Link::Season)),
-            );
-            let [play, watched, season] = &targets;
+            let heard = Weak::clone(page);
+            let hero = Hero::new(main_thread, kind, move |event| {
+                if let Some(page) = heard.upgrade() {
+                    page.hear(event);
+                }
+            });
+            let [play, restart, watched, download, season, version, audio, subtitles] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -156,20 +210,35 @@ impl Detail {
                 hero.play.button.setAction(Some(Callback::action()));
                 hero.watched.button.setTarget(Some(watched));
                 hero.watched.button.setAction(Some(Callback::action()));
+                hero.download.button.setTarget(Some(download));
+                hero.download.button.setAction(Some(Callback::action()));
                 hero.menu_play.setTarget(Some(play));
                 hero.menu_play.setAction(Some(Callback::action()));
+                hero.restart.button.setTarget(Some(restart));
+                hero.restart.button.setAction(Some(Callback::action()));
+                hero.menu_restart.setTarget(Some(restart));
+                hero.menu_restart.setAction(Some(Callback::action()));
                 hero.menu_watched.setTarget(Some(watched));
                 hero.menu_watched.setAction(Some(Callback::action()));
-                hero.seasons.setTarget(Some(season));
-                hero.seasons.setAction(Some(Callback::action()));
+                hero.seasons.tabs.setTarget(Some(season));
+                hero.seasons.tabs.setAction(Some(Callback::action()));
+                hero.seasons.menu.setTarget(Some(season));
+                hero.seasons.menu.setAction(Some(Callback::action()));
+                let choices =
+                    [(&hero.version, version), (&hero.audio, audio), (&hero.subtitles, subtitles)];
+                for (choice, target) in choices {
+                    choice.picker.setTarget(Some(target));
+                    choice.picker.setAction(Some(Callback::action()));
+                }
             }
 
-            // Only a show has seasons to pick from under its header.
+            // Until the header has been laid out and says how tall it is.
+            // Only a show has seasons to pick from under it.
             let height = match kind {
                 Kind::Show => theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT,
                 _ => theme::HERO_HEIGHT,
             };
-            let header = Header { view: hero.view.clone(), height };
+            let header = Header { view: Retained::into_super(hero.view.clone()), height };
             let (listed, from_list) = (Weak::clone(page), Rc::clone(&on_action));
             let list = Posters::new(
                 main_thread,
@@ -189,25 +258,46 @@ impl Detail {
             );
             let backdrop = Backdrop::new(main_thread);
             layout::fill(&backdrop, list.view());
+            let keyed = Weak::clone(page);
+            let view = PageView::new(main_thread, move |key| {
+                if let Some(page) = keyed.upgrade() {
+                    page.key_pressed(key);
+                }
+            });
+            layout::fill(&view, &backdrop);
 
             Self {
+                view,
                 backdrop,
                 list,
                 hero,
                 images: Rc::clone(images),
+                downloads: Rc::clone(downloads),
                 on_action,
                 item: RefCell::new(None),
                 episodes: RefCell::new(Vec::new()),
                 related: RefCell::new(Vec::new()),
                 season: RefCell::new(opening.season.clone()),
                 opening: RefCell::new(Some(opening)),
+                version: Cell::new(None),
+                header_height: Cell::new(height),
                 _targets: targets,
             }
         })
     }
 
     pub fn view(&self) -> &NSView {
-        &self.backdrop
+        &self.view
+    }
+
+    /// Does what a key means on the page as a whole, when no card had the
+    /// keyboard to take it: Space plays, as it does in the player, and
+    /// Escape goes back.
+    fn key_pressed(&self, key: Key) {
+        match key {
+            Key::Space => self.press_play(),
+            Key::Escape => (self.on_action)(Action::Back),
+        }
     }
 
     pub fn focus(&self) {
@@ -219,11 +309,93 @@ impl Detail {
         self.list.scroll_to(y);
     }
 
+    fn hear(&self, event: Event) {
+        match event {
+            Event::Follow(link) => self.follow_link(link),
+            Event::Play => self.press_play(),
+            Event::OpenGenre(genre) => self.open_genre(&genre),
+            Event::Resized(height) => self.fit_header(height),
+        }
+    }
+
+    /// Gives the header the height its content takes.
+    fn fit_header(&self, height: f64) {
+        if self.header_height.replace(height) != height {
+            self.list.set_header_height(height);
+        }
+    }
+
     /// Plays the item, or for a show, the episode to watch next.
     pub fn press_play(&self) {
-        if let Some(item) = self.playable() {
-            (self.on_action)(Action::Play(item));
+        self.play(false);
+    }
+
+    /// Downloads the item, or deletes its download if it has one, be it
+    /// whole or on its way. One that stopped short is carried on with.
+    pub fn press_download(&self) {
+        let item = self.item.borrow().clone();
+        if let Some(item) = item.filter(is_downloadable) {
+            (self.on_action)(Action::ToggleDownload(item));
         }
+    }
+
+    /// Plays from its beginning what the play button would resume.
+    pub fn press_restart(&self) {
+        self.play(true);
+    }
+
+    fn play(&self, from_start: bool) {
+        if let Some(item) = self.playable() {
+            let playback = Playback { from_start, version: self.version.get() };
+            (self.on_action)(Action::PlayAs(item, playback));
+        }
+    }
+
+    /// Takes the version picked in the menu as the one to play, and
+    /// shows what that one is.
+    fn version_chosen(&self) {
+        let item = self.item.borrow().clone();
+        let picked = self.hero.version.chosen();
+        let version = item.as_ref().zip(picked).and_then(|(item, picked)| item.media.get(picked));
+        if let (Some(item), Some(version)) = (&item, version) {
+            self.version.set(Some(version.id));
+            self.hero.show(item, Some(version.id), &self.images);
+        }
+    }
+
+    /// Has the server remember the sound picked in the menu, as the
+    /// player does for one picked while playing.
+    fn audio_chosen(&self) {
+        let Some(part) = self.part() else {
+            return;
+        };
+        let picked = self.hero.audio.chosen();
+        let track = picked.and_then(|picked| part.embedded(StreamKind::Audio).nth(picked));
+        if let Some(audio) = track.map(|track| track.id) {
+            (self.on_action)(Action::ChooseStreams { part, audio: Some(audio), subtitles: None });
+        }
+    }
+
+    /// Has the server remember the subtitles picked in the menu, where
+    /// the first entry is none.
+    fn subtitles_chosen(&self) {
+        let Some(part) = self.part() else {
+            return;
+        };
+        let subtitles = match self.hero.subtitles.chosen() {
+            Some(0) => Some(None),
+            Some(picked) => subtitles(&part).nth(picked - 1).map(|track| Some(track.id)),
+            None => None,
+        };
+        if subtitles.is_some() {
+            (self.on_action)(Action::ChooseStreams { part, audio: None, subtitles });
+        }
+    }
+
+    /// The file that plays: the first of the version picked.
+    fn part(&self) -> Option<Part> {
+        let item = self.item.borrow();
+        version_of(item.as_ref()?, self.version.get())?.parts.first().cloned()
     }
 
     /// Marks the item as watched if it is not, and the other way round.
@@ -253,7 +425,7 @@ impl Detail {
     /// Fills the page with `item`. Called again when the server has more
     /// to say about it, such as how far it was watched.
     pub fn show(&self, item: &Item) {
-        self.hero.show(item, &self.images);
+        self.hero.show(item, self.version.get(), &self.images);
         if let Some(colors) = item.colors {
             self.backdrop.set_colors(colors);
         }
@@ -266,7 +438,34 @@ impl Detail {
         }
         *self.item.borrow_mut() = Some(item.clone());
         self.show_play_button();
+        self.show_download();
         self.list.show(self.shelves());
+    }
+
+    /// Brings the download button up to date with where the download of
+    /// the item stands. Only a film or an episode has the button.
+    pub fn show_download(&self) {
+        let item = self.item.borrow();
+        let (pill, so_far) = (&self.hero.download, &self.hero.downloaded);
+        let entry = item
+            .as_ref()
+            .filter(|item| is_downloadable(item))
+            .map(|item| self.downloads.find(&item.rating_key));
+        pill.button.setHidden(entry.is_none());
+        let state = entry.flatten().map(|entry| (entry.state, entry.download.size));
+        let (symbol, title, percent) = match &state {
+            None => ("arrow.down.circle", "Download", None),
+            Some((State::Downloading(transfer), size)) => {
+                ("xmark", "Cancel Download", Some(text::percent(transfer.received(), *size)))
+            }
+            Some((State::Incomplete { .. }, _)) => ("arrow.clockwise", "Resume Download", None),
+            Some((State::Downloaded, _)) => ("arrow.down.circle.fill", "Delete Download", None),
+        };
+        pill.set_symbol(symbol);
+        pill.set_title(title);
+        pill.set_lit(matches!(state, Some((State::Downloaded, _))));
+        label::set(so_far, &percent.map(|percent| format!("{percent}%")).unwrap_or_default());
+        so_far.setHidden(percent.is_none());
     }
 
     /// Fills in the episodes: every one of the show on the page, in order,
@@ -280,12 +479,8 @@ impl Detail {
         *self.season.borrow_mut() = seasons.get(chosen).map(|(key, _)| key.clone());
         *self.episodes.borrow_mut() = episodes;
 
-        let titles: Vec<Retained<NSString>> =
-            seasons.iter().map(|(_, title)| NSString::from_str(title)).collect();
-        let picker = &self.hero.seasons;
-        picker.removeAllItems();
-        picker.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-        picker.selectItemAtIndex(chosen.cast_signed());
+        let titles: Vec<&str> = seasons.iter().map(|(_, title)| title.as_str()).collect();
+        self.hero.seasons.offer(&titles, chosen);
         self.show_play_button();
         self.list.show(self.shelves());
         self.open_as_asked();
@@ -307,7 +502,11 @@ impl Detail {
         match item.kind {
             Kind::Show => {
                 if opening.at_episodes {
-                    self.list.scroll_to(theme::HERO_HEIGHT);
+                    // The header says how tall it is when it is laid out.
+                    if let Some(window) = self.hero.view.window() {
+                        window.layoutIfNeeded();
+                    }
+                    self.list.scroll_to(self.header_height.get() - theme::SEASON_BAR_HEIGHT);
                 }
                 if let Some(episode) = &opening.episode {
                     self.list.select(episode);
@@ -319,7 +518,7 @@ impl Detail {
     }
 
     fn season_chosen(&self) {
-        let chosen = usize::try_from(self.hero.seasons.indexOfSelectedItem()).ok();
+        let chosen = self.hero.seasons.chosen();
         let seasons = seasons(&self.episodes.borrow());
         if let Some((key, _)) = chosen.and_then(|chosen| seasons.into_iter().nth(chosen)) {
             *self.season.borrow_mut() = Some(key);
@@ -333,6 +532,15 @@ impl Detail {
         let library = self.item.borrow().as_ref().and_then(|item| item.library_section_id);
         if let Some(path) = library.and_then(|library| appearances(library, person)) {
             (self.on_action)(Action::OpenList { title: person.tag.clone(), path });
+        }
+    }
+
+    /// Asks for the list of everything of `genre` in the library the item
+    /// on the page is in.
+    fn open_genre(&self, genre: &Tag) {
+        let library = self.item.borrow().as_ref().and_then(|item| item.library_section_id);
+        if let Some(path) = library.and_then(|library| of_genre(library, genre)) {
+            (self.on_action)(Action::OpenList { title: genre.tag.clone(), path });
         }
     }
 
@@ -353,9 +561,16 @@ impl Detail {
                     .cloned()
                     .collect();
                 let size = u32::try_from(listed.len()).unwrap_or(u32::MAX);
-                label::set(&self.hero.season_size, &text::count(size, "episode"));
+                let mut size = text::count(size, "episode");
+                // An only season has no picker to name it.
+                if let [(_, only)] = seasons(&episodes).as_slice() {
+                    size = format!("{only} · {size}");
+                }
+                label::set(&self.hero.season_size, &size);
                 self.hero.season_bar_hidden(listed.is_empty());
-                shelves.push(Shelf::of("", Style::List, listed));
+                let mut list = Shelf::of("", Style::List, listed);
+                list.current = next_up(&episodes).map(|episode| episode.rating_key.clone());
+                shelves.push(list);
             }
             // A season of one has no others to show.
             Kind::Episode if episodes.len() > 1 => {
@@ -417,6 +632,8 @@ impl Detail {
         hero.play.button.setHidden(playable.is_none());
         hero.menu_play.setHidden(playable.is_none());
         let Some(playable) = playable else {
+            hero.restart.button.setHidden(true);
+            hero.menu_restart.setHidden(true);
             return;
         };
         let verb = if playable.view_offset.is_some() { "Resume" } else { "Play" };
@@ -427,10 +644,38 @@ impl Detail {
         };
         hero.play.set_title(&title);
         hero.menu_play.setTitle(&NSString::from_str(&title));
-        let remaining = text::remaining(&playable);
-        label::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
-        hero.remaining.setHidden(remaining.is_none());
+        // Only what was stopped part of the way has a beginning to go
+        // back to.
+        let resumes = playable.view_offset.is_some();
+        hero.restart.button.setHidden(!resumes);
+        hero.menu_restart.setHidden(!resumes);
+        // A show's button plays an episode, which the number on it does
+        // not name.
+        let mut beside: Vec<String> = Vec::new();
+        beside.extend(is_show.then(|| playable.title.clone()));
+        beside.extend(text::remaining(&playable));
+        label::set(&hero.remaining, &beside.join(" · "));
+        hero.remaining.setHidden(beside.is_empty());
     }
+}
+
+/// Whether `item` is something to keep on this Mac: a film or an episode
+/// with a file whose size the server knows.
+fn is_downloadable(item: &Item) -> bool {
+    let part = item.media.first().and_then(|media| media.parts.first());
+    matches!(item.kind, Kind::Movie | Kind::Episode) && part.is_some_and(|part| part.size.is_some())
+}
+
+/// The version of `item` with the id `version`, or without one or with
+/// one the item no longer has, its first.
+fn version_of(item: &Item, version: Option<u64>) -> Option<&Media> {
+    item.media.iter().find(|media| Some(media.id) == version).or(item.media.first())
+}
+
+/// The subtitles there are for a file: those inside it and those in
+/// files of their own beside it, in the server's order.
+fn subtitles(part: &Part) -> impl Iterator<Item = &Stream> {
+    part.streams.iter().filter(|stream| stream.kind == StreamKind::Subtitle)
 }
 
 /// The seasons that `episodes` belong to, in order, as key and title.
@@ -449,33 +694,54 @@ fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
 }
 
 impl Hero {
-    /// `open_show` and `open_season` are called when the links from an
-    /// episode to its show and to its season are clicked.
-    fn new(
-        main_thread: MainThreadMarker,
-        open_show: impl Fn() + 'static,
-        open_season: impl Fn() + 'static,
-    ) -> Self {
-        let open_show: Rc<dyn Fn()> = Rc::new(open_show);
+    /// The header for an item of `kind`. `on_event` is called when a link
+    /// in the header is clicked and each time the header is laid out.
+    fn new(main_thread: MainThreadMarker, kind: Kind, on_event: impl Fn(Event) + 'static) -> Self {
+        let is_episode = kind == Kind::Episode;
+        let on_event: Rc<dyn Fn(Event)> = Rc::new(on_event);
+        let follow = |link| {
+            let on_event = Rc::clone(&on_event);
+            move || on_event(Event::Follow(link))
+        };
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
         let line = |size, weight, color| label::line(size, weight, color, main_thread);
 
-        let poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
-        let (lifted, follow) = (Rc::clone(&poster), Rc::clone(&open_show));
-        let poster_link =
-            HoverView::link(main_thread, move |over| lifted.set_hovered(over), move || follow());
-        poster_link.setTranslatesAutoresizingMaskIntoConstraints(false);
-        layout::cover(&poster_link, poster.view());
-        // The shadow sits on the link, since the poster's own layer swaps
-        // its shadow for the lift under the pointer.
-        poster_link.setWantsLayer(true);
-        if let Some(layer) = poster_link.layer() {
+        let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
+        art.set_flat();
+        art.set_playable(is_episode);
+        let (hovered, played) = (Rc::clone(&art), Rc::clone(&on_event));
+        let art_link = HoverView::pressable(
+            main_thread,
+            move |over| hovered.set_hovered(over),
+            move || played(Event::Play),
+        );
+        // A poster stands for the film. Only a frame of an episode, with
+        // the play glyph on it, is there to be pressed.
+        art_link.set_live(is_episode);
+        art_link.setAccessibilityElement(is_episode);
+        // SAFETY: the role is a constant that AppKit provides.
+        art_link.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        art_link.setAccessibilityLabel(Some(ns_string!("Play")));
+        art_link.setTranslatesAutoresizingMaskIntoConstraints(false);
+        layout::cover(&art_link, art.view());
+        // The shadow sits on the link, since the artwork's own layer has
+        // a shadow for the lift under the pointer.
+        art_link.setWantsLayer(true);
+        if let Some(layer) = art_link.layer() {
             layer.setShadowOpacity(theme::HERO_SHADOW_OPACITY);
             layer.setShadowRadius(theme::HERO_SHADOW_RADIUS);
             layer.setShadowOffset(CGSize { width: 0.0, height: -theme::HERO_SHADOW_DROP });
         }
-        let (show_link, show_name) = text_link(move || open_show(), main_thread);
-        let (season_link, season_name) = text_link(open_season, main_thread);
+        let show_poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_S));
+        let lifted = Rc::clone(&show_poster);
+        let show_poster_link =
+            HoverView::link(main_thread, move |over| lifted.set_hovered(over), follow(Link::Show));
+        show_poster_link.setTranslatesAutoresizingMaskIntoConstraints(false);
+        layout::cover(&show_poster_link, show_poster.view());
+        show_poster_link.setHidden(!is_episode);
+        show_poster_link.setAccessibilityElement(true);
+        let (show_link, show_name) = text_link(follow(Link::Show), main_thread);
+        let (season_link, season_name) = text_link(follow(Link::Season), main_thread);
         let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
         let step = || {
             let step = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
@@ -485,10 +751,22 @@ impl Hero {
             step
         };
         let (first_step, second_step) = (step(), step());
-        let eyebrow: [&NSView; 5] =
-            [&show_link, &first_step, &season_link, &second_step, &episode_number];
-        let eyebrow = NSStackView::stackViewWithViews(&NSArray::from_slice(&eyebrow), main_thread);
+        let last: [&NSView; 2] = [&second_step, &episode_number];
+        let last = NSStackView::stackViewWithViews(&NSArray::from_slice(&last), main_thread);
+        last.setSpacing(theme::SPACE_S);
+        let eyebrow: [&NSView; 4] = [&show_link, &first_step, &season_link, &last];
+        let path = NSArray::from_slice(&eyebrow);
+        let eyebrow = NSStackView::new(main_thread);
+        eyebrow.setViews_inGravity(&path, NSStackViewGravity::Leading);
         eyebrow.setSpacing(theme::SPACE_S);
+        // Where the two links do not fit beside the number, the number
+        // goes: the title under it is the episode's own.
+        eyebrow.setClippingResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
+        eyebrow.setVisibilityPriority_forView(if_necessary, &last);
         let title = label::paragraph(
             theme::FONT_LARGE_TITLE,
             Weight::Bold,
@@ -498,15 +776,30 @@ impl Hero {
         );
         let badges = NSStackView::new(main_thread);
         badges.setSpacing(theme::SPACE_S);
+        let genres = NSStackView::new(main_thread);
+        genres.setSpacing(theme::SPACE_S);
 
         let play = Pill::new("Play", "play.fill", true, main_thread);
         // The default action of the page, which Return triggers.
         play.button.setKeyEquivalent(ns_string!("\r"));
+        let restart = Pill::new("Play from Start", "arrow.counterclockwise", false, main_thread);
+        restart.button.setHidden(true);
         let watched = Pill::new("Mark as Watched", "checkmark", false, main_thread);
+        let download = Pill::new("Download", "arrow.down.circle", false, main_thread);
+        download.button.setHidden(true);
+        let downloaded = line(theme::FONT_BODY, Weight::Regular, &secondary);
+        downloaded.setHidden(true);
         let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
         // Placed by gravity, which is what lets the stack drop a view that
         // does not fit.
-        let row: [&NSView; 3] = [&play.button, &watched.button, &remaining];
+        let row: [&NSView; 6] = [
+            &play.button,
+            &restart.button,
+            &watched.button,
+            &download.button,
+            &downloaded,
+            &remaining,
+        ];
         let buttons = NSStackView::new(main_thread);
         buttons.setViews_inGravity(&NSArray::from_slice(&row), NSStackViewGravity::Leading);
         buttons.setSpacing(theme::SPACE_M);
@@ -516,16 +809,9 @@ impl Hero {
             NSLayoutPriorityDefaultLow,
             NSLayoutConstraintOrientation::Horizontal,
         );
-        let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
         buttons.setVisibilityPriority_forView(if_necessary, &remaining);
 
-        let seasons = NSPopUpButton::initWithFrame_pullsDown(
-            NSPopUpButton::alloc(main_thread),
-            NSRect::ZERO,
-            false,
-        );
-        seasons.setControlSize(NSControlSize::Large);
-        seasons.setAccessibilityLabel(Some(ns_string!("Season")));
+        let seasons = Seasons::new(main_thread);
 
         let summary = label::paragraph(
             theme::FONT_HEADLINE,
@@ -541,20 +827,35 @@ impl Hero {
         more.setAccessibilityLabel(Some(ns_string!("Read the whole summary")));
         more.setHidden(true);
 
+        let choice = |caption| Choice::new(caption, main_thread);
+        let (version, audio, subtitles) = (choice("Version"), choice("Audio"), choice("Subtitles"));
+        let rows: [&NSView; 3] = [&version.row, &audio.row, &subtitles.row];
+        let choices = NSStackView::stackViewWithViews(&NSArray::from_slice(&rows), main_thread);
+        choices.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        choices.setAlignment(NSLayoutAttribute::Leading);
+        choices.setSpacing(theme::SPACE_XS);
+        choices.setHidden(true);
+
         let (menu_play, menu_watched) =
             (NSMenuItem::new(main_thread), NSMenuItem::new(main_thread));
+        let menu_restart = NSMenuItem::new(main_thread);
+        menu_restart.setTitle(ns_string!("Play from Start"));
+        menu_restart.setHidden(true);
         let menu = NSMenu::new(main_thread);
         menu.addItem(&menu_play);
+        menu.addItem(&menu_restart);
         menu.addItem(&menu_watched);
-        let view = NSView::new(main_thread);
+        let view = HeaderView::new(main_thread);
         // SAFETY: the view keeps the menu, as a responder keeps the one it
         // is given.
         unsafe { view.setMenu(Some(&menu)) };
 
         let hero = Self {
             view,
-            poster,
-            poster_link,
+            art,
+            art_link,
+            show_poster,
+            show_poster_link,
             eyebrow,
             show_link,
             show_name,
@@ -572,39 +873,62 @@ impl Hero {
                 main_thread,
             ),
             badges,
-            genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            genres,
             play,
+            restart,
             watched,
+            download,
+            downloaded,
             menu_play,
+            menu_restart,
             menu_watched,
             remaining,
             summary,
             more,
-            directors: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            credits: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            choices,
+            version,
+            audio,
+            subtitles,
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            on_event,
         };
         hero.season_bar_hidden(true);
-        hero.place(&buttons, main_thread);
+        hero.place(&buttons, kind);
         hero
     }
 
-    /// The poster on the left, the text in a column beside it, and for a
+    /// The artwork on the left, the text in a column beside it, and for a
     /// show the season picker in a strip along the bottom, where the
     /// episode list begins.
-    fn place(&self, buttons: &NSStackView, main_thread: MainThreadMarker) {
+    fn place(&self, buttons: &NSStackView, kind: Kind) {
+        let main_thread = self.view.mtm();
         let (summary, more) = (self.summary.clone(), self.more.clone());
         let column = Column::new(main_thread, move || offer_more(&summary, &more));
+
+        // The show's poster stands beside the lines that name the episode.
+        let titles: [&NSView; 2] = [&self.eyebrow, &self.title];
+        let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
+        titles.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        titles.setAlignment(NSLayoutAttribute::Leading);
+        titles.setSpacing(theme::SPACE_XS);
+        let headline: [&NSView; 2] = [&self.show_poster_link, &titles];
+        let headline =
+            NSStackView::stackViewWithViews(&NSArray::from_slice(&headline), main_thread);
+        headline.setAlignment(NSLayoutAttribute::Top);
+        headline.setSpacing(theme::SPACE_M);
+
         let lines: [&NSView; 9] = [
-            &self.eyebrow,
-            &self.title,
+            &headline,
             &self.facts,
             &self.badges,
             buttons,
             &self.summary,
             &self.more,
+            &self.choices,
             &self.genres,
-            &self.directors,
+            &self.credits,
         ];
         for line in lines {
             column.addArrangedSubview(line);
@@ -612,68 +936,96 @@ impl Hero {
         column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         column.setAlignment(NSLayoutAttribute::Leading);
         column.setSpacing(theme::SPACE_M);
-        column.setCustomSpacing_afterView(theme::SPACE_XS, &self.eyebrow);
-        column.setCustomSpacing_afterView(theme::SPACE_S, &self.title);
+        column.setCustomSpacing_afterView(theme::SPACE_S, &headline);
         column.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
         column.setCustomSpacing_afterView(theme::SPACE_L, buttons);
         column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
-        column.setCustomSpacing_afterView(theme::SPACE_XS, &self.genres);
         column.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let season: [&NSView; 2] = [&self.seasons, &self.season_size];
+        let season: [&NSView; 3] = [&self.seasons.tabs, &self.seasons.menu, &self.season_size];
         let season = NSStackView::stackViewWithViews(&NSArray::from_slice(&season), main_thread);
         season.setSpacing(theme::SPACE_M);
         season.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let (view, poster) = (&self.view, &self.poster_link);
-        view.addSubview(poster);
+        let (view, art) = (&self.view, &self.art_link);
+        view.addSubview(art);
         view.addSubview(&column);
         view.addSubview(&season);
+        // The text may run past the artwork: a long title in a narrow
+        // window takes three lines and leaves the rest no less room.
+        let season_bar = if kind == Kind::Show { theme::SEASON_BAR_HEIGHT } else { 0.0 };
+        let (on_event, pictured, written) =
+            (Rc::clone(&self.on_event), art.clone(), column.clone());
+        view.on_layout(move || {
+            let content = written.frame().size.height.max(pictured.frame().size.height).ceil();
+            on_event(Event::Resized(2.0 * theme::SPACE_L + content + season_bar));
+        });
+
         let margin = theme::PAGE_MARGIN;
-        let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
-        // The strip starts where the header of a page without one ends.
-        let bar_middle = theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT / 2.0;
-        self.summary.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow,
-            NSLayoutConstraintOrientation::Vertical,
-        );
+        // The strip is the last thing in the header.
+        let bar_middle = -theme::SEASON_BAR_HEIGHT / 2.0;
+        let (wide, tall) = (art.widthAnchor(), art.heightAnchor());
+        let shape = match kind {
+            Kind::Episode => {
+                let share = wide.constraintEqualToAnchor_multiplier(
+                    &view.widthAnchor(),
+                    theme::HERO_STILL_SHARE,
+                );
+                // As much of the page as it can have within its bounds.
+                share.setPriority(NSLayoutPriorityDefaultHigh);
+                vec![
+                    share,
+                    wide.constraintGreaterThanOrEqualToConstant(theme::HERO_STILL_MIN_WIDTH),
+                    wide.constraintLessThanOrEqualToConstant(theme::HERO_STILL_MAX_WIDTH),
+                    tall.constraintEqualToAnchor_multiplier(&wide, theme::LANDSCAPE_ASPECT),
+                ]
+            }
+            _ => vec![
+                wide.constraintEqualToConstant(theme::HERO_POSTER_WIDTH),
+                tall.constraintEqualToAnchor_multiplier(&wide, theme::POSTER_ASPECT),
+            ],
+        };
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&shape));
+        let small = self.show_poster_link.widthAnchor();
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            poster.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            poster.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
-            poster.widthAnchor().constraintEqualToConstant(theme::HERO_POSTER_WIDTH),
-            poster.heightAnchor().constraintEqualToConstant(poster_height),
+            small.constraintEqualToConstant(theme::HERO_SHOW_POSTER_WIDTH),
+            self.show_poster_link
+                .heightAnchor()
+                .constraintEqualToAnchor_multiplier(&small, theme::POSTER_ASPECT),
+            art.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
+            art.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
             column
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&poster.trailingAnchor(), theme::SPACE_XXL),
-            column.topAnchor().constraintEqualToAnchor(&poster.topAnchor()),
+                .constraintEqualToAnchor_constant(&art.trailingAnchor(), theme::SPACE_XXL),
+            column.topAnchor().constraintEqualToAnchor(&art.topAnchor()),
             column
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&view.trailingAnchor(), -margin),
             // A title has the width of the page. Only running text is
             // kept to a width that reads well.
             self.summary.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
-            // The text never runs past the poster. When a long title takes
-            // three lines, the summary gives up lines of its own.
-            column.bottomAnchor().constraintLessThanOrEqualToAnchor(&poster.bottomAnchor()),
             buttons.trailingAnchor().constraintLessThanOrEqualToAnchor(&column.trailingAnchor()),
             season.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            season.centerYAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), bar_middle),
+            season
+                .centerYAnchor()
+                .constraintEqualToAnchor_constant(&view.bottomAnchor(), bar_middle),
         ]));
     }
 
     fn season_bar_hidden(&self, hidden: bool) {
-        self.seasons.setHidden(hidden);
+        self.seasons.set_hidden(hidden);
         self.season_size.setHidden(hidden);
     }
 
-    fn show(&self, item: &Item, images: &Rc<Images>) {
+    /// Fills the header with `item`, and with `version` of it where it
+    /// has several.
+    fn show(&self, item: &Item, version: Option<u64>, images: &Rc<Images>) {
         let set = |label: &NSTextField, words: &str| {
             label::set(label, words);
             label.setHidden(words.is_empty());
         };
         let is_episode = item.kind == Kind::Episode;
         self.eyebrow.setHidden(!is_episode);
-        self.poster_link.set_live(is_episode);
         let show = item.grandparent_title.as_deref().unwrap_or_default();
         let season = item.parent_title.as_deref().unwrap_or_default();
         set(&self.show_name, show);
@@ -681,8 +1033,7 @@ impl Hero {
         for (link, leads_to) in [(&self.show_link, show), (&self.season_link, season)] {
             link.setAccessibilityLabel(Some(&NSString::from_str(&format!("Go to {leads_to}"))));
         }
-        self.poster_link.setAccessibilityElement(is_episode);
-        self.poster_link
+        self.show_poster_link
             .setAccessibilityLabel(Some(&NSString::from_str(&format!("Poster. Go to {show}"))));
         let number = item.index.map(|number| format!("Episode {number}"));
         set(&self.episode_number, number.as_deref().unwrap_or_default());
@@ -690,23 +1041,32 @@ impl Hero {
         // A line may break after a dot between two facts, never before it.
         set(&self.facts, &facts(item).replace(" · ", "\u{a0}· "));
         set(&self.summary, item.summary.as_deref().unwrap_or_default());
-        set(&self.genres, &names(&item.genres, GENRES_SHOWN).join(", "));
-        let directors = names(&item.directors, DIRECTORS_SHOWN);
-        let directed = match directors.is_empty() {
-            true => String::new(),
-            false => format!("Directed by {}", directors.join(", ")),
-        };
-        set(&self.directors, &directed);
+        set(&self.credits, &credits(item));
 
         let main_thread = self.view.mtm();
-        let media = item.media.first();
+        let genres: Vec<Retained<NSView>> = item
+            .genres
+            .iter()
+            .take(GENRES_SHOWN)
+            .map(|genre| {
+                let (on_event, opened) = (Rc::clone(&self.on_event), genre.clone());
+                chip(genre, move || on_event(Event::OpenGenre(opened.clone())), main_thread)
+            })
+            .collect();
+        self.genres.setViews_inGravity(
+            &NSArray::from_retained_slice(&genres),
+            NSStackViewGravity::Leading,
+        );
+        self.genres.setHidden(genres.is_empty());
+        let media = version_of(item, version);
+        self.show_choices(item, media);
         let mut badges: Vec<Retained<NSView>> = media
-            .map(badges)
+            .map(formats::badges)
             .unwrap_or_default()
             .iter()
             .map(|words| badge(words, main_thread))
             .collect();
-        let file = media.map(file_facts).unwrap_or_default();
+        let file = media.map(formats::file_facts).unwrap_or_default();
         if !file.is_empty() {
             let secondary = NSColor::secondaryLabelColor();
             let plain = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
@@ -727,13 +1087,262 @@ impl Hero {
         self.menu_watched.setTitle(&NSString::from_str(toggle));
         self.watched.set_lit(item.is_watched());
 
-        // An episode's own artwork is a wide frame, so it borrows its show's.
-        let poster = match item.kind {
-            Kind::Episode => item.grandparent_thumb.as_deref().or(item.thumb.as_deref()),
-            _ => item.thumb.as_deref(),
+        // An episode's own artwork is a frame of it, a film's is its poster.
+        let request = match is_episode {
+            true => theme::HERO_STILL_REQUEST,
+            false => theme::HERO_POSTER_REQUEST,
         };
-        self.poster.show(poster, theme::HERO_POSTER_REQUEST, None, images);
-        self.poster.set_progress(item.progress());
+        self.art.show(item.thumb.as_deref(), request, images);
+        self.art.set_progress(item.progress());
+        if is_episode {
+            let poster = item.grandparent_thumb.as_deref();
+            self.show_poster.show(poster, theme::HERO_SHOW_POSTER_REQUEST, images);
+        }
+    }
+}
+
+impl Hero {
+    /// Fills the menus that choose what plays, from the versions of
+    /// `item` and the tracks of the one picked, `media`.
+    fn show_choices(&self, item: &Item, media: Option<&Media>) {
+        let versions: Vec<String> = item.media.iter().map(formats::version).collect();
+        let picked = item.media.iter().position(|version| Some(version) == media);
+        self.version.offer(&versions, picked.unwrap_or(0));
+
+        let part = media.and_then(|media| media.parts.first());
+        let tracks = |kind| part.into_iter().flat_map(move |part| part.embedded(kind));
+        let audio: Vec<String> = tracks(StreamKind::Audio).map(formats::track).collect();
+        let heard = tracks(StreamKind::Audio).position(|track| track.selected);
+        self.audio.offer(&audio, heard.unwrap_or(0));
+
+        let written = || part.into_iter().flat_map(subtitles);
+        let mut subtitles = vec!["Off".to_owned()];
+        subtitles.extend(written().map(formats::track));
+        // The first entry is none, so a track is one further down.
+        let read = written().position(|track| track.selected).map_or(0, |track| track + 1);
+        self.subtitles.offer(&subtitles, read);
+
+        let rows = [&self.version, &self.audio, &self.subtitles];
+        self.choices.setHidden(rows.iter().all(|choice| choice.row.isHidden()));
+    }
+}
+
+/// The seasons of a show to pick one from: side by side while they are
+/// few, as the tabs of the list under them, and in a menu when they are
+/// many.
+struct Seasons {
+    tabs: Retained<NSSegmentedControl>,
+    menu: Retained<NSPopUpButton>,
+    /// How many seasons there are to pick from.
+    count: Cell<usize>,
+}
+
+impl Seasons {
+    fn new(main_thread: MainThreadMarker) -> Self {
+        let tabs = NSSegmentedControl::new(main_thread);
+        tabs.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
+        tabs.setControlSize(NSControlSize::Large);
+        tabs.setAccessibilityLabel(Some(ns_string!("Season")));
+        let menu = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(main_thread),
+            NSRect::ZERO,
+            false,
+        );
+        menu.setControlSize(NSControlSize::Large);
+        menu.setAccessibilityLabel(Some(ns_string!("Season")));
+        Self { tabs, menu, count: Cell::new(0) }
+    }
+
+    /// Offers the seasons with these titles, the one at `picked` chosen.
+    fn offer(&self, titles: &[&str], picked: usize) {
+        self.count.set(titles.len());
+        self.tabs.setSegmentCount(titles.len().cast_signed());
+        for (segment, title) in titles.iter().enumerate() {
+            self.tabs.setLabel_forSegment(&NSString::from_str(title), segment.cast_signed());
+        }
+        self.tabs.setSelectedSegment(picked.cast_signed());
+        let titles: Vec<Retained<NSString>> =
+            titles.iter().map(|title| NSString::from_str(title)).collect();
+        self.menu.removeAllItems();
+        self.menu.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+        self.menu.selectItemAtIndex(picked.cast_signed());
+    }
+
+    /// Which season is chosen, counting from zero.
+    fn chosen(&self) -> Option<usize> {
+        let chosen = match self.count.get() <= SEASON_TABS_MOST {
+            true => self.tabs.selectedSegment(),
+            false => self.menu.indexOfSelectedItem(),
+        };
+        usize::try_from(chosen).ok()
+    }
+
+    /// Shows the tabs or the menu, whichever the number of seasons calls
+    /// for, or with `hidden` neither. A single season is not a choice,
+    /// and has neither as well.
+    fn set_hidden(&self, hidden: bool) {
+        let count = self.count.get();
+        self.tabs.setHidden(hidden || !(2..=SEASON_TABS_MOST).contains(&count));
+        self.menu.setHidden(hidden || count <= SEASON_TABS_MOST);
+    }
+}
+
+/// One thing to choose about what plays: a caption and, beside it, a
+/// menu of what there is.
+struct Choice {
+    row: Retained<NSStackView>,
+    picker: Retained<NSPopUpButton>,
+}
+
+impl Choice {
+    fn new(caption: &str, main_thread: MainThreadMarker) -> Self {
+        let secondary = NSColor::secondaryLabelColor();
+        let name = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
+        label::set(&name, caption);
+        let picker = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(main_thread),
+            NSRect::ZERO,
+            false,
+        );
+        picker.setControlSize(NSControlSize::Small);
+        picker.setFont(Some(&label::font(theme::FONT_CAPTION, Weight::Regular)));
+        picker.setAccessibilityLabel(Some(&NSString::from_str(caption)));
+        picker.setTranslatesAutoresizingMaskIntoConstraints(false);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            name.widthAnchor().constraintEqualToConstant(theme::CHOICE_CAPTION_WIDTH),
+            picker.widthAnchor().constraintLessThanOrEqualToConstant(theme::CHOICE_MENU_MAX_WIDTH),
+        ]));
+        let row: [&NSView; 2] = [&name, &picker];
+        let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
+        row.setSpacing(theme::SPACE_S);
+        row.setHidden(true);
+        Self { row, picker }
+    }
+
+    /// Fills the menu with `titles`, the one at `picked` chosen. With
+    /// fewer than two there is nothing to choose, and the row goes.
+    fn offer(&self, titles: &[String], picked: usize) {
+        self.row.setHidden(titles.len() < 2);
+        self.picker.removeAllItems();
+        let Some(menu) = self.picker.menu() else {
+            return;
+        };
+        // Added to the menu one by one: given titles, the button drops
+        // any it already has, and two tracks may both be "English".
+        for title in titles {
+            let entry = NSMenuItem::new(self.picker.mtm());
+            entry.setTitle(&NSString::from_str(title));
+            menu.addItem(&entry);
+        }
+        self.picker.selectItemAtIndex(picked.cast_signed());
+    }
+
+    /// Which entry of the menu is chosen, counting from zero.
+    fn chosen(&self) -> Option<usize> {
+        usize::try_from(self.picker.indexOfSelectedItem()).ok()
+    }
+}
+
+define_class!(
+    // SAFETY: NSView is designed to be subclassed, and `PageView` does not
+    // implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustDetailPage"]
+    #[ivars = OnceCell<Box<dyn Fn(Key)>>]
+    struct PageView;
+
+    impl PageView {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
+            let this = this.set_ivars(OnceCell::new());
+            // SAFETY: forwards the designated initializer unchanged.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        /// The list of cards hands a key it has no use for to the text
+        /// system, which turns Escape into this command and sends it up
+        /// from the list to whatever holds it.
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            if let Some(on_key) = self.ivars().get() {
+                on_key(Key::Escape);
+            }
+        }
+
+        /// And a key that types a character into this one, with the
+        /// character.
+        #[unsafe(method(insertText:))]
+        fn insert_text(&self, text: &AnyObject) {
+            let typed = text.downcast_ref::<NSString>().map(ToString::to_string);
+            match (typed.as_deref(), self.ivars().get()) {
+                (Some(" "), Some(on_key)) => on_key(Key::Space),
+                // SAFETY: forwards the text unchanged.
+                _ => unsafe { msg_send![super(self), insertText: text] },
+            }
+        }
+    }
+);
+
+/// A key that means something on the page as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Space,
+    Escape,
+}
+
+impl PageView {
+    /// A view that calls `on_key` when one of the page's keys is pressed
+    /// and nothing inside the view took it.
+    fn new(main_thread: MainThreadMarker, on_key: impl Fn(Key) + 'static) -> Retained<Self> {
+        let view: Retained<Self> =
+            // SAFETY: `initWithFrame:` is NSView's designated initializer.
+            unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
+        // Cannot fail: the cell was created empty by the initializer.
+        let _ = view.ivars().set(Box::new(on_key));
+        view
+    }
+}
+
+define_class!(
+    // SAFETY: NSView is designed to be subclassed, and `HeaderView` does
+    // not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustDetailHeader"]
+    #[ivars = OnceCell<Box<dyn Fn()>>]
+    struct HeaderView;
+
+    impl HeaderView {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
+            let this = this.set_ivars(OnceCell::new());
+            // SAFETY: forwards the designated initializer unchanged.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), layout] };
+            if let Some(on_layout) = self.ivars().get() {
+                on_layout();
+            }
+        }
+    }
+);
+
+impl HeaderView {
+    fn new(main_thread: MainThreadMarker) -> Retained<Self> {
+        // SAFETY: `initWithFrame:` is NSView's designated initializer.
+        unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// Has `on_layout` called each time the view has placed what is
+    /// directly in it, which is when it is known how tall each part is.
+    fn on_layout(&self, on_layout: impl Fn() + 'static) {
+        // Cannot matter if it fails: the header is placed once.
+        let _ = self.ivars().set(Box::new(on_layout));
     }
 }
 
@@ -893,7 +1502,7 @@ impl Pill {
     }
 
     fn set_symbol(&self, symbol: &str) {
-        let image = artwork::symbol(symbol, theme::FONT_BODY);
+        let image = artwork::symbol(symbol, theme::FONT_BODY, Weight::Semibold);
         if let (Some(image), true) = (&image, self.prominent) {
             // A button sets its title right against its image. Widening
             // the rectangle the image is laid out by puts a gap between.
@@ -988,71 +1597,48 @@ fn facts(item: &Item) -> String {
         _ => facts.extend(item.duration.map(|duration| text::length(duration.into()))),
     }
     facts.extend(item.content_rating.clone());
-    facts.extend(item.audience_rating.or(item.rating).map(|rating| format!("★ {rating:.1}")));
+    facts.extend(ratings(item));
     facts.join(" · ")
 }
 
-fn names(tags: &[plex::model::Tag], limit: usize) -> Vec<&str> {
-    tags.iter().take(limit).map(|tag| tag.tag.as_str()).collect()
+/// What critics and viewers gave `item`, each under the name of who asked
+/// them: "RT 93%", "Audience 84%", "IMDb 7.7".
+fn ratings(item: &Item) -> Vec<String> {
+    // The server names the source by a picture of its own apps, such as
+    // `rottentomatoes://image.rating.ripe`.
+    fn source(image: Option<&str>) -> Option<&str> {
+        image?.split_once("://").map(|(source, _)| source)
+    }
+    let critics = source(item.rating_image.as_deref());
+    let viewers = source(item.audience_rating_image.as_deref());
+    let percent = |rating: f32| format!("{:.0}%", rating * 10.0);
+    let by = |source: Option<&str>, whose: &str, rating: f32| match source {
+        Some("rottentomatoes") => format!("{whose} {}", percent(rating)),
+        Some("imdb") => format!("IMDb {rating:.1}"),
+        Some("themoviedb") => format!("TMDB {rating:.1}"),
+        _ => format!("★ {rating:.1}"),
+    };
+    // Said once, when both numbers are from the same place.
+    let viewers_of = match critics == viewers && item.rating.is_some() {
+        true => "Audience",
+        false => "RT Audience",
+    };
+    let mut ratings: Vec<String> = Vec::new();
+    ratings.extend(item.rating.map(|rating| by(critics, "RT", rating)));
+    ratings.extend(item.audience_rating.map(|rating| by(viewers, viewers_of, rating)));
+    ratings
 }
 
-/// What the file is, in the words printed on a disc case: "4K", "HDR10",
-/// "Dolby Digital 5.1".
-fn badges(media: &Media) -> Vec<String> {
-    let mut badges: Vec<String> = Vec::new();
-    badges.extend(media.video_resolution.as_deref().map(|resolution| match resolution {
-        "4k" => "4K".to_owned(),
-        "sd" => "SD".to_owned(),
-        lines => format!("{lines}p"),
-    }));
-    // The server titles a video track by its resolution and then, if it has
-    // one, its dynamic range: "4K HDR10", "1080p".
-    let video = media.parts.first().and_then(|part| part.embedded(StreamKind::Video).next());
-    let title = video.and_then(|video| video.display_title.as_deref()).unwrap_or_default();
-    let range: Vec<&str> = title.split_whitespace().skip(1).collect();
-    if !range.is_empty() {
-        badges.push(range.join(" "));
+/// Who directed `item` and who made it: "Directed by A, B · Studio".
+fn credits(item: &Item) -> String {
+    let directors: Vec<&str> =
+        item.directors.iter().take(DIRECTORS_SHOWN).map(|director| director.tag.as_str()).collect();
+    let mut credits: Vec<String> = Vec::new();
+    if !directors.is_empty() {
+        credits.push(format!("Directed by {}", directors.join(", ")));
     }
-    let layout = media.audio_channels.map(|channels| match channels {
-        1 => "Mono".to_owned(),
-        2 => "Stereo".to_owned(),
-        6 => "5.1".to_owned(),
-        8 => "7.1".to_owned(),
-        other => format!("{other} ch"),
-    });
-    let format = media.audio_codec.as_deref().map(|codec| match codec {
-        "ac3" => "Dolby Digital".to_owned(),
-        "eac3" => "Dolby Digital Plus".to_owned(),
-        "truehd" => "Dolby TrueHD".to_owned(),
-        "dca" => "DTS".to_owned(),
-        "dca-ma" => "DTS-HD MA".to_owned(),
-        "opus" => "Opus".to_owned(),
-        other => other.to_uppercase(),
-    });
-    let sound: Vec<String> = format.into_iter().chain(layout).collect();
-    if !sound.is_empty() {
-        badges.push(sound.join(" "));
-    }
-    badges
-}
-
-/// What a badge has no word for: how the picture is encoded and how big
-/// the file is, as in "HEVC · 6.8 GB".
-fn file_facts(media: &Media) -> String {
-    let mut facts: Vec<String> = Vec::new();
-    facts.extend(media.video_codec.as_deref().map(|codec| match codec {
-        "h264" => "H.264".to_owned(),
-        "mpeg2video" => "MPEG-2".to_owned(),
-        "mpeg4" => "MPEG-4".to_owned(),
-        "vc1" => "VC-1".to_owned(),
-        other => other.to_uppercase(),
-    }));
-    // A film split across files is as big as all of them.
-    let sizes: Vec<u64> = media.parts.iter().filter_map(|part| part.size).collect();
-    if !sizes.is_empty() {
-        facts.push(text::size(sizes.iter().sum()));
-    }
-    facts.join(" · ")
+    credits.extend(item.studio.clone());
+    credits.join(" · ")
 }
 
 /// A few words in an outlined box.
@@ -1077,6 +1663,60 @@ fn badge(words: &str, main_thread: MainThreadMarker) -> Retained<NSView> {
     frame
 }
 
+/// The name of `genre` in a capsule that leads, by `on_click`, to the
+/// others of it. A genre from a listing has no number to look it up by,
+/// and is a plain capsule until the item is known in full.
+fn chip(
+    genre: &Tag,
+    on_click: impl Fn() + 'static,
+    main_thread: MainThreadMarker,
+) -> Retained<NSView> {
+    let secondary = NSColor::secondaryLabelColor();
+    let label = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
+    label::set(&label, &genre.tag);
+    let (lit, washed) = (label.clone(), Rc::new(OnceCell::<Retained<HoverView>>::new()));
+    let wash = Rc::clone(&washed);
+    let capsule = HoverView::link(
+        main_thread,
+        move |over| {
+            let (ink, opacity) = match over {
+                true => (NSColor::labelColor(), theme::CHIP_HOVER_OPACITY),
+                false => (NSColor::secondaryLabelColor(), theme::CHIP_WASH_OPACITY),
+            };
+            lit.setTextColor(Some(&ink));
+            if let Some(capsule) = wash.get() {
+                artwork::fill_with(capsule, &theme::white(opacity));
+            }
+        },
+        on_click,
+    );
+    capsule.set_live(genre.id.is_some());
+    capsule.setWantsLayer(true);
+    capsule.setTranslatesAutoresizingMaskIntoConstraints(false);
+    artwork::fill_with(&capsule, &theme::white(theme::CHIP_WASH_OPACITY));
+    if let Some(layer) = capsule.layer() {
+        layer.setCornerRadius(theme::CHIP_HEIGHT / 2.0);
+    }
+    capsule.addSubview(&label);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        capsule.heightAnchor().constraintEqualToConstant(theme::CHIP_HEIGHT),
+        label
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&capsule.leadingAnchor(), theme::CHIP_PADDING),
+        label
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&capsule.trailingAnchor(), -theme::CHIP_PADDING),
+        label.centerYAnchor().constraintEqualToAnchor(&capsule.centerYAnchor()),
+    ]));
+    capsule.setAccessibilityElement(true);
+    // SAFETY: the role is a constant that AppKit provides.
+    capsule.setAccessibilityRole(Some(unsafe { NSAccessibilityLinkRole }));
+    capsule.setAccessibilityLabel(Some(&NSString::from_str(&format!("More of {}", genre.tag))));
+    // Cannot fail: the cell was made empty above.
+    let _ = washed.set(capsule.clone());
+    Retained::into_super(capsule)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1096,6 +1736,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rating_goes_under_the_name_of_who_gave_it() {
+        let rated = |json: serde_json::Value| {
+            let mut film = serde_json::json!({ "ratingKey": "1", "type": "movie", "title": "T" });
+            film.as_object_mut().unwrap().extend(json.as_object().unwrap().clone());
+            ratings(&item(film))
+        };
+        let both = rated(serde_json::json!({
+            "rating": 9.3, "ratingImage": "rottentomatoes://image.rating.ripe",
+            "audienceRating": 8.4, "audienceRatingImage": "rottentomatoes://image.rating.upright",
+        }));
+        assert_eq!(both, ["RT 93%", "Audience 84%"]);
+        let viewers_only = rated(serde_json::json!({
+            "audienceRating": 8.4, "audienceRatingImage": "rottentomatoes://image.rating.upright",
+        }));
+        assert_eq!(viewers_only, ["RT Audience 84%"]);
+        let other_places = rated(serde_json::json!({
+            "rating": 7.7, "ratingImage": "imdb://image.rating",
+            "audienceRating": 7.9, "audienceRatingImage": "themoviedb://image.rating",
+        }));
+        assert_eq!(other_places, ["IMDb 7.7", "TMDB 7.9"]);
+    }
+
+    #[test]
     fn an_episode_states_the_day_it_aired() {
         let episode = item(serde_json::json!({
             "ratingKey": "1", "type": "episode", "title": "Title", "year": 2011,
@@ -1111,23 +1774,6 @@ mod tests {
             "duration": 8_286_624, "contentRating": "PG-13",
         }));
         assert_eq!(facts(&film), "2015 · 2 h 18 min · PG-13");
-    }
-
-    #[test]
-    fn the_file_is_named_by_picture_sound_encoding_and_size() {
-        let film = item(serde_json::json!({
-            "ratingKey": "1", "type": "movie", "title": "Title",
-            "Media": [{
-                "id": 1, "videoResolution": "4k", "audioChannels": 6,
-                "videoCodec": "hevc", "audioCodec": "eac3",
-                "Part": [{
-                    "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 6_828_818_931_u64,
-                    "Stream": [{ "id": 1, "streamType": 1, "displayTitle": "4K HDR10" }],
-                }],
-            }],
-        }));
-        assert_eq!(badges(&film.media[0]), ["4K", "HDR10", "Dolby Digital Plus 5.1"]);
-        assert_eq!(file_facts(&film.media[0]), "HEVC · 6.8 GB");
     }
 
     #[test]

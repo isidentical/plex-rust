@@ -9,13 +9,15 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
     NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
+    NSView,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
 use plex::model::{Item, Kind, Role};
 
-use super::artwork::{ArtView, Badge};
+use super::artwork::{self, ArtView, Badge};
 use super::hover::HoverView;
 use super::label::{self, Weight};
+use super::layout;
 use super::text;
 use super::theme;
 use crate::images::Images;
@@ -118,6 +120,13 @@ pub struct Views {
     art: ArtView,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
+    /// Stands in for the photo of a person there is none of: a disc with
+    /// their initials on it.
+    monogram: Retained<NSView>,
+    initials: Retained<NSTextField>,
+    /// Two grey bars where the captions will be, drawn until the card is
+    /// first given something to show.
+    outline: [Retained<NSView>; 2],
     /// What the card shows, to tell a new look at the same thing from
     /// another thing taking the card over.
     shown: RefCell<Option<Card>>,
@@ -204,20 +213,25 @@ impl PosterItem {
         }
         views.art.set_radius(shape.radius());
         views.art.set_current(is_current);
+        let faceless = matches!(card, Card::Person(person) if person.thumb.is_none());
+        views.monogram.setHidden(!faceless);
+        for bar in &views.outline {
+            bar.setHidden(true);
+        }
         let (title, subtitle) = match card {
             Card::Item(item) => {
                 views.art.set_playable(is_playable(item));
                 views.art.set_progress(item.progress());
                 views.art.set_badge(badge(item));
-                views.art.show(artwork_path(item, shape), shape.request(), None, images);
+                views.art.show(artwork_path(item, shape), shape.request(), images);
                 captions(item, shape)
             }
             Card::Person(person) => {
                 views.art.set_playable(false);
                 views.art.set_progress(0.0);
                 views.art.set_badge(Badge::None);
-                let photo = person.thumb.as_deref();
-                views.art.show(photo, shape.request(), Some("person.fill"), images);
+                views.art.show(person.thumb.as_deref(), shape.request(), images);
+                label::set(&views.initials, &initials(&person.tag));
                 (person.tag.clone(), person.role.clone().unwrap_or_default())
             }
         };
@@ -252,7 +266,10 @@ pub fn is_playable(item: &Item) -> bool {
     matches!(item.kind, Kind::Movie | Kind::Episode | Kind::Clip)
 }
 
-/// What marks `item` as having something left to watch.
+/// The mark in the corner of `item`. What was never started has none: a
+/// library starts out that way, and a mark on everything says nothing.
+/// What was watched to the end has a tick, and a show or season with
+/// episodes left says how many.
 pub fn badge(item: &Item) -> Badge {
     if item.view_offset.is_some() || item.kind == Kind::Clip {
         // The progress bar says it, and a trailer is not there to be
@@ -261,8 +278,7 @@ pub fn badge(item: &Item) -> Badge {
     }
     match (item.leaf_count, item.viewed_leaf_count) {
         (Some(episodes), Some(watched)) if watched < episodes => Badge::Left(episodes - watched),
-        (Some(_), Some(_)) => Badge::None,
-        _ if item.view_count == 0 => Badge::Unwatched,
+        _ if item.is_watched() => Badge::Watched,
         _ => Badge::None,
     }
 }
@@ -278,7 +294,7 @@ pub fn spoken(card: &Card, title: &str, subtitle: &str, is_current: bool) -> Str
     }
     if let Card::Item(item) = card {
         match badge(item) {
-            Badge::Unwatched => parts.push("not watched".to_owned()),
+            Badge::Watched => parts.push("watched".to_owned()),
             Badge::Left(episodes) => {
                 parts.push(format!("{} not watched", text::count(episodes, "episode")));
             }
@@ -289,6 +305,13 @@ pub fn spoken(card: &Card, title: &str, subtitle: &str, is_current: bool) -> Str
         }
     }
     parts.join(", ")
+}
+
+/// The first letters of the first two words of `name`, as a person
+/// without a photo is drawn.
+fn initials(name: &str) -> String {
+    let letters = name.split_whitespace().take(2).filter_map(|word| word.chars().next());
+    letters.flat_map(char::to_uppercase).collect()
 }
 
 /// On a poster, an episode stands for its show, since its own artwork is a
@@ -341,7 +364,33 @@ fn captions(item: &Item, shape: Shape) -> (String, String) {
 impl Views {
     fn new(main_thread: MainThreadMarker) -> Self {
         let secondary = NSColor::secondaryLabelColor();
-        Self {
+        let monogram = artwork::layered(main_thread);
+        artwork::fill_with(&monogram, &theme::white(theme::MONOGRAM_DISC_OPACITY));
+        if let Some(layer) = monogram.layer() {
+            layer.setCornerRadius(theme::PORTRAIT_WIDTH / 2.0);
+        }
+        monogram.setHidden(true);
+        let initials = label::line(
+            theme::FONT_LARGE_TITLE,
+            Weight::Medium,
+            &theme::white(theme::MONOGRAM_INK_OPACITY),
+            main_thread,
+        );
+        // The name is right under it.
+        initials.setAccessibilityElement(false);
+        layout::float(&monogram, &initials);
+        let bar = || {
+            let bar = artwork::layered(main_thread);
+            artwork::fill_with(&bar, &theme::white(theme::ARTWORK_PLACEHOLDER_OPACITY));
+            if let Some(layer) = bar.layer() {
+                layer.setCornerRadius(theme::OUTLINE_BAR_HEIGHT / 2.0);
+            }
+            bar
+        };
+        let views = Self {
+            outline: [bar(), bar()],
+            monogram,
+            initials,
             art: ArtView::new(main_thread, theme::RADIUS_M),
             title: label::line(
                 theme::FONT_BODY,
@@ -351,15 +400,33 @@ impl Views {
             ),
             subtitle: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
             shown: RefCell::new(None),
-        }
+        };
+        // A caption too long for its card is cut short. The pointer
+        // resting on it then brings up the whole of it.
+        views.title.setAllowsExpansionToolTips(true);
+        views.subtitle.setAllowsExpansionToolTips(true);
+        views
     }
 
     /// Artwork on top, filling the card down to the captions.
     fn place_in(&self, card: &HoverView) {
         let (art, title, subtitle) = (self.art.view(), &self.title, &self.subtitle);
         card.addSubview(art);
+        // On the artwork, to grow with it under the pointer.
+        layout::cover(art, &self.monogram);
         card.addSubview(title);
         card.addSubview(subtitle);
+        let lines =
+            [(title, theme::OUTLINE_TITLE_WIDTH), (subtitle, theme::OUTLINE_SUBTITLE_WIDTH)];
+        for (bar, (line, width)) in self.outline.iter().zip(lines) {
+            card.addSubview(bar);
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                bar.leadingAnchor().constraintEqualToAnchor(&card.leadingAnchor()),
+                bar.centerYAnchor().constraintEqualToAnchor(&line.centerYAnchor()),
+                bar.widthAnchor().constraintEqualToAnchor_multiplier(&card.widthAnchor(), width),
+                bar.heightAnchor().constraintEqualToConstant(theme::OUTLINE_BAR_HEIGHT),
+            ]));
+        }
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             art.topAnchor().constraintEqualToAnchor(&card.topAnchor()),
             art.leadingAnchor().constraintEqualToAnchor(&card.leadingAnchor()),
@@ -399,6 +466,13 @@ mod tests {
     }
 
     #[test]
+    fn a_person_without_a_photo_is_drawn_as_two_initials() {
+        assert_eq!(initials("Reggie Dees II"), "RD");
+        assert_eq!(initials("e.j. holowicki"), "EH");
+        assert_eq!(initials("Zendaya"), "Z");
+    }
+
+    #[test]
     fn a_card_is_spoken_with_what_is_left_to_watch() {
         let show = item(serde_json::json!({
             "ratingKey": "1", "type": "show", "title": "Show", "year": 2014,
@@ -411,5 +485,11 @@ mod tests {
             "duration": 100, "viewOffset": 25, "viewCount": 1,
         }));
         assert_eq!(spoken(&Card::Item(film), "Film", "", false), "Film, 25 percent watched");
+        let seen = item(serde_json::json!({
+            "ratingKey": "1", "type": "movie", "title": "Film", "viewCount": 2,
+        }));
+        assert_eq!(spoken(&Card::Item(seen), "Film", "", false), "Film, watched");
+        let new = item(serde_json::json!({ "ratingKey": "1", "type": "movie", "title": "Film" }));
+        assert_eq!(spoken(&Card::Item(new), "Film", "", false), "Film");
     }
 }

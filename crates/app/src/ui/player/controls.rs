@@ -9,8 +9,8 @@ use objc2_app_kit::{NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
     NSImageSymbolConfiguration, NSLayoutConstraint, NSLayoutConstraintOrientation,
-    NSLayoutPriorityDefaultLow, NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode,
-    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
@@ -168,12 +168,6 @@ impl Controls {
     fn place_top(&self, main_thread: MainThreadMarker, root: &NSView, material: Material) {
         let pane = &self.top;
         let surface = Surface::new(main_thread, material, theme::CAPSULE_RADIUS);
-        // The title is cut short by the window's edge and by nothing less,
-        // but does not get to widen the window either.
-        self.title.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDragThatCannotResizeWindow,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
         let holder = surface.content();
         let titles: [&NSView; 2] = [&self.title, &self.detail];
         let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
@@ -376,8 +370,12 @@ pub fn label(
     label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(size, weight)));
     label.setTextColor(Some(color));
     label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    // It gives way to what has to hold, such as a panel's greatest
+    // width, and to nothing weaker: glass left to itself takes the
+    // narrowest panel its content will put up with. Nor may it widen the
+    // window, which is why it is no stronger than this.
     label.setContentCompressionResistancePriority_forOrientation(
-        NSLayoutPriorityDefaultLow,
+        NSLayoutPriorityDragThatCannotResizeWindow,
         NSLayoutConstraintOrientation::Horizontal,
     );
     label

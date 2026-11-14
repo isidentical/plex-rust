@@ -23,7 +23,7 @@ const UNWATCHED_SEGMENT: isize = 1;
 pub struct LibraryBar {
     view: Retained<NSView>,
     count: Retained<NSTextField>,
-    /// What the library holds one of: "film" or "show".
+    /// What the library holds one of: "movie" or "show".
     noun: &'static str,
     /// Kept because controls do not retain their targets.
     _changed: Retained<Callback>,

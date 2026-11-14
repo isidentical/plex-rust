@@ -54,7 +54,8 @@ use self::speed::Speed;
 use self::surface::Material;
 use self::zoom::Zoom;
 use crate::background::Background;
-use crate::error::{Result, with_causes};
+use crate::downloads::Downloads;
+use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
 use crate::settings::Settings;
 use crate::source;
@@ -207,8 +208,13 @@ pub struct Ivars {
     /// Where the player last said it was in the file.
     last_position: Cell<Option<Duration>>,
     background: Rc<Background>,
-    images: Rc<Images>,
-    server: MediaServer,
+    /// `None` while the server is away, as the server is.
+    images: Option<Rc<Images>>,
+    /// `None` while the server is away. Then only downloads play, their
+    /// progress is kept on this Mac, and an episode leads on to the next
+    /// one that was downloaded.
+    server: Option<MediaServer>,
+    downloads: Rc<Downloads>,
     /// Lets the server tell this playback from another of the same item.
     session: String,
     purpose: Purpose,
@@ -270,8 +276,9 @@ impl PlayerScreen {
     pub fn open(
         main_thread: MainThreadMarker,
         background: Rc<Background>,
-        server: MediaServer,
-        images: &Rc<Images>,
+        server: Option<MediaServer>,
+        downloads: &Rc<Downloads>,
+        images: Option<&Rc<Images>>,
         item: &Item,
         settings: Settings,
         purpose: Purpose,
@@ -290,7 +297,7 @@ impl PlayerScreen {
         video.setLayer(Some(&layer));
         video.setWantsLayer(true);
         crate::ui::layout::cover(&root, &video);
-        let material = Material::choose(purpose == Purpose::Check);
+        let material = Material::choose();
         let controls = Controls::new(main_thread, &root, item, material);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
@@ -323,8 +330,9 @@ impl PlayerScreen {
             zoom: Cell::new(Zoom::FIT),
             last_position: Cell::new(None),
             background,
-            images: Rc::clone(images),
+            images: images.cloned(),
             server,
+            downloads: Rc::clone(downloads),
             session: NSUUID::UUID().UUIDString().to_string(),
             purpose,
             on_close: Box::new(on_close),
@@ -373,11 +381,16 @@ impl PlayerScreen {
         Rc::clone(&self.ivars().item.borrow())
     }
 
-    /// Hands the item's file to the player, to start at `from`, or with
-    /// `None` where the viewer left it the last time.
+    /// Hands the item's file to the player: the file on this Mac if the
+    /// item was downloaded, and the one on the server if not. It starts
+    /// at `from`, or with `None` where the viewer left it the last time.
     fn load(&self, from: Option<Duration>) -> Result<()> {
         let (ivars, item) = (self.ivars(), self.item());
-        let mut source = source::of(&ivars.server, &item)?;
+        let mut source = match (ivars.downloads.whole(&item.rating_key), &ivars.server) {
+            (Some(download), _) => source::on_disk(&download.file, &item),
+            (None, Some(server)) => source::of(server, &item)?,
+            (None, None) => return Err(Error::NotPlayable(item.title.clone())),
+        };
         if let Some(from) = from {
             source.start = from;
         }
@@ -672,9 +685,13 @@ impl PlayerScreen {
         if !self.stop_ticking() {
             return;
         }
-        if let Some(progress) = self.progress(PlaybackState::Stopped) {
-            let sent = self.ivars().background.wait(progress.send(&self.ivars().server));
-            log_unsaved(sent);
+        let ivars = self.ivars();
+        match (self.progress(PlaybackState::Stopped), &ivars.server) {
+            (Some(progress), Some(server)) => {
+                log_unsaved(ivars.background.wait(progress.send(server)));
+            }
+            (Some(progress), None) => self.keep(&progress),
+            (None, _) => {}
         }
         self.or_log(self.ivars().player.quit());
     }
@@ -722,7 +739,7 @@ impl PlayerScreen {
 
     /// Takes the system's media controls for this playback, and fetches
     /// the poster they show next to its title.
-    fn take_media_controls(&self, images: &Rc<Images>) {
+    fn take_media_controls(&self, images: Option<&Rc<Images>>) {
         let item = self.item();
         let screen = Weak::new(self);
         let remote = Remote::register(self.mtm(), &item, LONG_JUMP, move |command| {
@@ -732,7 +749,8 @@ impl PlayerScreen {
         });
         *self.ivars().remote.borrow_mut() = Some(remote);
 
-        let Some(poster) = item.grandparent_thumb.as_deref().or(item.thumb.as_deref()) else {
+        let poster = item.grandparent_thumb.as_deref().or(item.thumb.as_deref());
+        let (Some(poster), Some(images)) = (poster, images) else {
             return;
         };
         // The size the item's own page shows it at, so it is rarely fetched.
@@ -1161,7 +1179,16 @@ impl PlayerScreen {
         let (Kind::Episode, Some(show)) = (item.kind, item.grandparent_rating_key.clone()) else {
             return;
         };
-        let server = ivars.server.clone();
+        let Some(server) = ivars.server.clone() else {
+            match ivars.downloads.episodes(&show) {
+                Ok(episodes) => {
+                    *ivars.episodes.borrow_mut() = Some(episodes);
+                    self.find_neighbours();
+                }
+                Err(error) => eprintln!("plex-rust: show not listed: {}", with_causes(&error)),
+            }
+            return;
+        };
         let load = async move { server.episodes(&show).await };
         let screen = Weak::new(self);
         ivars.background.run(self.mtm(), load, move |episodes| {
@@ -1187,7 +1214,7 @@ impl PlayerScreen {
         let neighbours =
             episodes.as_ref().map(|episodes| library::neighbours(episodes, &item.rating_key));
         if let Some(next) = neighbours.as_ref().and_then(|known| known.next.as_ref()) {
-            ivars.controls.up_next.offer(next, &item, &ivars.images);
+            ivars.controls.up_next.offer(next, &item, ivars.images.as_ref());
         }
         *ivars.neighbours.borrow_mut() = neighbours;
         self.show_neighbours();
@@ -1252,7 +1279,8 @@ impl PlayerScreen {
     ///
     /// `episode` comes from a listing, which is enough to name it at once.
     /// Its file follows when the server has sent the episode in full: a
-    /// listing leaves out the markers and the tracks.
+    /// listing leaves out the markers and the tracks. Without the server
+    /// `episode` is a download, which was kept in full.
     fn switch_to(&self, episode: Item) {
         let ivars = self.ivars();
         // An episode that is itself still on its way cannot be left yet:
@@ -1267,7 +1295,12 @@ impl PlayerScreen {
 
         let key = episode.rating_key.clone();
         self.show_item(episode);
-        let server = ivars.server.clone();
+        let Some(server) = ivars.server.clone() else {
+            if let Err(error) = self.load(None) {
+                self.fail(&with_causes(&error));
+            }
+            return;
+        };
         let fetch = async move { server.item(&key).await };
         let screen = Weak::new(self);
         ivars.background.run(self.mtm(), fetch, move |item| {
@@ -1478,7 +1511,9 @@ impl PlayerScreen {
     /// not disturb the subtitles the server remembers.
     fn remember_track(&self, kind: TrackKind) {
         let (ivars, item) = (self.ivars(), self.item());
-        let (Some(part), Purpose::Watching) = (part(&item), ivars.purpose) else {
+        let (Some(part), Purpose::Watching, Some(server)) =
+            (part(&item), ivars.purpose, &ivars.server)
+        else {
             return;
         };
         let tracks = match ivars.player.tracks() {
@@ -1502,7 +1537,7 @@ impl PlayerScreen {
             _ => return,
         };
 
-        let (server, part) = (ivars.server.clone(), part.clone());
+        let (server, part) = (server.clone(), part.clone());
         let save = async move { server.choose_streams(&part, audio, subtitles).await };
         ivars.background.run(self.mtm(), save, |saved| {
             if let Err(error) = saved {
@@ -1929,14 +1964,24 @@ impl PlayerScreen {
         }
     }
 
-    /// Tells the server where this playback is, without waiting for it.
+    /// Tells the server where this playback is, without waiting for it,
+    /// or keeps that for later if the server is not there.
     fn report(&self, state: PlaybackState) {
         let Some(progress) = self.progress(state) else {
             return;
         };
-        let server = self.ivars().server.clone();
+        let Some(server) = self.ivars().server.clone() else {
+            return self.keep(&progress);
+        };
         let send = async move { progress.send(&server).await };
         self.ivars().background.run(self.mtm(), send, log_unsaved);
+    }
+
+    /// Keeps `progress` next to the download it is of, for the server to
+    /// hear of when it is next there.
+    fn keep(&self, progress: &Progress) {
+        let downloads = &self.ivars().downloads;
+        downloads.keep_position(&progress.item, progress.position, progress.duration);
     }
 
     /// What to tell the server right now, or `None` if there is nothing to
@@ -2000,6 +2045,7 @@ impl Progress {
             state: self.state,
             position: self.position,
             duration: self.duration,
+            offline: false,
         };
         server.report(&progress).await
     }

@@ -2,6 +2,7 @@
 
 mod account;
 mod background;
+mod downloads;
 mod error;
 mod images;
 mod pacing;
@@ -10,6 +11,7 @@ mod progress;
 mod seeks;
 mod settings;
 mod source;
+mod store;
 mod ui;
 mod video_layer;
 
@@ -23,6 +25,7 @@ use plex::model::RatingKey;
 use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
+use crate::store::{OnDisk, Store};
 use crate::ui::player::input::Key;
 use crate::ui::shell::{Failure, Link, Press, Snapshot, Subject, Tweaks};
 
@@ -33,20 +36,23 @@ usage: plex-rust
        plex-rust snapshot item <rating-key> <png-path> [<tweak>...]
        plex-rust snapshot search <query> <png-path> [<tweak>...]
        plex-rust snapshot list <server-path> <png-path> [<tweak>...]
+       plex-rust snapshot downloads <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path> [approving]
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
          keys: space, left, d, ..., and idle, end, wait, hover, drag,
                pull, release, bright, small, wide, marker, stall, fail,
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
-         tweaks: narrow, wide, hover, link, season, scroll=<points>,
-                 across=<points>, unwatched,
+         tweaks: narrow, wide, collapsed, hover, link, season, download,
+                 scroll=<points>, across=<points>, unwatched,
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
-                 unanswered, looking
+                 unanswered, looking, away,
+                 contrast, opaque, still (Accessibility settings as if on)
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
+       plex-rust download <rating-key>
        plex-rust play <file-or-url> [--unattended <seconds> [--low-power]]
        plex-rust play item:<rating-key> [--unattended <seconds> [--low-power]]
        plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
@@ -82,6 +88,7 @@ fn run(args: &[&str]) -> Result<()> {
         ["snapshot", "list", list, path, tweaks @ ..] => {
             snapshot(Subject::List((*list).to_owned()), path, tweaks)
         }
+        ["snapshot", "downloads", path, tweaks @ ..] => snapshot(Subject::Downloads, path, tweaks),
         ["snapshot", "signin", path, tweaks @ ..] => snapshot(Subject::SignIn, path, tweaks),
         ["snapshot", "play", key, path, keys @ ..] => {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
@@ -93,6 +100,7 @@ fn run(args: &[&str]) -> Result<()> {
         ["servers", address] => servers(Some(address)),
         ["api", path] => api(plex::Method::GET, path),
         ["api", "--post", path] => api(plex::Method::POST, path),
+        ["download", key] => download(key),
         ["play", what] => play(what, None),
         ["play", what, "--unattended", seconds, low_power @ ..] => {
             let length = Duration::from_secs(seconds.parse().map_err(|_| Error::Usage(USAGE))?);
@@ -119,9 +127,16 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
         match tweak.split_once('=') {
             None if *tweak == "narrow" => parsed.narrow = true,
             None if *tweak == "wide" => parsed.wide = true,
+            None if *tweak == "collapsed" => parsed.collapsed = true,
+            None if *tweak == "contrast" => parsed.asked.more_contrast = true,
+            None if *tweak == "opaque" => parsed.asked.less_transparency = true,
+            None if *tweak == "still" => parsed.asked.less_motion = true,
             None if *tweak == "hover" => parsed.hover = true,
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
+            None if *tweak == "download" => parsed.download = true,
+            None if *tweak == "away" => parsed.away = true,
+            None if *tweak == "download" => parsed.download = true,
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             None if *tweak == "unanswered" => parsed.unanswered = true,
             None if *tweak == "looking" => parsed.looking = true,
@@ -200,6 +215,30 @@ fn api(method: plex::Method, path: &str) -> Result<()> {
         let server = servers.first().ok_or(Error::NoServer)?;
         let server = plex::MediaServer::connect(&client, server, None).await?;
         println!("{}", server.text(method, path).await?);
+        Ok(())
+    })
+}
+
+/// Downloads the original file of a film or an episode from the first
+/// server, carrying on with what an earlier run left of it.
+fn download(key: &str) -> Result<()> {
+    let (client, token) = account::signed_in()?;
+    let store = Store::open()?;
+    runtime()?.block_on(async {
+        let servers = plex::discovery::servers(&client, &token).await?;
+        let server = servers.first().ok_or(Error::NoServer)?;
+        let server = plex::MediaServer::connect(&client, server, None).await?;
+
+        let kept = store.list()?.into_iter().find(|download| download.key().as_str() == key);
+        let download = match kept {
+            Some(download) => download,
+            None => store.add(&server.item_json(&RatingKey::new(key)).await?)?,
+        };
+        if let OnDisk::Partial(bytes) = download.on_disk()? {
+            println!("{bytes} of {} bytes are here", download.size);
+        }
+        downloads::fetch(&server, &download, &plex::Transfer::default()).await?;
+        println!("{}", download.file.display());
         Ok(())
     })
 }

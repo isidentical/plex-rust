@@ -8,7 +8,7 @@ use objc2_app_kit::{
     NSSearchToolbarItem, NSTextFieldDelegate, NSTextView, NSToolbar, NSToolbarDelegate,
     NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier,
-    NSToolbarToggleSidebarItemIdentifier, NSWindow, NSWindowToolbarStyle,
+    NSToolbarToggleSidebarItemIdentifier, NSWindow, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, ns_string};
 
@@ -155,6 +155,10 @@ impl Toolbar {
     pub fn install(&self, window: &NSWindow) {
         window.setToolbar(Some(&self.ivars().toolbar));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+        // Every page says what it is in its own heading or in the sidebar,
+        // and a title in the toolbar is one more thing for artwork to
+        // scroll under. The window keeps its title for the Window menu.
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
     }
 
     /// Shows or hides the toolbar. The player hides it.

@@ -36,6 +36,9 @@ open target/plex-rust.app
 | --- | --- |
 | Arrows | Move from item to item |
 | Return, Space | Open the item the keyboard is on |
+| Up, from Home's first shelf | Onto the large item at the top |
+| Left, Right, on that item | The item before and after it |
+| Return, on that item | Play or resume it |
 | Return on an item's page | Play or resume it |
 | Command-[ and Command-] | Back and forward |
 | Command-1, Command-2, ... | Home and the libraries |
@@ -44,13 +47,28 @@ open target/plex-rust.app
 | Command-R | Load the page again |
 | Shift-Command-U | Mark as watched or unwatched |
 
-A secondary click on an item offers to play it or mark it.
+A secondary click on an item offers to play it or mark it, and on an
+episode to go to its show or its season.
 
-A shelf's heading with a chevron after it leads to the whole list. On an
+A shelf's heading with a chevron after it leads to the whole list. The two
+arrows at the other end of a heading bring the next cards of its shelf
+into view, and are there only while the shelf has more than fit across. On an
 episode's page the show's name leads to the show and the season's name to
 that season's episodes. A member of the cast leads to everything else of
 theirs in the library. Each library keeps the order and the filter it was
 last given.
+
+## Downloads
+
+The page of a film or an episode has a Download button. It fetches the
+original file into `~/Movies/plex-rust`, with a poster and what the server
+says about the item beside it. Downloads, in the sidebar, lists what is there
+and what is on its way. A download that was cut short, by quitting or by the
+network, carries on from where it stopped when it is resumed.
+
+A downloaded item plays from disk. When the server cannot be reached the app
+opens on Downloads, and how far you got in what you watch is kept on the Mac
+and told to the server the next time it answers.
 
 ## Keys in the player
 

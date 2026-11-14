@@ -120,8 +120,15 @@ pub struct Item {
     pub content_rating: Option<String>,
     /// What critics gave it, out of 10.
     pub rating: Option<f32>,
+    /// Whose critics, as the name of a picture the server's own apps draw:
+    /// `rottentomatoes://image.rating.ripe`, `imdb://image.rating`.
+    pub rating_image: Option<String>,
     /// What viewers gave it, out of 10.
     pub audience_rating: Option<f32>,
+    /// Whose viewers, named as for the critics.
+    pub audience_rating_image: Option<String>,
+    /// Who made it, such as "Lucasfilm Ltd.".
+    pub studio: Option<String>,
     /// Server path of the poster.
     pub thumb: Option<String>,
     /// Server path of the backdrop.
@@ -224,6 +231,9 @@ pub struct Media {
     pub video_resolution: Option<String>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    /// What sets the sound apart within its codec, such as `ma` for the
+    /// lossless kind of DTS.
+    pub audio_profile: Option<String>,
     /// 2 for stereo, 6 for 5.1 and so on.
     pub audio_channels: Option<u32>,
     /// Almost always exactly one. More when a film is split across files.
@@ -271,11 +281,30 @@ pub struct Stream {
     pub kind: StreamKind,
     /// A description for menus, such as "English (EAC3 5.1)".
     pub display_title: Option<String>,
+    /// What the file itself calls the track, such as "SDH" or "Commentary".
+    pub title: Option<String>,
     /// Whether this is the track the user last chose for this file.
     #[serde(default)]
     pub selected: bool,
     /// Set for subtitles that live in their own file next to the video.
     pub key: Option<String>,
+    /// How the track is encoded: `hevc`, `eac3`, `srt` and so on.
+    pub codec: Option<String>,
+    /// What sets the track apart within its codec, such as `ma` for the
+    /// lossless kind of DTS.
+    pub profile: Option<String>,
+    /// For sound, 2 for stereo, 6 for 5.1 and so on.
+    pub channels: Option<u32>,
+    /// For a picture, its transfer curve: `smpte2084` for HDR10,
+    /// `arib-std-b67` for HLG, `bt709` or nothing for standard range.
+    pub color_trc: Option<String>,
+    /// Whether a picture carries Dolby Vision.
+    #[serde(rename = "DOVIPresent", default)]
+    pub dolby_vision: bool,
+    /// The Dolby Vision profile. Profile 5 has no picture a player
+    /// without Dolby Vision can show in the right colours.
+    #[serde(rename = "DOVIProfile")]
+    pub dolby_vision_profile: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -323,6 +352,9 @@ pub enum MarkerKind {
 /// A name attached to an item: a genre, a director.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tag {
+    /// The server's number for the name, which its filters take. Only
+    /// present when the item was fetched in full.
+    pub id: Option<u64>,
     pub tag: String,
 }
 

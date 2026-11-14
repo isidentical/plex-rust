@@ -68,14 +68,17 @@ impl UpNext {
     }
 
     /// Makes `episode` the one the card offers to someone watching
-    /// `playing`.
-    pub fn offer(&self, episode: &Item, playing: &Item, images: &Rc<Images>) {
+    /// `playing`. Its still comes from the server, and without `images`,
+    /// which is without the server, its frame stays empty.
+    pub fn offer(&self, episode: &Item, playing: &Item, images: Option<&Rc<Images>>) {
         self.title.setStringValue(&NSString::from_str(&episode.title));
         let place = place(episode, playing);
         self.place.setStringValue(&NSString::from_str(place.as_deref().unwrap_or_default()));
         self.place.setHidden(place.is_none());
         let size = crate::ui::theme::LANDSCAPE_REQUEST;
-        self.still.show(episode.thumb.as_deref(), size, Some("tv"), images);
+        if let Some(images) = images {
+            self.still.show(episode.thumb.as_deref(), size, images);
+        }
     }
 
     fn lay_out(&self, main_thread: MainThreadMarker) {

@@ -24,8 +24,10 @@ use plex::model::{Hub, Item, Kind, RatingKey, Section};
 use plex::{Client, MediaServer, Token};
 
 use super::callback::Callback;
+use super::confirm;
 pub use super::detail::Link;
 use super::detail::{Detail, Opening};
+use super::downloads::{Act, DownloadList};
 pub use super::failure::Failure;
 use super::hero::{self, Hero};
 use super::layout;
@@ -36,16 +38,18 @@ use super::player::input::Key;
 use super::player::{PlayerScreen, Purpose};
 use super::poster::Shape;
 pub use super::posters::Press;
-use super::posters::{Action, Header, Outline, Posters, Shelf, Style};
+use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Style};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::theme;
 use super::toolbar::Toolbar;
 use crate::account;
 use crate::background::Background;
+use crate::downloads::{self, Downloads, State};
 use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
 use crate::settings::{Listings, Settings};
+use crate::store::Download;
 
 /// How many items each shelf of the home screen starts with.
 const SHELF_LENGTH: u32 = 20;
@@ -123,6 +127,21 @@ struct Shell {
     /// Set for a snapshot of a screen that is still waiting: screens are
     /// then built and never loaded.
     holds_loads: Cell<bool>,
+    /// Set for a snapshot, which must leave the server as it found it.
+    read_only: Cell<bool>,
+    /// What is kept on this Mac, and what is on its way to it.
+    downloads: Rc<Downloads>,
+    reach: Cell<Reach>,
+}
+
+/// What is known of the server since it was last looked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// It has yet to answer or to fail to.
+    Unknown,
+    Answering,
+    /// It did not answer. Downloads play without it.
+    Away,
 }
 
 /// What exists only while a server is known.
@@ -147,6 +166,7 @@ enum Route {
     /// The page of an item. For a show, with how it opens.
     Item(Box<Item>, Opening),
     Search(String),
+    Downloads,
 }
 
 struct Entry {
@@ -160,6 +180,7 @@ struct Entry {
 enum Screen {
     Posters(Retained<Posters>),
     Detail(Rc<Detail>),
+    Downloads(Retained<DownloadList>),
 }
 
 impl Screen {
@@ -167,6 +188,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.view(),
             Self::Detail(detail) => detail.view(),
+            Self::Downloads(list) => list.view(),
         }
     }
 
@@ -174,6 +196,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.focus(),
             Self::Detail(detail) => detail.focus(),
+            Self::Downloads(list) => list.focus(),
         }
     }
 
@@ -181,6 +204,7 @@ impl Screen {
         match self {
             Self::Posters(posters) => posters.scroll_to(y),
             Self::Detail(detail) => detail.scroll_to(y),
+            Self::Downloads(list) => list.scroll_to(y),
         }
     }
 }
@@ -231,6 +255,8 @@ pub enum Subject {
     Search(String),
     /// The whole list at this server path, as a shelf's heading leads to.
     List(String),
+    /// What is kept on this Mac.
+    Downloads,
     /// The screen a signed-out viewer starts on.
     SignIn,
 }
@@ -242,6 +268,10 @@ pub struct Tweaks {
     pub narrow: bool,
     /// The window as large as a big display lets it be.
     pub wide: bool,
+    /// The sidebar put away.
+    pub collapsed: bool,
+    /// Accessibility settings to take the picture under.
+    pub asked: snapshot::Asked,
     /// These keys pressed among the cards, in order.
     pub presses: Vec<Press>,
     /// The pointer over the first item.
@@ -262,6 +292,10 @@ pub struct Tweaks {
     pub looking: bool,
     /// The sign-in screen once the browser has been opened.
     pub approving: bool,
+    /// On the page of a film or an episode, the download button pressed.
+    pub download: bool,
+    /// The server not answering, whether or not it would.
+    pub away: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -274,22 +308,38 @@ pub struct Snapshot {
 
 /// Opens the main window and runs the app until it quits.
 ///
-/// With `snapshot`, the window stays off screen: once the subject has
-/// loaded, the window is saved to the path as a PNG and the app exits.
+/// With `snapshot`, the window is where no display shows it: once the
+/// subject has loaded, the window is saved to the path as a PNG and the
+/// app exits.
 pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
     let background = Rc::new(Background::new()?);
 
+    if let Some(snapshot) = &snapshot {
+        snapshot::pretend(snapshot.tweaks.asked);
+    }
     let app = NSApplication::sharedApplication(main_thread);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // A snapshot is not an app to switch to: it gets no Dock icon.
+    app.setActivationPolicy(match snapshot {
+        Some(_) => NSApplicationActivationPolicy::Accessory,
+        None => NSApplicationActivationPolicy::Regular,
+    });
     // A film library looks right on dark, whatever the system is set to.
     // SAFETY: the name is a constant that AppKit provides.
     let dark = unsafe { NSAppearanceNameDarkAqua };
     app.setAppearance(NSAppearance::appearanceNamed(dark).as_deref());
 
-    let shell =
-        Shell::new(main_thread, Rc::clone(&background), Settings::load()?, Listings::load()?);
+    let downloads = Downloads::open(main_thread, Rc::clone(&background))?;
+    let (settings, listings) = (Settings::load()?, Listings::load()?);
+    let shell = Shell::new(
+        main_thread,
+        Rc::clone(&background),
+        settings,
+        listings,
+        downloads,
+        snapshot.is_some(),
+    );
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
@@ -297,7 +347,10 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
         Some(snapshot) if snapshot.tweaks.wide => {
             shell.window.setContentSize(theme::WINDOW_WIDE_SIZE);
         }
-        Some(_) => {}
+        _ => {}
+    }
+    match &snapshot {
+        Some(_) => snapshot::stage(&shell.window, main_thread)?,
         None => {
             // Opens where and as large as it was last closed.
             shell.window.setFrameAutosaveName(ns_string!("main"));
@@ -331,13 +384,15 @@ impl Shell {
         background: Rc<Background>,
         settings: Settings,
         listings: Listings,
+        downloads: Rc<Downloads>,
+        staged: bool,
     ) -> Rc<Self> {
         let content = NSView::new(main_thread);
         // The fade from one screen to the next is drawn by its layer.
         content.setWantsLayer(true);
         let content_controller = view_controller(main_thread);
         content_controller.setView(&content);
-        let window = window(main_thread);
+        let window = window(main_thread, staged);
         let split = NSSplitViewController::new(main_thread);
 
         // The sidebar, the toolbar and the menus call back into the shell,
@@ -355,9 +410,13 @@ impl Shell {
             sidebar_item.setMinimumThickness(theme::SIDEBAR_WIDTH);
             sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
             split.addSplitViewItem(&sidebar_item);
-            split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
-                &content_controller,
-            ));
+            let content_item =
+                NSSplitViewItem::splitViewItemWithViewController(&content_controller);
+            // The sidebar is glass laid over the content, so that a page's
+            // colours run under it to the window's edge. What a page
+            // scrolls stays clear of it by the safe area.
+            content_item.setAutomaticallyAdjustsSafeAreaInsets(true);
+            split.addSplitViewItem(&content_item);
             window.setContentViewController(Some(&split));
             window.setContentSize(theme::WINDOW_SIZE);
             window.center();
@@ -404,6 +463,7 @@ impl Shell {
                 command.set_enabled(false);
             }
             menus::install(main_thread, &commands, &[], settings.low_power);
+            downloads.listen(Self::command(shell, Self::downloads_changed));
 
             Self {
                 main_thread,
@@ -426,6 +486,9 @@ impl Shell {
                 settings: Cell::new(settings),
                 listings: RefCell::new(listings),
                 holds_loads: Cell::new(false),
+                downloads,
+                reach: Cell::new(Reach::Unknown),
+                read_only: Cell::new(false),
             }
         })
     }
@@ -449,6 +512,7 @@ impl Shell {
             Err(error) => return self.show_failure(UNREACHABLE, &error, Self::restart),
         };
         let subject = snapshot.clone();
+        self.reach.set(Reach::Unknown);
 
         // First, what the last launch left: the same server and the
         // libraries it had then. This puts the sidebar and Home on screen
@@ -460,6 +524,10 @@ impl Shell {
             self.background.run(self.main_thread, ask, move |sections| {
                 if let (Ok(sections), None) = (sections, shell.session()) {
                     shell.connected(server, sections, subject.as_ref());
+                    // The server can fail to answer before the disk has.
+                    if shell.reach.get() == Reach::Away {
+                        shell.fall_back_on_downloads();
+                    }
                 }
             });
         } else {
@@ -469,7 +537,12 @@ impl Shell {
         // Then the truth. The saved server is asked directly, which is one
         // request. Only if it does not answer, say on another network, is
         // plex.tv asked where the server is now.
+        let away = snapshot.as_ref().is_some_and(|snapshot| snapshot.tweaks.away);
         let find = async move {
+            if away {
+                let (server, tried) = ("The server".to_owned(), Vec::new());
+                return Err(plex::Error::Unreachable { server, tried }.into());
+            }
             if let Some(server) = saved
                 && let Ok(Ok(sections)) =
                     tokio::time::timeout(SAVED_SERVER_PATIENCE, server.sections()).await
@@ -486,6 +559,7 @@ impl Shell {
         self.background.run(self.main_thread, find, move |found| {
             match found {
                 Ok((server, sections)) => {
+                    shell.reach.set(Reach::Answering);
                     if let Err(error) = account::save_server(&server) {
                         eprintln!("plex-rust: {}", with_causes(&error));
                     }
@@ -500,20 +574,67 @@ impl Shell {
                     if !known {
                         shell.connected(server, sections, subject.as_ref());
                     }
+                    shell.downloads_changed();
+                    shell.send_unsent();
                 }
-                // What the last launch left is on screen and better than
-                // an error, unless the error is that the sign-in is over:
-                // then nothing on screen can be played or brought up to
-                // date until the viewer signs in again.
-                Err(error)
-                    if shell.session().is_some() && Failure::of(&error) != Failure::SignedOut =>
-                {
-                    eprintln!("plex-rust: {}", with_causes(&error));
-                }
-                Err(error) => shell.show_failure(UNREACHABLE, &error, Self::restart),
+                Err(error) => shell.server_away(&error),
             }
             if let Some(snapshot) = snapshot {
                 shell.snapshot_later(snapshot);
+            }
+        });
+    }
+
+    /// Takes note that the server did not answer.
+    ///
+    /// What was downloaded plays without it, so a viewer who has gone
+    /// nowhere yet is taken to Downloads. Failing that, what the last
+    /// launch left is on screen and better than an error. The error is
+    /// shown when nothing is on screen, and when it is that the sign-in
+    /// is over: then nothing on the server can be played or brought up to
+    /// date until the viewer signs in again.
+    fn server_away(self: &Rc<Self>, error: &Error) {
+        self.reach.set(Reach::Away);
+        if Failure::of(error) == Failure::SignedOut {
+            self.show_failure(UNREACHABLE, error, Self::restart);
+        } else if self.fall_back_on_downloads() || self.session().is_some() {
+            eprintln!("plex-rust: {}", with_causes(error));
+        } else {
+            self.show_failure(UNREACHABLE, error, Self::restart);
+        }
+        self.downloads_changed();
+    }
+
+    /// Puts Downloads on screen, with the sidebar it is a place of, if
+    /// there are any and the viewer has gone nowhere yet. Returns whether
+    /// it did. With no server known, Downloads is the only place there is.
+    fn fall_back_on_downloads(self: &Rc<Self>) -> bool {
+        let has_moved = self.history.borrow().len() > 1;
+        if self.downloads.entries().is_empty() || has_moved {
+            return false;
+        }
+        if self.session().is_none() {
+            self.list_places(None);
+        }
+        self.set_browsing_shown(true);
+        // A notice may be standing in front of it, as while trying again.
+        match self.current(|entry| entry.route == Route::Downloads) {
+            Some(true) => self.display(false),
+            _ => self.go(Route::Downloads),
+        }
+        true
+    }
+
+    /// Tells the server where each viewing it could not hear of stopped.
+    fn send_unsent(self: &Rc<Self>) {
+        let Some(session) = self.session() else {
+            return;
+        };
+        let store = self.downloads.store().clone();
+        let send = async move { downloads::send_unsent(&session.server, &store).await };
+        self.background.run(self.main_thread, send, |sent| {
+            if let Err(error) = sent {
+                eprintln!("plex-rust: progress was not sent: {}", with_causes(&error));
             }
         });
     }
@@ -555,13 +676,11 @@ impl Shell {
         self.history.borrow_mut().clear();
         self.set_browsing_shown(true);
 
-        let mut destinations = vec![Destination::Home];
-        destinations.extend(sections.iter().cloned().map(Destination::Section));
-        self.install_places(&destinations);
-        self.sidebar.show(destinations);
+        self.list_places(Some(&sections));
 
         let tweaks = snapshot.map(|snapshot| snapshot.tweaks.clone()).unwrap_or_default();
         self.holds_loads.set(tweaks.unanswered);
+        self.read_only.set(snapshot.is_some());
         match snapshot.map(|snapshot| &snapshot.subject) {
             Some(Subject::Library(index)) => match sections.get(*index) {
                 Some(section) => self.go(Route::Library(section.clone(), tweaks.listing)),
@@ -571,11 +690,18 @@ impl Shell {
                 self.fetch(RatingKey::new(key.as_str()), |shell, item| shell.open(item));
             }
             Some(Subject::Play(key, keys)) => {
-                let keys = keys.clone();
-                self.fetch(RatingKey::new(key.as_str()), move |shell, item| {
-                    shell.open_player(item, Purpose::Check);
-                    shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
-                });
+                let (key, keys) = (RatingKey::new(key.as_str()), keys.clone());
+                // A download plays as it was kept, with no server to ask.
+                match self.downloads.whole(&key) {
+                    Some(download) => {
+                        self.play_kept(&download, Purpose::Check, Playback::default());
+                        self.press_later(keys, SNAPSHOT_KEYS_AFTER);
+                    }
+                    None => self.fetch(key, move |shell, item| {
+                        shell.open_player(item, Purpose::Check);
+                        shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
+                    }),
+                }
             }
             Some(Subject::Search(query)) => {
                 self.toolbar.set_search_text(query);
@@ -584,11 +710,25 @@ impl Shell {
             Some(Subject::List(path)) => {
                 self.go(Route::List { title: "List".to_owned(), path: path.clone() });
             }
+            Some(Subject::Downloads) => self.go(Route::Downloads),
             Some(Subject::Home | Subject::SignIn) | None => self.go(Route::Home),
         }
     }
 
-    /// Gives Home and the libraries their entries in the Go menu.
+    /// Fills the sidebar and the Go menu: Home and the libraries, once
+    /// there is a server to have them, and Downloads.
+    fn list_places(self: &Rc<Self>, sections: Option<&[Section]>) {
+        let mut destinations = Vec::new();
+        if let Some(sections) = sections {
+            destinations.push(Destination::Home);
+            destinations.extend(sections.iter().cloned().map(Destination::Section));
+        }
+        destinations.push(Destination::Downloads);
+        self.install_places(&destinations);
+        self.sidebar.show(destinations);
+    }
+
+    /// Gives the places of the sidebar their entries in the Go menu.
     fn install_places(self: &Rc<Self>, destinations: &[Destination]) {
         let place = |destination: &Destination| {
             let (shell, destination) = (Rc::downgrade(self), destination.clone());
@@ -773,6 +913,7 @@ impl Shell {
             Destination::Section(section) => {
                 Route::Library(section.clone(), self.listings.borrow().of(&section.key))
             }
+            Destination::Downloads => Route::Downloads,
         };
         // Selecting the row of the place already on screen, as `display`
         // does to keep the sidebar in step, must not go there again.
@@ -800,6 +941,11 @@ impl Shell {
         self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
         self.enable_commands();
         self.sidebar.select(destination_of(&route).as_ref());
+        // A page left in the history has not heard what became of its
+        // item's download since.
+        if let Screen::Detail(detail) = &screen {
+            detail.show_download();
+        }
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.
         if !matches!(route, Route::Search(_)) {
@@ -827,28 +973,40 @@ impl Shell {
 
     /// Makes `view` the content, optionally fading from what was there.
     fn show_view(&self, view: &NSView, fade: bool) {
-        let fade = fade && !theme::reduces_motion();
-        if let (true, Some(layer)) = (fade, self.content.layer()) {
-            let transition = CATransition::new();
-            // SAFETY: the type is a constant that Core Animation provides.
-            transition.setType(unsafe { kCATransitionFade });
-            transition.setDuration(theme::SCREEN_FADE);
-            layer.addAnimation_forKey(&transition, Some(ns_string!("screen")));
+        if fade {
+            self.fade_content();
         }
         layout::fill(&self.content, view);
+    }
+
+    /// Has the next change of the content fade in over what is there now.
+    fn fade_content(&self) {
+        let Some(layer) = self.content.layer().filter(|_| !theme::reduces_motion()) else {
+            return;
+        };
+        let transition = CATransition::new();
+        // SAFETY: the type is a constant that Core Animation provides.
+        transition.setType(unsafe { kCATransitionFade });
+        transition.setDuration(theme::MOTION_ARRIVE);
+        layer.addAnimation_forKey(&transition, Some(ns_string!("screen")));
     }
 
     // The screens.
 
     /// Creates the screen for `route` and starts loading what it shows.
     fn build(self: &Rc<Self>, route: Route) -> Option<Entry> {
-        let session = self.session()?;
-        let (screen, reload) = match &route {
-            Route::Home => self.home(&session),
-            Route::Library(section, listing) => self.library(&session, section, *listing),
-            Route::List { title, path } => self.list(&session, &route, title, path),
-            Route::Item(item, opening) => self.item_page(&session, item, opening),
-            Route::Search(query) => self.search_results(&session, query),
+        let session = self.session();
+        let (screen, reload) = match (&route, &session) {
+            // The one place that is there without a server.
+            (Route::Downloads, _) => self.download_list(),
+            (_, None) => return None,
+            (Route::Home, Some(session)) => self.home(session),
+            (Route::Library(section, listing), Some(session)) => {
+                self.library(session, section, *listing)
+            }
+            (Route::List { title, path }, Some(session)) => self.list(session, &route, title, path),
+            (Route::Item(item, opening), Some(session)) => self.item_page(session, item, opening),
+            (Route::Search(query), Some(session)) => self.search_results(session, query),
         };
         if !self.holds_loads.get() {
             reload();
@@ -857,10 +1015,7 @@ impl Shell {
     }
 
     fn home(self: &Rc<Self>, session: &Session) -> (Screen, Rc<dyn Fn()>) {
-        let outlines = vec![
-            Outline { title: "Continue Watching", style: Style::Shelf(Shape::Landscape), count: 6 },
-            Outline { title: "Recently Added", style: Style::Shelf(Shape::Poster), count: 10 },
-        ];
+        let outlines = home_outlines(&session.sections);
         let nothing = self.nothing(
             "play.rectangle.on.rectangle",
             "Nothing to watch yet",
@@ -870,6 +1025,8 @@ impl Shell {
         let header = Header { view: hero.view().retain(), height: theme::HOME_HERO_HEIGHT };
         let posters = self.posters(session, Some(header), outlines, nothing, || {});
         posters.fit_header_to_page(theme::HOME_HERO_HEIGHT_PER_WIDTH, theme::HOME_HERO_MOST);
+        posters.set_header_keys(hero.keys());
+        posters.let_header_reach(hero.reach());
         let shown = posters.clone();
         let reload = self.loader(
             session,
@@ -878,7 +1035,7 @@ impl Shell {
             // The hero lives as long as this closure, which the entry keeps.
             move |hubs: &Vec<Hub>| {
                 let mut shelves = home_shelves(hubs);
-                hero.show(hero::feature(&mut shelves));
+                hero.show(hero::features(&mut shelves));
                 shown.show(shelves);
             },
         );
@@ -892,7 +1049,7 @@ impl Shell {
         listing: Listing,
     ) -> (Screen, Rc<dyn Fn()>) {
         let (relisted, of) = (Rc::downgrade(self), section.clone());
-        let noun = if section.kind == Kind::Show { "show" } else { "film" };
+        let noun = if section.kind == Kind::Show { "show" } else { "movie" };
         let bar = LibraryBar::new(self.main_thread, listing, noun, move |listing| {
             if let Some(shell) = relisted.upgrade() {
                 shell.relist(&of, listing);
@@ -1006,6 +1163,7 @@ impl Shell {
         let detail = Detail::new(
             self.main_thread,
             &session.images,
+            &self.downloads,
             item.kind,
             opening.clone(),
             self.actions(),
@@ -1064,6 +1222,22 @@ impl Shell {
             }
         });
         (Screen::Detail(detail), reload)
+    }
+
+    fn download_list(self: &Rc<Self>) -> (Screen, Rc<dyn Fn()>) {
+        let shell = Rc::downgrade(self);
+        let list = DownloadList::new(self.main_thread, move |act| {
+            if let Some(shell) = shell.upgrade() {
+                shell.act_on_download(act);
+            }
+        });
+        let (shown, shell) = (list.clone(), Rc::downgrade(self));
+        let reload = Rc::new(move || {
+            if let Some(shell) = shell.upgrade() {
+                shown.show(&shell.downloads.entries(), shell.reach.get() == Reach::Away);
+            }
+        });
+        (Screen::Downloads(list), reload)
     }
 
     fn search_results(self: &Rc<Self>, session: &Session, query: &str) -> (Screen, Rc<dyn Fn()>) {
@@ -1238,8 +1412,16 @@ impl Shell {
             };
             match action {
                 Action::Open(item) => shell.open(&item),
-                Action::Play(item) => shell.play(&item, Purpose::Watching),
+                Action::Back => shell.back(),
+                Action::Play(item) => shell.play(&item, Purpose::Watching, Playback::default()),
+                Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
+                Action::ToggleDownload(item) => shell.toggle_download(&item.rating_key),
+                Action::ChooseStreams { part, audio, subtitles } => {
+                    shell.change(move |server| async move {
+                        server.choose_streams(&part, audio, subtitles).await
+                    });
+                }
                 Action::OpenShow(episode) => {
                     let season = episode.parent_rating_key.clone();
                     shell.open_show_of(&episode, Opening { season, ..Opening::default() });
@@ -1265,7 +1447,7 @@ impl Shell {
     /// plays.
     fn open(self: &Rc<Self>, item: &Item) {
         match (item.kind, &item.parent_rating_key) {
-            (Kind::Clip, _) => self.play(item, Purpose::Watching),
+            (Kind::Clip, _) => self.play(item, Purpose::Watching, Playback::default()),
             (Kind::Season, Some(show)) => {
                 let season = Some(item.rating_key.clone());
                 let opening = Opening { season, at_episodes: true, episode: None };
@@ -1288,19 +1470,103 @@ impl Shell {
         });
     }
 
-    /// Marks `item` as watched or not on the server, then brings the
-    /// screen up to date with what that changed.
+    /// Marks `item` as watched or not, asking first when it stands for
+    /// many episodes.
     fn set_watched(self: &Rc<Self>, item: &Item, watched: bool) {
-        let Some(session) = self.session() else {
+        if !matches!(item.kind, Kind::Show | Kind::Season) {
+            return self.mark(item, watched);
+        }
+        let (shell, marked) = (Rc::clone(self), item.clone());
+        confirm::marking_every_episode(&self.window, item, watched, move || {
+            shell.mark(&marked, watched);
+        });
+    }
+
+    /// Marks `item` as watched or not on the server.
+    fn mark(self: &Rc<Self>, item: &Item, watched: bool) {
+        let key = item.rating_key.clone();
+        self.change(move |server| async move { server.set_watched(&key, watched).await });
+    }
+
+    /// Makes a change on the server, then brings the screen up to date
+    /// with what that changed. A snapshot changes nothing.
+    fn change<F>(self: &Rc<Self>, change: impl FnOnce(MediaServer) -> F)
+    where
+        F: Future<Output = plex::Result<()>> + Send + 'static,
+    {
+        let Some(session) = self.session().filter(|_| !self.read_only.get()) else {
             return;
         };
-        let (server, key) = (session.server.clone(), item.rating_key.clone());
-        let mark = async move { server.set_watched(&key, watched).await };
         let (shell, moves) = (Rc::clone(self), self.moves.get());
-        self.background.run(self.main_thread, mark, move |marked| match marked {
+        let change = change(session.server.clone());
+        self.background.run(self.main_thread, change, move |changed| match changed {
             Ok(()) => shell.refresh(),
             Err(error) => shell.fail(moves, &error),
         });
+    }
+
+    // Downloads.
+
+    /// Does what the download button of an item's page does: downloads the
+    /// item, carries on with a download of it that stopped short, or
+    /// deletes one that is whole or on its way.
+    fn toggle_download(self: &Rc<Self>, key: &RatingKey) {
+        match self.downloads.find(key).map(|entry| entry.state) {
+            None => self.download(key),
+            Some(State::Incomplete { .. }) => self.act_on_download(Act::Resume(key.clone())),
+            Some(State::Downloading(_) | State::Downloaded) => self.downloads.remove(key),
+        }
+    }
+
+    /// Starts downloading the item with `key`. It is asked for in full
+    /// first, because that is what is kept next to its file.
+    fn download(self: &Rc<Self>, key: &RatingKey) {
+        let Some(session) = self.session() else {
+            return;
+        };
+        let (server, key) = (session.server.clone(), key.clone());
+        let asked = key.clone();
+        let ask = async move { server.item_json(&asked).await };
+        let (shell, moves) = (Rc::clone(self), self.moves.get());
+        self.background.run(self.main_thread, ask, move |item| {
+            // A second press while the first was still asking.
+            if shell.downloads.find(&key).is_some() {
+                return;
+            }
+            let added = item
+                .map_err(Error::from)
+                .and_then(|item| shell.downloads.add(&session.server, &item));
+            if let Err(error) = added {
+                shell.fail(moves, &error);
+            }
+        });
+    }
+
+    fn act_on_download(self: &Rc<Self>, act: Act) {
+        match act {
+            Act::Play(key) => {
+                if let Some(entry) = self.downloads.find(&key) {
+                    self.play(&entry.download.item, Purpose::Watching, Playback::default());
+                }
+            }
+            Act::Resume(key) => {
+                if let Some(session) = self.session() {
+                    self.downloads.start(&session.server, &key);
+                }
+            }
+            Act::Remove(key) => self.downloads.remove(&key),
+            Act::Reconnect => self.restart(),
+        }
+    }
+
+    /// Brings the screen up to date with what the downloads have done,
+    /// and with whether the server is there for them.
+    fn downloads_changed(self: &Rc<Self>) {
+        match self.current(|entry| entry.screen.clone()) {
+            Some(Screen::Downloads(_)) => self.refresh(),
+            Some(Screen::Detail(detail)) => detail.show_download(),
+            Some(Screen::Posters(_)) | None => {}
+        }
     }
 
     fn play_current(self: &Rc<Self>) {
@@ -1331,9 +1597,16 @@ impl Shell {
 
     // Playing.
 
-    /// Plays `item`, first fetching it in full: a listing leaves out the
-    /// intro and credits markers that the player offers to skip.
-    fn play(self: &Rc<Self>, item: &Item, purpose: Purpose) {
+    /// Plays `item` as `playback` says, first fetching it in full: a
+    /// listing leaves out the intro and credits markers that the player
+    /// offers to skip.
+    ///
+    /// A download plays as it was kept when the server is not there to ask.
+    fn play(self: &Rc<Self>, item: &Item, purpose: Purpose, playback: Playback) {
+        let download = self.downloads.whole(&item.rating_key);
+        if let (Some(download), false) = (&download, self.reach.get() == Reach::Answering) {
+            return self.play_kept(download, purpose, playback);
+        }
         // A second click on Play while the first is still fetching must
         // not open a second player behind the first.
         if self.playing.borrow().is_some() || self.opening_player.replace(true) {
@@ -1348,29 +1621,60 @@ impl Shell {
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |item| {
             shell.opening_player.set(false);
-            match item {
-                Ok(item) => shell.open_player(&item, purpose),
-                Err(error) => shell.fail(moves, &error),
+            match (item, download) {
+                (Ok(mut item), _) => {
+                    playback.apply(&mut item);
+                    shell.open_player(&item, purpose);
+                }
+                // The server has gone since it last answered.
+                (Err(error), Some(download)) if error.is_unanswered() => {
+                    eprintln!("plex-rust: {}", with_causes(&error));
+                    shell.reach.set(Reach::Away);
+                    shell.play_kept(&download, purpose, playback);
+                }
+                (Err(error), _) => shell.fail(moves, &error),
             }
         });
     }
 
-    /// Replaces the whole window content with the player, playing `item`.
+    /// Plays `download` as `playback` says, from where it was last left as
+    /// far as this Mac knows, with no server to say.
+    fn play_kept(self: &Rc<Self>, download: &Download, purpose: Purpose, playback: Playback) {
+        match self.downloads.as_left(download) {
+            Ok(mut item) => {
+                playback.apply(&mut item);
+                self.open_player(&item, purpose);
+            }
+            Err(error) => self.fail(self.moves.get(), &error),
+        }
+    }
+
+    /// Replaces the whole window content with the player, playing `item`:
+    /// from this Mac if it was downloaded, from the server if not.
     fn open_player(self: &Rc<Self>, item: &Item, purpose: Purpose) {
-        let Some(session) = self.session() else {
-            return;
-        };
         // Replacing a player without closing it would leave it running
         // unseen, with nothing left that could stop it.
         if self.playing.borrow().is_some() {
             return;
         }
+        let session = self.session();
+        // A download does without a server that has not answered. Anything
+        // else has only the server to come from, answering or not.
+        let downloaded = self.downloads.whole(&item.rating_key).is_some();
+        let server = match (&session, self.reach.get()) {
+            (None, _) if !downloaded => return,
+            (Some(session), Reach::Answering) => Some(session.server.clone()),
+            (Some(session), _) if !downloaded => Some(session.server.clone()),
+            _ => None,
+        };
+        let images = session.as_ref().map(|session| &session.images);
         let (closed, opened_with) = (Rc::downgrade(self), item.rating_key.clone());
         let screen = PlayerScreen::open(
             self.main_thread,
             Rc::clone(&self.background),
-            session.server.clone(),
-            &session.images,
+            server,
+            &self.downloads,
+            images,
             item,
             self.settings.get(),
             purpose,
@@ -1404,6 +1708,11 @@ impl Shell {
         self.set_window_content(&self.split);
         self.set_toolbar_visible(true);
         self.enable_commands();
+
+        if self.reach.get() == Reach::Answering {
+            // A viewing begun before the server answered was kept here.
+            self.send_unsent();
+        }
 
         let played = screen.item();
         let behind = self.current(|entry| (entry.route.clone(), entry.screen.clone()));
@@ -1504,6 +1813,8 @@ impl Shell {
     }
 
     fn show_notice(&self, notice: Notice) {
+        // A message arrives the way a page does.
+        self.fade_content();
         layout::centre(&self.content, notice.view());
         notice.announce(&self.window);
         *self.notice.borrow_mut() = Some(notice);
@@ -1575,6 +1886,9 @@ impl Shell {
         let settle = async move { tokio::time::sleep(settle).await };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, settle, move |()| {
+            if snapshot.tweaks.collapsed {
+                shell.sidebar_item.setCollapsed(true);
+            }
             let screen = shell.current(|entry| entry.screen.clone());
             if let Some(screen) = &screen {
                 if snapshot.tweaks.scroll > 0.0 {
@@ -1591,6 +1905,9 @@ impl Shell {
                 }
                 if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
                     detail.follow_link(link);
+                }
+                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.download, screen) {
+                    detail.press_download();
                 }
             }
             if let Some(failure) = snapshot.tweaks.fault {
@@ -1611,19 +1928,7 @@ impl Shell {
     }
 
     fn snapshot_and_exit(&self, path: &Path) {
-        // The content view's parent is the window's frame, which also draws
-        // the background and the title bar.
-        // SAFETY: the content view is in a window, so its parent is alive.
-        let frame = self.window.contentView().and_then(|view| unsafe { view.superview() });
-        let result = match frame {
-            Some(view) => {
-                // A window that was never on screen has not laid out yet.
-                view.layoutSubtreeIfNeeded();
-                snapshot::write_png(&view, path)
-            }
-            None => Err(Error::Snapshot),
-        };
-        if let Err(error) = result {
+        if let Err(error) = snapshot::write_png(&self.window, path) {
             eprintln!("plex-rust: {}", with_causes(&error));
             std::process::exit(1);
         }
@@ -1639,6 +1944,7 @@ fn title(route: &Route) -> &str {
         Route::List { title, .. } => title,
         Route::Item(item, _) => &item.title,
         Route::Search(_) => "Search",
+        Route::Downloads => "Downloads",
     }
 }
 
@@ -1647,6 +1953,7 @@ fn destination_of(route: &Route) -> Option<Destination> {
     match route {
         Route::Home => Some(Destination::Home),
         Route::Library(section, _) => Some(Destination::Section(section.clone())),
+        Route::Downloads => Some(Destination::Downloads),
         Route::List { .. } | Route::Item(..) | Route::Search(_) => None,
     }
 }
@@ -1671,6 +1978,23 @@ fn home_shelves(hubs: &[Hub]) -> Vec<Shelf> {
         .collect()
 }
 
+/// The shelves the home screen is drawn with until the server names its
+/// own: what is being watched, then what was added of each kind the
+/// libraries hold, under the titles the server gives those shelves. With
+/// the same headings before and after, nothing moves when the answer lands.
+fn home_outlines(sections: &[Section]) -> Vec<Outline> {
+    let holds = |kind| sections.iter().any(|section| section.kind == kind);
+    let added = |title| Outline { title, style: Style::Shelf(Shape::Poster), count: 10 };
+    let mut outlines = vec![Outline {
+        title: "Continue Watching",
+        style: Style::Shelf(Shape::Landscape),
+        count: 6,
+    }];
+    outlines.extend(holds(Kind::Movie).then(|| added("Recently Added Movies")));
+    outlines.extend(holds(Kind::Show).then(|| added("Recently Added TV")));
+    outlines
+}
+
 /// The shelves of a search: one per kind of result, episodes as frames.
 fn search_shelves(hubs: &[Hub]) -> Vec<Shelf> {
     hubs.iter()
@@ -1693,22 +2017,29 @@ fn saved_server(client: &Client) -> Result<(PathBuf, Option<MediaServer>)> {
     Ok((responses, saved))
 }
 
-fn window(main_thread: MainThreadMarker) -> Retained<NSWindow> {
+/// The main window. `staged` makes it one a snapshot can keep off every
+/// display.
+fn window(main_thread: MainThreadMarker, staged: bool) -> Retained<NSWindow> {
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
         | NSWindowStyleMask::Resizable
         | NSWindowStyleMask::FullSizeContentView;
-    // SAFETY: the arguments are valid, and `setReleasedWhenClosed(false)`
-    // below gives the window the ownership rules `Retained` expects.
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(main_thread),
-            NSRect::new(NSPoint::ZERO, theme::WINDOW_SIZE),
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        )
+    let frame = NSRect::new(NSPoint::ZERO, theme::WINDOW_SIZE);
+    let window = if staged {
+        snapshot::window(frame, style, main_thread)
+    } else {
+        // SAFETY: the arguments are valid, and `setReleasedWhenClosed(false)`
+        // below gives the window the ownership rules `Retained` expects.
+        unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(main_thread),
+                frame,
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        }
     };
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };

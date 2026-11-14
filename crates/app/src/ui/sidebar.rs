@@ -6,9 +6,9 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSControlTextEditingDelegate, NSImage, NSImageView, NSScrollView, NSStackView,
-    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
-    NSTextField, NSView,
+    NSAccessibility, NSControlTextEditingDelegate, NSImage, NSImageView, NSLayoutConstraint,
+    NSLineBreakMode, NSScrollView, NSTableCellView, NSTableColumn, NSTableView,
+    NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField, NSView,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSString, ns_string,
@@ -22,6 +22,7 @@ use super::theme;
 pub enum Destination {
     Home,
     Section(Section),
+    Downloads,
 }
 
 impl Destination {
@@ -29,6 +30,7 @@ impl Destination {
         match self {
             Self::Home => "Home",
             Self::Section(section) => &section.title,
+            Self::Downloads => "Downloads",
         }
     }
 
@@ -38,6 +40,7 @@ impl Destination {
             Self::Home => "house",
             Self::Section(section) if section.kind == Kind::Show => "tv",
             Self::Section(_) => "film",
+            Self::Downloads => "arrow.down.circle",
         }
     }
 }
@@ -101,7 +104,6 @@ impl Sidebar {
         let table = NSTableView::new(main_thread);
         table.setStyle(NSTableViewStyle::SourceList);
         table.setHeaderView(None);
-        table.setRowHeight(theme::SIDEBAR_ROW_HEIGHT);
         let column = NSTableColumn::initWithIdentifier(
             NSTableColumn::alloc(main_thread),
             ns_string!("destination"),
@@ -161,21 +163,40 @@ impl Sidebar {
     }
 }
 
+/// A row as the system lays one out in a source list. The table sizes and
+/// colours the cell's own image and text for the sidebar, for a selected
+/// row and for a window that is not in front.
 fn row_view(destination: &Destination, main_thread: MainThreadMarker) -> Retained<NSView> {
+    let cell = NSTableCellView::new(main_thread);
     let label = NSTextField::labelWithString(&NSString::from_str(destination.title()), main_thread);
-    let mut views: Vec<Retained<NSView>> = Vec::new();
-
+    label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    let glyph = NSImageView::new(main_thread);
     let symbol = NSString::from_str(destination.symbol());
-    if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol, None)
-    {
-        let glyph = NSImageView::imageViewWithImage(&image, main_thread);
-        // The title next to it says what the row is.
-        glyph.setAccessibilityElement(false);
-        views.push(Retained::into_super(Retained::into_super(glyph)));
-    }
-    views.push(Retained::into_super(Retained::into_super(label)));
+    glyph.setImage(
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol, None).as_deref(),
+    );
+    // The title next to it says what the row is.
+    glyph.setAccessibilityElement(false);
 
-    let row = NSStackView::stackViewWithViews(&NSArray::from_retained_slice(&views), main_thread);
-    row.setSpacing(theme::SIDEBAR_ICON_GAP);
-    Retained::into_super(row)
+    for view in [&**glyph, &**label] {
+        view.setTranslatesAutoresizingMaskIntoConstraints(false);
+        cell.addSubview(view);
+    }
+    // SAFETY: the cell does not retain these. They are its subviews, so
+    // they live as long as it does.
+    unsafe {
+        cell.setImageView(Some(&glyph));
+        cell.setTextField(Some(&label));
+    }
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        glyph.leadingAnchor().constraintEqualToAnchor(&cell.leadingAnchor()),
+        glyph.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
+        glyph.widthAnchor().constraintEqualToConstant(theme::SIDEBAR_ICON_WIDTH),
+        label
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&glyph.trailingAnchor(), theme::SIDEBAR_ICON_GAP),
+        label.trailingAnchor().constraintEqualToAnchor(&cell.trailingAnchor()),
+        label.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
+    ]));
+    Retained::into_super(cell)
 }

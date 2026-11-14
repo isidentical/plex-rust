@@ -1,5 +1,5 @@
 //! A piece of artwork as every screen shows it: rounded, filled edge to
-//! edge, with its progress, its unwatched mark and its reaction to the
+//! edge, with its progress, its watched mark and its reaction to the
 //! pointer.
 
 use std::cell::{Cell, RefCell};
@@ -26,9 +26,10 @@ use crate::images::{Artwork, Images};
 /// What sits in the corner of the artwork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Badge {
+    /// Not watched yet, which is how things start out and needs no mark.
     None,
-    /// Not watched yet.
-    Unwatched,
+    /// Watched to the end.
+    Watched,
     /// This many episodes inside are not watched yet.
     Left(u32),
 }
@@ -44,12 +45,10 @@ pub struct ArtView {
     /// Darkens the picture under the play glyph.
     scrim: Retained<NSView>,
     play: Retained<NSImageView>,
-    /// Stands in for a picture there is none of.
-    placeholder: Retained<NSImageView>,
     track: Retained<NSView>,
     fill: Retained<NSView>,
     fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
-    dot: Retained<NSView>,
+    check: Retained<NSView>,
     pill: Retained<NSView>,
     count: Retained<NSTextField>,
     /// The artwork path this view is waiting for. A cell is reused for
@@ -98,17 +97,6 @@ impl ArtView {
         ]));
         layout::cover(&root, &picture);
 
-        let placeholder = NSImageView::new(main_thread);
-        placeholder.setContentTintColor(Some(&theme::white(theme::PLACEHOLDER_GLYPH_OPACITY)));
-        placeholder.setTranslatesAutoresizingMaskIntoConstraints(false);
-        placeholder.setHidden(true);
-        placeholder.setAccessibilityElement(false);
-        picture.addSubview(&placeholder);
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            placeholder.centerXAnchor().constraintEqualToAnchor(&picture.centerXAnchor()),
-            placeholder.centerYAnchor().constraintEqualToAnchor(&picture.centerYAnchor()),
-        ]));
-
         let scrim = layered(main_thread);
         fill_with(&scrim, &theme::black(theme::HOVER_SCRIM_OPACITY));
         scrim.setAlphaValue(0.0);
@@ -144,21 +132,10 @@ impl ArtView {
             fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
         ]));
 
-        let dot = layered(main_thread);
-        fill_with(&dot, &NSColor::controlAccentColor());
-        if let Some(layer) = dot.layer() {
-            layer.setCornerRadius(theme::BADGE_DOT_SIZE / 2.0);
-            // A white rim keeps the dot apart from dark artwork, and its
-            // own colour keeps it apart from light artwork.
-            layer.setBorderWidth(theme::BADGE_DOT_RIM_WIDTH);
-            layer.setBorderColor(Some(&theme::white(theme::BADGE_DOT_RIM_OPACITY).CGColor()));
-            layer.setShadowOpacity(theme::BADGE_SHADOW_OPACITY);
-            layer.setShadowRadius(theme::BADGE_SHADOW_RADIUS);
-            layer.setShadowOffset(CGSize::ZERO);
-        }
+        let check = check_mark(main_thread);
         let (pill, count) = count_pill(main_thread);
         let inset = theme::BADGE_INSET;
-        for badge in [&dot, &pill] {
+        for badge in [&check, &pill] {
             picture.addSubview(badge);
             NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
                 badge
@@ -167,10 +144,6 @@ impl ArtView {
                 badge.topAnchor().constraintEqualToAnchor_constant(&picture.topAnchor(), inset),
             ]));
         }
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            dot.widthAnchor().constraintEqualToConstant(theme::BADGE_DOT_SIZE),
-            dot.heightAnchor().constraintEqualToConstant(theme::BADGE_DOT_SIZE),
-        ]));
 
         let art = Self {
             root,
@@ -178,11 +151,10 @@ impl ArtView {
             picture,
             scrim,
             play,
-            placeholder,
             track,
             fill,
             fill_width: RefCell::new(None),
-            dot,
+            check,
             pill,
             count,
             wanted: Rc::new(RefCell::new(None)),
@@ -209,18 +181,8 @@ impl ArtView {
     /// Shows the artwork at server path `path`, requested for a box of
     /// `size` points. A picture already in memory appears at once. One that
     /// has to be fetched fades in when it arrives. Without a path, the
-    /// SF Symbol `placeholder` stands in, if one is given.
-    pub fn show(
-        &self,
-        path: Option<&str>,
-        size: (u32, u32),
-        placeholder: Option<&str>,
-        images: &Rc<Images>,
-    ) {
-        let glyph = placeholder.filter(|_| path.is_none());
-        let glyph = glyph.and_then(|name| symbol(name, theme::PORTRAIT_GLYPH_SIZE));
-        self.placeholder.setImage(glyph.as_deref());
-        self.placeholder.setHidden(glyph.is_none());
+    /// empty frame stays.
+    pub fn show(&self, path: Option<&str>, size: (u32, u32), images: &Rc<Images>) {
         // The same picture is already here or on its way. Asking again
         // would fetch and decode it a second time.
         if path.is_some() && self.wanted.borrow().as_deref() == path {
@@ -244,7 +206,7 @@ impl ArtView {
                 let fade = CATransition::new();
                 // SAFETY: the type is a constant that Core Animation provides.
                 fade.setType(unsafe { kCATransitionFade });
-                fade.setDuration(theme::ARTWORK_FADE);
+                fade.setDuration(theme::MOTION_ARRIVE);
                 layer.addAnimation_forKey(&fade, Some(ns_string!("contents")));
             }
             set_contents(&picture, Some(artwork));
@@ -282,7 +244,7 @@ impl ArtView {
     }
 
     pub fn set_badge(&self, badge: Badge) {
-        self.dot.setHidden(badge != Badge::Unwatched);
+        self.check.setHidden(badge != Badge::Watched);
         self.pill.setHidden(!matches!(badge, Badge::Left(_)));
         if let Badge::Left(episodes) = badge {
             label::set(&self.count, &episodes.to_string());
@@ -337,7 +299,7 @@ impl ArtView {
     fn restyle_animated(&self) {
         NSAnimationContext::beginGrouping();
         let context = NSAnimationContext::currentContext();
-        context.setDuration(theme::HOVER_DURATION);
+        context.setDuration(theme::MOTION_FAST);
         context.setAllowsImplicitAnimation(true);
         self.restyle();
         NSAnimationContext::endGrouping();
@@ -416,27 +378,49 @@ pub fn fill_with(view: &NSView, color: &NSColor) {
     }
 }
 
-/// An SF Symbol at `size` points.
-pub fn symbol(name: &str, size: f64) -> Option<Retained<NSImage>> {
+/// An SF Symbol at `size` points, as heavy as the text it stands with.
+pub fn symbol(name: &str, size: f64, weight: Weight) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(name),
         None,
     )?;
-    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(
-        size,
-        Weight::Semibold.value(),
-    );
+    let configuration =
+        NSImageSymbolConfiguration::configurationWithPointSize_weight(size, weight.value());
     image.imageWithSymbolConfiguration(&configuration)
 }
 
 fn play_glyph(main_thread: MainThreadMarker) -> Retained<NSImageView> {
     let glyph = NSImageView::new(main_thread);
-    glyph.setImage(symbol("play.circle.fill", theme::PLAY_GLYPH_SIZE).as_deref());
+    glyph.setImage(symbol("play.circle.fill", theme::PLAY_GLYPH_SIZE, Weight::Regular).as_deref());
     glyph.setContentTintColor(Some(&NSColor::whiteColor()));
     glyph.setTranslatesAutoresizingMaskIntoConstraints(false);
     // The card it is on speaks for it.
     glyph.setAccessibilityElement(false);
     glyph
+}
+
+/// A dark disc with a tick in it: quiet enough to sit on every poster of
+/// a library that was watched through.
+fn check_mark(main_thread: MainThreadMarker) -> Retained<NSView> {
+    let disc = layered(main_thread);
+    fill_with(&disc, &theme::black(theme::BADGE_BACKGROUND_OPACITY));
+    if let Some(layer) = disc.layer() {
+        layer.setCornerRadius(theme::BADGE_HEIGHT / 2.0);
+    }
+    let tick = NSImageView::new(main_thread);
+    tick.setImage(symbol("checkmark", theme::FONT_CAPTION, Weight::Bold).as_deref());
+    tick.setContentTintColor(Some(&NSColor::whiteColor()));
+    tick.setTranslatesAutoresizingMaskIntoConstraints(false);
+    // The card it is on says it.
+    tick.setAccessibilityElement(false);
+    disc.addSubview(&tick);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        disc.widthAnchor().constraintEqualToConstant(theme::BADGE_HEIGHT),
+        disc.heightAnchor().constraintEqualToConstant(theme::BADGE_HEIGHT),
+        tick.centerXAnchor().constraintEqualToAnchor(&disc.centerXAnchor()),
+        tick.centerYAnchor().constraintEqualToAnchor(&disc.centerYAnchor()),
+    ]));
+    disc
 }
 
 /// A dark capsule with a number in it.
