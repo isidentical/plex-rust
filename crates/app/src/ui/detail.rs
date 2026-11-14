@@ -954,7 +954,7 @@ impl Pill {
     }
 
     fn set_symbol(&self, symbol: &str) {
-        let image = artwork::symbol(symbol, theme::FONT_BODY);
+        let image = artwork::symbol(symbol, theme::FONT_BODY, Weight::Semibold);
         if let (Some(image), true) = (&image, self.prominent) {
             // A button sets its title right against its image. Widening
             // the rectangle the image is laid out by puts a gap between.

@@ -147,7 +147,7 @@ impl Views {
         let wash = artwork::layered(main_thread);
         artwork::fill_with(&wash, &theme::white(theme::ROW_HOVER_OPACITY));
         if let Some(layer) = wash.layer() {
-            layer.setCornerRadius(theme::RADIUS_L);
+            layer.setCornerRadius(theme::RADIUS_XL);
         }
         wash.setAlphaValue(0.0);
         Self {

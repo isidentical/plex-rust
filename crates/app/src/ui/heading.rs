@@ -24,7 +24,7 @@ pub fn fill(
     let words = label::line(theme::FONT_TITLE, Weight::Bold, &NSColor::labelColor(), main_thread);
     label::set(&words, title);
     let chevron = NSImageView::new(main_thread);
-    chevron.setImage(artwork::symbol("chevron.right", theme::FONT_BODY).as_deref());
+    chevron.setImage(artwork::symbol("chevron.right", theme::FONT_BODY, Weight::Bold).as_deref());
     chevron.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
     chevron.setTranslatesAutoresizingMaskIntoConstraints(false);
     chevron.setAccessibilityElement(false);

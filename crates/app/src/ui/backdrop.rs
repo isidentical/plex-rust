@@ -97,7 +97,7 @@ impl Backdrop {
             let fade = CATransition::new();
             // SAFETY: the type is a constant that Core Animation provides.
             fade.setType(unsafe { kCATransitionFade });
-            fade.setDuration(theme::ARTWORK_FADE);
+            fade.setDuration(theme::MOTION_ARRIVE);
             art.addAnimation_forKey(&fade, Some(ns_string!("contents")));
             // SAFETY: the contents are a decoded CGImage.
             unsafe { art.setContents(Some(artwork.contents())) };

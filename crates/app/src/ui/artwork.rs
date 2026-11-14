@@ -218,7 +218,8 @@ impl ArtView {
         images: &Rc<Images>,
     ) {
         let glyph = placeholder.filter(|_| path.is_none());
-        let glyph = glyph.and_then(|name| symbol(name, theme::PORTRAIT_GLYPH_SIZE));
+        let glyph =
+            glyph.and_then(|name| symbol(name, theme::PORTRAIT_GLYPH_SIZE, Weight::Regular));
         self.placeholder.setImage(glyph.as_deref());
         self.placeholder.setHidden(glyph.is_none());
         // The same picture is already here or on its way. Asking again
@@ -244,7 +245,7 @@ impl ArtView {
                 let fade = CATransition::new();
                 // SAFETY: the type is a constant that Core Animation provides.
                 fade.setType(unsafe { kCATransitionFade });
-                fade.setDuration(theme::ARTWORK_FADE);
+                fade.setDuration(theme::MOTION_ARRIVE);
                 layer.addAnimation_forKey(&fade, Some(ns_string!("contents")));
             }
             set_contents(&picture, Some(artwork));
@@ -337,7 +338,7 @@ impl ArtView {
     fn restyle_animated(&self) {
         NSAnimationContext::beginGrouping();
         let context = NSAnimationContext::currentContext();
-        context.setDuration(theme::HOVER_DURATION);
+        context.setDuration(theme::MOTION_FAST);
         context.setAllowsImplicitAnimation(true);
         self.restyle();
         NSAnimationContext::endGrouping();
@@ -416,22 +417,20 @@ pub fn fill_with(view: &NSView, color: &NSColor) {
     }
 }
 
-/// An SF Symbol at `size` points.
-pub fn symbol(name: &str, size: f64) -> Option<Retained<NSImage>> {
+/// An SF Symbol at `size` points, as heavy as the text it stands with.
+pub fn symbol(name: &str, size: f64, weight: Weight) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(name),
         None,
     )?;
-    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(
-        size,
-        Weight::Semibold.value(),
-    );
+    let configuration =
+        NSImageSymbolConfiguration::configurationWithPointSize_weight(size, weight.value());
     image.imageWithSymbolConfiguration(&configuration)
 }
 
 fn play_glyph(main_thread: MainThreadMarker) -> Retained<NSImageView> {
     let glyph = NSImageView::new(main_thread);
-    glyph.setImage(symbol("play.circle.fill", theme::PLAY_GLYPH_SIZE).as_deref());
+    glyph.setImage(symbol("play.circle.fill", theme::PLAY_GLYPH_SIZE, Weight::Regular).as_deref());
     glyph.setContentTintColor(Some(&NSColor::whiteColor()));
     glyph.setTranslatesAutoresizingMaskIntoConstraints(false);
     // The card it is on speaks for it.

@@ -1,4 +1,28 @@
-//! Sizes, spacing and colours. No other file holds a literal measurement.
+//! The design scale: the one set of sizes for type, spacing, corners and
+//! motion that every screen and the player are drawn from. No other file
+//! holds a literal measurement.
+//!
+//! Type is the system font at five sizes, each set in its own weight:
+//!
+//! | size | points | weight | for |
+//! | --- | --- | --- | --- |
+//! | large title | 34 | bold | the name of what a page is about |
+//! | title | 20 | bold | a shelf's heading, a notice |
+//! | headline | 15 | semibold | a name within a page, the player's title |
+//! | body | 13 | regular | running text, and semibold for a card's title or a button |
+//! | caption | 11 | regular | the second line under a card, small print |
+//!
+//! Space is in steps of 2, 4, 8, 12, 16, 24 and 32 points.
+//!
+//! Corners are 4, 8, 12, 16 and 24 points, chosen by what the shape is:
+//! 4 for a badge, 8 for a card or a control, 12 for artwork too large to
+//! be a card. A shape that holds another is concentric with it: its radius
+//! is the inner one plus the gap between them, so 16 around a card with 8
+//! points of room and 24 around a control with 16.
+//!
+//! Motion is 0.12 seconds for an answer to the pointer, 0.2 for something
+//! arriving and 0.35 for something leaving. Nothing moves unasked, and
+//! nothing grows or slides when the viewer asked for less motion.
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSWorkspace};
@@ -9,14 +33,12 @@ pub const WINDOW_MIN_SIZE: NSSize = NSSize { width: 880.0, height: 560.0 };
 /// A window filling a large display, for a snapshot.
 pub const WINDOW_WIDE_SIZE: NSSize = NSSize { width: 2200.0, height: 1200.0 };
 
-// The type scale. Every label uses one of these sizes.
 pub const FONT_LARGE_TITLE: f64 = 34.0;
 pub const FONT_TITLE: f64 = 20.0;
 pub const FONT_HEADLINE: f64 = 15.0;
 pub const FONT_BODY: f64 = 13.0;
 pub const FONT_CAPTION: f64 = 11.0;
 
-// The spacing scale. Every gap and margin is one of these.
 pub const SPACE_XXS: f64 = 2.0;
 pub const SPACE_XS: f64 = 4.0;
 pub const SPACE_S: f64 = 8.0;
@@ -25,10 +47,19 @@ pub const SPACE_L: f64 = 16.0;
 pub const SPACE_XL: f64 = 24.0;
 pub const SPACE_XXL: f64 = 32.0;
 
-// The corner scale.
 pub const RADIUS_S: f64 = 4.0;
 pub const RADIUS_M: f64 = 8.0;
 pub const RADIUS_L: f64 = 12.0;
+pub const RADIUS_XL: f64 = 16.0;
+pub const RADIUS_XXL: f64 = 24.0;
+
+/// How long an answer to the pointer takes: a hover, a press, controls
+/// coming up.
+pub const MOTION_FAST: f64 = 0.12;
+/// How long something takes to arrive: a picture, the next page.
+pub const MOTION_ARRIVE: f64 = 0.2;
+/// How long something takes to leave when nobody sent it away.
+pub const MOTION_LEAVE: f64 = 0.35;
 
 pub const PAGE_MARGIN: f64 = SPACE_XXL;
 pub const CELL_SPACING: f64 = SPACE_L;
@@ -86,14 +117,11 @@ pub const ROW_HOVER_OPACITY: f64 = 0.06;
 // What a card does under the pointer and under a press.
 pub const HOVER_SCALE: f64 = 1.04;
 pub const PRESS_SCALE: f64 = 0.98;
-pub const HOVER_DURATION: f64 = 0.12;
 pub const HOVER_SHADOW_OPACITY: f32 = 0.6;
 pub const HOVER_SHADOW_RADIUS: f64 = 14.0;
 pub const HOVER_SHADOW_DROP: f64 = 8.0;
 pub const HOVER_SCRIM_OPACITY: f64 = 0.28;
 pub const PLAY_GLYPH_SIZE: f64 = 44.0;
-/// How long freshly loaded artwork takes to fade in.
-pub const ARTWORK_FADE: f64 = 0.18;
 pub const ARTWORK_OUTLINE_WIDTH: f64 = 1.0;
 pub const ARTWORK_OUTLINE_OPACITY: f64 = 0.10;
 pub const ARTWORK_HOVER_OUTLINE_OPACITY: f64 = 0.35;
@@ -101,7 +129,7 @@ pub const ARTWORK_PLACEHOLDER_OPACITY: f64 = 0.06;
 pub const FOCUS_RING_WIDTH: f64 = 3.0;
 /// How far outside the artwork the outer edge of the focus ring is, which
 /// leaves a gap between the two.
-pub const FOCUS_RING_OUTSET: f64 = 5.0;
+pub const FOCUS_RING_OUTSET: f64 = FOCUS_RING_WIDTH + SPACE_XXS;
 /// Around the card for the episode a page is about.
 pub const CURRENT_OUTLINE_WIDTH: f64 = 2.0;
 pub const CURRENT_OUTLINE_OPACITY: f64 = 0.9;
@@ -116,11 +144,8 @@ pub const BADGE_DOT_RIM_OPACITY: f64 = 0.95;
 pub const BADGE_SHADOW_OPACITY: f32 = 0.5;
 pub const BADGE_SHADOW_RADIUS: f64 = 2.0;
 pub const BADGE_HEIGHT: f64 = 20.0;
-pub const BADGE_PADDING: f64 = 7.0;
+pub const BADGE_PADDING: f64 = SPACE_S;
 pub const BADGE_BACKGROUND_OPACITY: f64 = 0.7;
-
-/// How long one screen takes to fade into the next.
-pub const SCREEN_FADE: f64 = 0.15;
 
 /// The top of a detail page: artwork on the left, text beside it.
 pub const HERO_HEIGHT: f64 = 380.0;
@@ -129,7 +154,8 @@ pub const SEASON_BAR_HEIGHT: f64 = 52.0;
 /// The buttons of a detail page, drawn as capsules.
 pub const PILL_HEIGHT: f64 = 36.0;
 pub const PILL_PADDING: f64 = SPACE_L;
-/// Between the glyph of a button and its title.
+/// Between the glyph of a button and its title, in the pages and in the
+/// player. The one gap off the scale: it is inside a single control.
 pub const PILL_GLYPH_GAP: f64 = 6.0;
 /// How strongly white is laid under a button that is not the main one.
 pub const PILL_WASH_OPACITY: f64 = 0.16;
@@ -172,7 +198,6 @@ pub const HOME_HERO_REQUEST: (u32, u32) = (960, 540);
 /// and how far across the darkening reaches before it is gone.
 pub const HOME_HERO_SCRIM_OPACITY: f64 = 0.85;
 pub const HOME_HERO_SCRIM_REACH: f64 = 0.75;
-pub const HOME_HERO_FACTS_OPACITY: f64 = 0.8;
 /// The bar beside the hero's button that shows how much was watched.
 pub const HOME_HERO_PROGRESS_WIDTH: f64 = 160.0;
 pub const HOME_HERO_TRACK_OPACITY: f64 = 0.3;
@@ -219,6 +244,9 @@ pub fn backdrop_opacity() -> f32 {
 pub fn page_background() -> Retained<NSColor> {
     NSColor::windowBackgroundColor()
 }
+
+/// How strong white text of the second rank is on artwork and on video.
+pub const SECONDARY_ON_ART_OPACITY: f64 = 0.8;
 
 /// White at `opacity`, for outlines and overlays on artwork.
 pub fn white(opacity: f64) -> Retained<NSColor> {

@@ -968,7 +968,7 @@ impl Shell {
             let transition = CATransition::new();
             // SAFETY: the type is a constant that Core Animation provides.
             transition.setType(unsafe { kCATransitionFade });
-            transition.setDuration(theme::SCREEN_FADE);
+            transition.setDuration(theme::MOTION_ARRIVE);
             layer.addAnimation_forKey(&transition, Some(ns_string!("screen")));
         }
         layout::fill(&self.content, view);

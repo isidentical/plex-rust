@@ -94,7 +94,7 @@ impl Hero {
             }
         };
 
-        let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
+        let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_XL));
         art.set_flat();
         let lit = Rc::clone(&art);
         let card =
@@ -113,7 +113,7 @@ impl Hero {
         layout::cover(&card, &overlay);
 
         let white = NSColor::whiteColor();
-        let faint = theme::white(theme::HOME_HERO_FACTS_OPACITY);
+        let faint = theme::white(theme::SECONDARY_ON_ART_OPACITY);
         let shelf = label::line(theme::FONT_BODY, Weight::Semibold, &faint, main_thread);
         let title = label::line(theme::FONT_LARGE_TITLE, Weight::Bold, &white, main_thread);
         let facts = label::line(theme::FONT_HEADLINE, Weight::Medium, &faint, main_thread);
@@ -307,7 +307,7 @@ fn scrim(main_thread: MainThreadMarker) -> Retained<NSView> {
     );
     if let Some(layer) = view.layer() {
         gradient.setFrame(layer.bounds());
-        layer.setCornerRadius(theme::RADIUS_L);
+        layer.setCornerRadius(theme::RADIUS_XL);
         // SAFETY: the curve is a constant that Core Animation provides.
         unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
         layer.setMasksToBounds(true);
