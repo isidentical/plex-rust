@@ -3,6 +3,7 @@
 mod account;
 mod background;
 mod error;
+mod images;
 mod play;
 mod progress;
 mod ui;

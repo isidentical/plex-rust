@@ -16,6 +16,7 @@ use objc2_foundation::{NSPoint, NSRect, NSString, ns_string};
 use plex::MediaServer;
 use plex::model::Section;
 
+use super::home::Home;
 use super::layout;
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
@@ -23,15 +24,28 @@ use super::theme;
 use crate::account;
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
+use crate::images::Images;
+
+/// How many items each shelf of the home screen starts with.
+const SHELF_LENGTH: u32 = 20;
 
 struct Shell {
     main_thread: MainThreadMarker,
+    background: Rc<Background>,
     window: Retained<NSWindow>,
     /// The area right of the sidebar. Its one subview is the current place.
     content: Retained<NSView>,
     // Set once, right after the shell exists, because the sidebar's
     // selection handler needs the shell.
     sidebar: OnceCell<Retained<Sidebar>>,
+    /// Set once the server has answered.
+    session: OnceCell<Session>,
+}
+
+/// What exists only while connected to a server.
+struct Session {
+    server: MediaServer,
+    home: Retained<Home>,
 }
 
 /// How long a snapshot waits after the window has its content, so that
@@ -57,7 +71,7 @@ pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
         NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).as_deref(),
     );
 
-    let shell = Shell::new(main_thread);
+    let shell = Shell::new(main_thread, Rc::clone(&background));
     if snapshot.is_none() {
         shell.window.makeKeyAndOrderFront(None);
         #[allow(deprecated)]
@@ -75,7 +89,11 @@ pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
     let settle = Rc::clone(&background);
     background.run(main_thread, connect, move |result| {
         match result {
-            Ok((_server, sections)) => loaded.show_destinations(sections),
+            Ok((server, sections)) => {
+                if let Err(error) = loaded.connected(server, sections) {
+                    loaded.show_message(&with_causes(&error));
+                }
+            }
             Err(error) => loaded.show_message(&with_causes(&error)),
         }
         if let Some(path) = snapshot {
@@ -90,21 +108,23 @@ pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
 }
 
 impl Shell {
-    fn new(main_thread: MainThreadMarker) -> Rc<Self> {
+    fn new(main_thread: MainThreadMarker, background: Rc<Background>) -> Rc<Self> {
         let content = NSView::new(main_thread);
         let content_controller = view_controller(main_thread);
         content_controller.setView(&content);
         let shell = Rc::new(Self {
             main_thread,
+            background,
             window: window(main_thread),
             content,
             sidebar: OnceCell::new(),
+            session: OnceCell::new(),
         });
 
         let selected = Rc::downgrade(&shell);
         let sidebar = Sidebar::new(main_thread, move |destination| {
             if let Some(shell) = selected.upgrade() {
-                shell.show_message(destination.title());
+                shell.go_to(destination);
             }
         });
         let sidebar_controller = view_controller(main_thread);
@@ -126,6 +146,41 @@ impl Shell {
         let _ = shell.sidebar.set(sidebar);
         shell.show_message("Connecting to your server");
         shell
+    }
+
+    fn connected(self: &Rc<Self>, server: MediaServer, sections: Vec<Section>) -> Result<()> {
+        let images = Images::new(
+            self.main_thread,
+            Rc::clone(&self.background),
+            server.clone(),
+        )?;
+        let home = Home::new(self.main_thread, Rc::new(images));
+        // Cannot fail: the server is connected to once per launch.
+        let _ = self.session.set(Session { server, home });
+        self.show_destinations(sections);
+        Ok(())
+    }
+
+    fn go_to(self: &Rc<Self>, destination: &Destination) {
+        match (destination, self.session.get()) {
+            (Destination::Home, Some(session)) => self.show_home(session),
+            _ => self.show_message(destination.title()),
+        }
+    }
+
+    fn show_home(self: &Rc<Self>, session: &Session) {
+        layout::fill(&self.content, session.home.view());
+
+        let server = session.server.clone();
+        let shell = Rc::clone(self);
+        let load = async move { server.home(SHELF_LENGTH).await };
+        self.background.run(self.main_thread, load, move |hubs| {
+            match (hubs, shell.session.get()) {
+                (Ok(hubs), Some(session)) => session.home.show(hubs),
+                (Err(error), _) => shell.show_message(&with_causes(&error)),
+                (Ok(_), None) => {}
+            }
+        });
     }
 
     fn show_destinations(&self, sections: Vec<Section>) {

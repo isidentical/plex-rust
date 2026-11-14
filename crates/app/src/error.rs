@@ -29,6 +29,9 @@ pub enum Error {
     #[error("the window could not be drawn into an image")]
     Snapshot,
 
+    #[error("the server sent artwork that is not an image")]
+    NotAnImage,
+
     #[error("not signed in, run `reel login` first")]
     SignedOut,
 
