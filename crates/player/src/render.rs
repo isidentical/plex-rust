@@ -187,6 +187,11 @@ fn choose_pixel_format() -> Result<CGLPixelFormatObj> {
         CGLPixelFormatAttribute(CGLOpenGLProfile::CGLOGLPVersion_3_2_Core.0),
         CGLPixelFormatAttribute::CGLPFAAccelerated,
         CGLPixelFormatAttribute::CGLPFADoubleBuffer,
+        // Floating point colour, 16 bits a channel. HDR needs values above
+        // 1.0, which an 8 bit integer surface cannot hold.
+        CGLPixelFormatAttribute::CGLPFAColorSize,
+        CGLPixelFormatAttribute(64),
+        CGLPixelFormatAttribute::CGLPFAColorFloat,
         CGLPixelFormatAttribute::CGLPFAAllowOfflineRenderers,
         CGLPixelFormatAttribute(0),
     ];

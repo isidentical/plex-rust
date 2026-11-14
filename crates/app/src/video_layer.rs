@@ -13,12 +13,16 @@ use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Allocated, Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
+use objc2_app_kit::NSView;
 use objc2_core_foundation::CFTimeInterval;
+use objc2_core_graphics::{
+    CGColorSpace, kCGColorSpaceDisplayP3_PQ, kCGColorSpaceITUR_2100_PQ, kCGColorSpaceSRGB,
+};
 use objc2_core_video::CVTimeStamp;
 use objc2_foundation::NSObject;
 use objc2_open_gl::{CGLContextObj, CGLPixelFormatObj, CGLRetainContext, CGLRetainPixelFormat};
 use objc2_quartz_core::{CALayer, CAOpenGLLayer};
-use player::{Player, Renderer};
+use player::{Colors, Player, Renderer};
 
 pub struct Ivars {
     renderer: Rc<Renderer>,
@@ -99,6 +103,51 @@ impl VideoLayer {
         layer.setNeedsDisplayOnBoundsChange(true);
         Ok(layer)
     }
+}
+
+impl VideoLayer {
+    /// Sets up the layer and the player for the colours of the video that
+    /// is playing. Call it whenever the player reports a change of picture.
+    ///
+    /// An HDR picture is shown in HDR when `display_has_headroom`, that is
+    /// when the display can go brighter than SDR white. Otherwise, and for
+    /// SDR pictures, the output is sRGB, which macOS then matches to the
+    /// display. The layer and the player must always agree, or colours come
+    /// out wrong, so both are set here and nowhere else.
+    ///
+    /// This follows IINA, which drives the same mpv renderer through the
+    /// same kind of layer.
+    pub fn match_video(&self, player: &Player, display_has_headroom: bool) -> player::Result<()> {
+        let Some(video) = player.video_colors()? else {
+            return Ok(());
+        };
+        let output = if display_has_headroom { video } else { Colors::Sdr };
+        // SAFETY: the names are constants that Core Graphics provides.
+        let name = unsafe {
+            match output {
+                Colors::Sdr => kCGColorSpaceSRGB,
+                Colors::HdrBt2020 => kCGColorSpaceITUR_2100_PQ,
+                Colors::HdrDisplayP3 => kCGColorSpaceDisplayP3_PQ,
+            }
+        };
+        self.setWantsExtendedDynamicRangeContent(output != Colors::Sdr);
+        self.setColorspace(CGColorSpace::with_name(Some(name)).as_deref());
+        player.set_output_colors(output)
+    }
+}
+
+/// Does [`VideoLayer::match_video`] for the video layer that `view` hosts,
+/// on the display the view's window is on. Does nothing while the view is
+/// in no window.
+pub fn match_video_in(view: &NSView, player: &Player) -> player::Result<()> {
+    let layer = view.layer().and_then(|layer| layer.downcast::<VideoLayer>().ok());
+    let screen = view.window().and_then(|window| window.screen());
+    let (Some(layer), Some(screen)) = (layer, screen) else {
+        return Ok(());
+    };
+    // Above 1.0, the display can show brighter than SDR white.
+    let headroom = screen.maximumPotentialExtendedDynamicRangeColorComponentValue() > 1.0;
+    layer.match_video(player, headroom)
 }
 
 type LayerSlot = Arc<MainThreadBound<OnceCell<Weak<VideoLayer>>>>;

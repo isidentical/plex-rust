@@ -30,7 +30,7 @@ use super::theme;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::source;
-use crate::video_layer::VideoLayer;
+use crate::video_layer::{self, VideoLayer};
 
 /// How often the screen catches up with the player.
 const TICK: Duration = Duration::from_secs(1);
@@ -76,6 +76,8 @@ pub enum Outcome {
 
 pub struct Ivars {
     root: Retained<InputView>,
+    /// The view that hosts the video layer.
+    video: Retained<NSView>,
     player: Player,
     item: Item,
     toggle: Retained<NSButton>,
@@ -209,6 +211,7 @@ impl PlayerScreen {
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
+            video,
             player,
             item: item.clone(),
             toggle: NSButton::new(main_thread),
@@ -736,6 +739,10 @@ impl PlayerScreen {
     fn handle(&self, event: &Event) {
         match event {
             Event::Loaded => self.report(PlaybackState::Playing),
+            Event::VideoChanged => {
+                let ivars = self.ivars();
+                self.or_log(video_layer::match_video_in(&ivars.video, &ivars.player));
+            }
             Event::Ended(EndReason::Failed(error)) => {
                 eprintln!("reel: playback failed: {error}");
                 self.close(Outcome::Closed);

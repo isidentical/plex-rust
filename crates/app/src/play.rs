@@ -20,7 +20,7 @@ use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
 use crate::progress::Progress;
-use crate::video_layer::VideoLayer;
+use crate::video_layer::{self, VideoLayer};
 
 /// How often the server hears from a running playback. Plex asks for 10 s.
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
@@ -144,6 +144,7 @@ fn exit_when_playback_ends(playback: &Playback) {
     loop {
         match playback.player.wait_event() {
             Event::Loaded => playback.report(PlaybackState::Playing),
+            Event::VideoChanged => match_video(&playback.player),
             Event::Ended(EndReason::Failed(error)) => {
                 eprintln!("reel: playback failed: {error}");
                 std::process::exit(1);
@@ -153,6 +154,18 @@ fn exit_when_playback_ends(playback: &Playback) {
                 std::process::exit(0);
             }
         }
+    }
+}
+
+/// Matches the window's video layer to the colours of the video.
+fn match_video(player: &Player) {
+    let matched = dispatch2::run_on_main(|main_thread| {
+        let windows = NSApplication::sharedApplication(main_thread).windows();
+        let view = windows.firstObject().and_then(|window| window.contentView());
+        view.map_or(Ok(()), |view| video_layer::match_video_in(&view, player))
+    });
+    if let Err(error) = matched {
+        eprintln!("reel: {error}");
     }
 }
 
@@ -188,6 +201,9 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         "buffered": seconds(player.buffered()?),
         "hardware_decoder": player.hardware_decoder()?,
         "dropped_frames": player.dropped_frames()?,
+        "colors": player.video_colors()?.map(|colors| format!("{colors:?}")),
+        // Whether the layer asked the display for more than SDR brightness.
+        "hdr_output": shows_hdr(),
         "volume": player.volume()?,
         "tracks": player.tracks()?.iter().map(track).collect::<Vec<_>>(),
         // macOS does not draw windows that are covered or on another Space,
@@ -203,6 +219,18 @@ fn track(track: &player::Track) -> serde_json::Value {
         "kind": format!("{:?}", track.kind),
         "language": track.language,
         "selected": track.selected,
+    })
+}
+
+fn shows_hdr() -> bool {
+    dispatch2::run_on_main(|main_thread| {
+        let windows = NSApplication::sharedApplication(main_thread).windows();
+        let layer = windows
+            .firstObject()
+            .and_then(|window| window.contentView())
+            .and_then(|view| view.layer())
+            .and_then(|layer| layer.downcast::<VideoLayer>().ok());
+        layer.is_some_and(|layer| layer.wantsExtendedDynamicRangeContent())
     })
 }
 

@@ -72,6 +72,17 @@ impl Source {
     }
 }
 
+/// The range of colour and brightness a picture is encoded in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colors {
+    /// Standard dynamic range.
+    Sdr,
+    /// High dynamic range in the BT.2020 gamut, as on a UHD Blu-ray.
+    HdrBt2020,
+    /// High dynamic range in the Display P3 gamut.
+    HdrDisplayP3,
+}
+
 /// One stream inside the loaded file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
@@ -98,6 +109,9 @@ pub enum TrackKind {
 pub enum Event {
     /// The file is open and playback is starting.
     Loaded,
+    /// The picture's format is known or has changed. This is the moment
+    /// [`Player::video_colors`] has an answer.
+    VideoChanged,
     Ended(EndReason),
     /// mpv is shutting down. No further events will arrive.
     Shutdown,
@@ -199,6 +213,37 @@ impl Player {
         Ok(self.number("frame-drop-count")?.unwrap_or(0))
     }
 
+    /// How the picture now playing is encoded, or `None` before the first
+    /// frame has been decoded.
+    pub fn video_colors(&self) -> Result<Option<Colors>> {
+        let (Some(transfer), Some(primaries)) =
+            (self.string("video-params/gamma")?, self.string("video-params/primaries")?)
+        else {
+            return Ok(None);
+        };
+        let is_hdr = matches!(transfer.as_str(), "pq" | "hlg");
+        Ok(Some(match (is_hdr, primaries.as_str()) {
+            (true, "bt.2020") => Colors::HdrBt2020,
+            (true, "display-p3") => Colors::HdrDisplayP3,
+            _ => Colors::Sdr,
+        }))
+    }
+
+    /// Sets what the rendered frames are encoded as. It must agree with
+    /// the colour space of the surface they are drawn into.
+    ///
+    /// SDR output is sRGB. HDR output keeps the picture's own gamut and
+    /// uses the PQ curve, into which HLG pictures are converted.
+    pub fn set_output_colors(&self, colors: Colors) -> Result<()> {
+        let (primaries, transfer) = match colors {
+            Colors::Sdr => ("bt.709", "srgb"),
+            Colors::HdrBt2020 => ("bt.2020", "pq"),
+            Colors::HdrDisplayP3 => ("display-p3", "pq"),
+        };
+        self.set_string("target-prim", primaries)?;
+        self.set_string("target-trc", transfer)
+    }
+
     /// The volume, where 100 is the file's own level.
     pub fn volume(&self) -> Result<f64> {
         Ok(self.number("volume")?.unwrap_or(100.0))
@@ -260,6 +305,7 @@ impl Player {
             match event.event_id {
                 sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return Event::Shutdown,
                 sys::mpv_event_id_MPV_EVENT_FILE_LOADED => return Event::Loaded,
+                sys::mpv_event_id_MPV_EVENT_VIDEO_RECONFIG => return Event::VideoChanged,
                 sys::mpv_event_id_MPV_EVENT_END_FILE => {
                     // SAFETY: for END_FILE, mpv sets `data` to a valid
                     // mpv_event_end_file.
