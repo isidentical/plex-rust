@@ -89,6 +89,10 @@ mod code {
     pub const UP: u16 = 126;
 }
 
+/// The modifiers that turn a letter into a command.
+const COMMANDS: NSEventModifierFlags =
+    NSEventModifierFlags::Command.union(NSEventModifierFlags::Control);
+
 #[derive(Default)]
 pub struct Ivars {
     on_key: OnceCell<Box<dyn Fn(Key, Press) -> bool>>,
@@ -229,6 +233,9 @@ fn key(event: &NSEvent) -> Option<Key> {
         code::RIGHT => Some(Key::Right),
         code::UP => Some(Key::Up),
         code::DOWN => Some(Key::Down),
+        // AppKit sends a Command or Control combination that no menu item
+        // took on to `keyDown:`. Command-C is not the C key.
+        _ if event.modifierFlags().intersects(COMMANDS) => None,
         _ => {
             let characters = event.charactersIgnoringModifiers()?.to_string();
             let mut characters = characters.chars();
