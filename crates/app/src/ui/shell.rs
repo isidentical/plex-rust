@@ -650,7 +650,11 @@ impl Shell {
         if let Some(sidebar) = self.sidebar.get() {
             sidebar.select(destination_of(&route).as_ref());
         }
-        screen.focus();
+        // Results arrive while the viewer is still typing in the search
+        // field, which must keep the keyboard.
+        if !matches!(route, Route::Search(_)) {
+            screen.focus();
+        }
     }
 
     /// Makes `view` the content, optionally fading from what was there.
