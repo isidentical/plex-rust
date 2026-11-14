@@ -35,7 +35,8 @@ open target/plex-rust.app
 | Key | Action |
 | --- | --- |
 | Space, K, click | Pause and resume |
-| Left, Right | Back and forward 10 seconds |
+| Left, Right | Back and forward 3 seconds |
+| Shift with Left, Right | Back and forward 10 seconds |
 | Up, Down | Volume |
 | M | Mute |
 | S, D | Slower and faster by 0.1x |

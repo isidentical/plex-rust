@@ -19,6 +19,9 @@ const OPTIONS: &[(&str, &str)] = &[
     ("demuxer-hysteresis-secs", "10"),
 ];
 
+/// The mpv property that is set while playback waits for the network.
+const STALLED: &str = "paused-for-cache";
+
 /// mpv's status for a property that has no value right now, such as the
 /// position while nothing is loaded.
 const UNAVAILABLE: libc::c_int = sys::mpv_error_MPV_ERROR_PROPERTY_UNAVAILABLE;
@@ -109,6 +112,9 @@ pub enum TrackKind {
 pub enum Event {
     /// The file is open and playback is starting.
     Loaded,
+    /// Playback has stalled waiting for data (`true`) or picked up again
+    /// (`false`).
+    Buffering(bool),
     /// The picture's format is known or has changed. This is the moment
     /// [`Player::video_colors`] has an answer.
     VideoChanged,
@@ -144,6 +150,20 @@ impl Player {
 
         // SAFETY: the handle is valid and has not been initialized yet.
         check(unsafe { sys::mpv_initialize(player.raw()) }, || "initialize mpv".into())?;
+
+        // Ask to be told when playback stalls for lack of data and when it
+        // picks up again. `wait_event` turns this into `Event::Buffering`.
+        let stalled = c_string(STALLED)?;
+        // SAFETY: the handle is valid and the name is NUL-terminated.
+        let status = unsafe {
+            sys::mpv_observe_property(
+                player.raw(),
+                0,
+                stalled.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_FLAG,
+            )
+        };
+        check(status, || format!("observe {STALLED}"))?;
         Ok(player)
     }
 
@@ -168,6 +188,14 @@ impl Player {
 
     pub fn seek(&self, position: Duration) -> Result<()> {
         self.command(&["seek", &position.as_secs_f64().to_string(), "absolute"])
+    }
+
+    /// Moves the position by `seconds`, backwards if negative. Unlike a
+    /// [`seek`](Self::seek) to a position worked out from the current one,
+    /// several of these in quick succession add up, even when an earlier
+    /// one has not finished.
+    pub fn seek_by(&self, seconds: f64) -> Result<()> {
+        self.command(&["seek", &seconds.to_string(), "relative+exact"])
     }
 
     pub fn set_paused(&self, paused: bool) -> Result<()> {
@@ -306,6 +334,20 @@ impl Player {
                 sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return Event::Shutdown,
                 sys::mpv_event_id_MPV_EVENT_FILE_LOADED => return Event::Loaded,
                 sys::mpv_event_id_MPV_EVENT_VIDEO_RECONFIG => return Event::VideoChanged,
+                sys::mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
+                    // SAFETY: for PROPERTY_CHANGE, mpv sets `data` to a valid
+                    // mpv_event_property.
+                    let property = unsafe { &*event.data.cast::<sys::mpv_event_property>() };
+                    // Only one property is observed, and as a flag. `data`
+                    // is null while the property has no value.
+                    if property.format == sys::mpv_format_MPV_FORMAT_FLAG
+                        && !property.data.is_null()
+                    {
+                        // SAFETY: for MPV_FORMAT_FLAG, `data` points to an int.
+                        let stalled = unsafe { *property.data.cast::<libc::c_int>() } != 0;
+                        return Event::Buffering(stalled);
+                    }
+                }
                 sys::mpv_event_id_MPV_EVENT_END_FILE => {
                     // SAFETY: for END_FILE, mpv sets `data` to a valid
                     // mpv_event_end_file.

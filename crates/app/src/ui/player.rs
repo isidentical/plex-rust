@@ -13,7 +13,8 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSBezelStyle, NSButton, NSControlStateValueOn, NSCursor, NSFont,
     NSFontWeightRegular, NSFontWeightSemibold, NSGlassEffectView, NSImage, NSMenu, NSMenuItem,
-    NSSlider, NSStackView, NSTextField, NSView, NSWindowStyleMask,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSSlider, NSStackView, NSTextField, NSView,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSUUID,
@@ -46,7 +47,10 @@ const TICKS_UNTIL_HIDDEN: u32 = 3;
 const TICKS_OF_NOTICE: u32 = 2;
 
 /// How far the left and right arrow keys jump.
-const SKIP: Duration = Duration::from_secs(10);
+const SHORT_JUMP: f64 = 3.0;
+
+/// How far they jump with Shift held.
+const LONG_JUMP: f64 = 10.0;
 
 /// How much the up and down arrow keys change the volume, out of 100.
 const VOLUME_STEP: f64 = 5.0;
@@ -67,10 +71,12 @@ pub enum Purpose {
 }
 
 /// How a playback came to its end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The viewer left.
     Closed,
+    /// Playback failed. Holds the reason.
+    Failed(String),
     /// It played to the end, or the viewer asked for what comes next.
     Finished,
 }
@@ -90,6 +96,9 @@ pub struct Ivars {
     subtitles: Retained<NSButton>,
     /// Offers to jump past the intro or the credits while they play.
     skip: Retained<NSButton>,
+    /// Turns while the picture is on its way: at the start, and whenever
+    /// playback stalls waiting for the network.
+    spinner: Retained<NSProgressIndicator>,
     /// Briefly says what a key press did.
     notice: Retained<NSTextField>,
     /// The pane of glass the notice sits on.
@@ -226,6 +235,7 @@ impl PlayerScreen {
             audio: NSButton::new(main_thread),
             subtitles: NSButton::new(main_thread),
             skip: NSButton::new(main_thread),
+            spinner: NSProgressIndicator::new(main_thread),
             notice: readout(main_thread),
             notice_pane: OnceCell::new(),
             ticks_of_notice_left: Cell::new(0),
@@ -297,6 +307,19 @@ impl PlayerScreen {
             window.makeFirstResponder(Some(root));
         }
         self.fit_to_display();
+    }
+
+    /// Shows or hides the spinner that says the picture is on its way.
+    fn set_waiting(&self, waiting: bool) {
+        let spinner = &self.ivars().spinner;
+        // SAFETY: the sender is optional and not kept.
+        unsafe {
+            if waiting {
+                spinner.startAnimation(None);
+            } else {
+                spinner.stopAnimation(None);
+            }
+        }
     }
 
     fn fit_to_display(&self) {
@@ -398,7 +421,14 @@ impl PlayerScreen {
         // Cannot fail: the controls are built once.
         let _ = ivars.notice_pane.set(notice);
 
-        // The skip button and the notice come and go by themselves.
+        ivars.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
+        ivars.spinner.setIndeterminate(true);
+        ivars.spinner.setDisplayedWhenStopped(false);
+        layout::dock_center(&ivars.root, &ivars.spinner);
+        self.set_waiting(true);
+
+        // The skip button, the notice and the spinner come and go by
+        // themselves.
         *ivars.controls.borrow_mut() = vec![bar, heading];
     }
 
@@ -453,8 +483,10 @@ impl PlayerScreen {
     pub fn press(&self, key: Key) -> bool {
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
-            Key::Left => self.jump(|position| position.saturating_sub(SKIP), "−10 s"),
-            Key::Right => self.jump(|position| position + SKIP, "+10 s"),
+            Key::Left => self.jump(-SHORT_JUMP),
+            Key::Right => self.jump(SHORT_JUMP),
+            Key::ShiftLeft => self.jump(-LONG_JUMP),
+            Key::ShiftRight => self.jump(LONG_JUMP),
             Key::Up => self.change_volume(VOLUME_STEP),
             Key::Down => self.change_volume(-VOLUME_STEP),
             Key::Character('m') => self.toggle_mute(),
@@ -524,12 +556,12 @@ impl PlayerScreen {
         Ok(())
     }
 
-    fn jump(&self, to: impl FnOnce(Duration) -> Duration, what: &str) -> player::Result<()> {
-        let player = &self.ivars().player;
-        if let Some(position) = player.position()? {
-            player.seek(to(position))?;
-            self.notify(what);
-        }
+    /// Jumps `seconds` forward, or back if negative.
+    fn jump(&self, seconds: f64) -> player::Result<()> {
+        self.ivars().player.seek_by(seconds)?;
+        // U+2212 is the minus sign, as wide as the plus.
+        let sign = if seconds < 0.0 { '\u{2212}' } else { '+' };
+        self.notify(&format!("{sign}{} s", seconds.abs()));
         Ok(())
     }
 
@@ -785,13 +817,13 @@ impl PlayerScreen {
         match event {
             Event::Loaded => self.report(PlaybackState::Playing),
             Event::VideoChanged => {
+                // The first picture is here: the wait since opening is over.
+                self.set_waiting(false);
                 let ivars = self.ivars();
                 self.or_log(video_layer::fit_to_display(&ivars.video, &ivars.player));
             }
-            Event::Ended(EndReason::Failed(error)) => {
-                eprintln!("plex-rust: playback failed: {error}");
-                self.close(Outcome::Closed);
-            }
+            Event::Ended(EndReason::Failed(error)) => self.close(Outcome::Failed(error.clone())),
+            Event::Buffering(stalled) => self.set_waiting(*stalled),
             Event::Ended(EndReason::Finished) => self.close(Outcome::Finished),
             // Stopped is our own doing, and shutdown follows `close`.
             Event::Ended(EndReason::Stopped) | Event::Shutdown => {}

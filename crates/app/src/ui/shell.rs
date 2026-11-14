@@ -439,8 +439,16 @@ impl Shell {
         };
         self.keep_settings(&screen);
         self.set_window_content(&self.split);
-        if outcome == Outcome::Finished && screen.item().kind == Kind::Episode {
-            self.play_episode_after(screen.item(), purpose);
+        match outcome {
+            Outcome::Closed => {}
+            Outcome::Finished if screen.item().kind == Kind::Episode => {
+                self.play_episode_after(screen.item(), purpose);
+            }
+            Outcome::Finished => {}
+            Outcome::Failed(reason) => {
+                let title = &screen.item().title;
+                self.show_message(&format!("{title} could not be played: {reason}"));
+            }
         }
     }
 

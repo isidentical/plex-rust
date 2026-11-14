@@ -42,6 +42,16 @@ pub fn cover(parent: &NSView, child: &NSView) {
     ]));
 }
 
+/// Adds `child` on top of whatever `parent` holds, in its centre.
+pub fn dock_center(parent: &NSView, child: &NSView) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.addSubview(child);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        child.centerXAnchor().constraintEqualToAnchor(&parent.centerXAnchor()),
+        child.centerYAnchor().constraintEqualToAnchor(&parent.centerYAnchor()),
+    ]));
+}
+
 /// Adds `child` on top of whatever `parent` holds, along its bottom edge,
 /// `margin` in from the bottom and both sides.
 pub fn dock_bottom(parent: &NSView, child: &NSView, margin: f64) {

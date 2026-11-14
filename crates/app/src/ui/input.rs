@@ -4,7 +4,7 @@ use std::cell::OnceCell;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSView};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTrackingArea, NSTrackingAreaOptions, NSView};
 use objc2_foundation::NSRect;
 
 /// A key press, reduced to the keys the app acts on.
@@ -15,6 +15,9 @@ pub enum Key {
     Escape,
     Left,
     Right,
+    /// Left with Shift held.
+    ShiftLeft,
+    ShiftRight,
     Up,
     Down,
     /// A key that types a character, in lower case.
@@ -32,6 +35,8 @@ impl Key {
             ("escape", ..) => Some(Self::Escape),
             ("left", ..) => Some(Self::Left),
             ("right", ..) => Some(Self::Right),
+            ("shift-left", ..) => Some(Self::ShiftLeft),
+            ("shift-right", ..) => Some(Self::ShiftRight),
             ("up", ..) => Some(Self::Up),
             ("down", ..) => Some(Self::Down),
             (_, Some(character), None) => Some(Self::Character(character)),
@@ -177,10 +182,13 @@ impl InputView {
 }
 
 fn key(event: &NSEvent) -> Option<Key> {
+    let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
     match event.keyCode() {
         code::SPACE => Some(Key::Space),
         code::RETURN => Some(Key::Return),
         code::ESCAPE => Some(Key::Escape),
+        code::LEFT if shift => Some(Key::ShiftLeft),
+        code::RIGHT if shift => Some(Key::ShiftRight),
         code::LEFT => Some(Key::Left),
         code::RIGHT => Some(Key::Right),
         code::UP => Some(Key::Up),
