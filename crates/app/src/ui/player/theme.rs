@@ -7,9 +7,14 @@ use objc2_app_kit::NSColor;
 /// Space between the window's edge and the nearest control.
 pub const MARGIN: f64 = 20.0;
 /// Space between a pane's content and the edge where its shade runs out.
-pub const SHADE_RUNOUT: f64 = 36.0;
+pub const SHADE_RUNOUT: f64 = 56.0;
 /// How dark a pane's shade is at the window's edge.
-pub const SHADE_ALPHA: f64 = 0.8;
+pub const SHADE_ALPHA: f64 = 0.85;
+/// How dark it is halfway to where it runs out, which is about where the
+/// scrubber and the title are. White on a white picture under this much
+/// black has a contrast of over 5 to 1, where a shade that thinned evenly
+/// from the edge left the times at about 3.5 to 1.
+pub const SHADE_ALPHA_MIDWAY: f64 = 0.6;
 
 /// How far a symbol sits inside the edge of its chip. Rows of chips hang
 /// over the margin by this much, so that what is seen lines up with it.

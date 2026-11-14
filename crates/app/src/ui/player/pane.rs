@@ -11,7 +11,7 @@ use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSEvent, NSGradient, NSView,
 };
-use objc2_foundation::{NSPoint, NSRect};
+use objc2_foundation::{NSArray, NSPoint, NSRect};
 
 use super::theme;
 
@@ -53,16 +53,21 @@ define_class!(
 
         #[unsafe(method(drawRect:))]
         fn draw(&self, _dirty: NSRect) {
-            let (clear, dark) = (theme::shade(0.0), theme::shade(theme::SHADE_ALPHA));
+            // Three stops, evenly spaced: the shade holds most of its
+            // strength to the middle of the pane, where the controls are,
+            // and only then runs out.
+            let mut stops = [
+                theme::shade(theme::SHADE_ALPHA),
+                theme::shade(theme::SHADE_ALPHA_MIDWAY),
+                theme::shade(0.0),
+            ];
             // A gradient is drawn from the bottom up at 90 degrees.
-            let (bottom, top) = match self.ivars().edge {
-                Edge::Top => (clear, dark),
-                Edge::Bottom => (dark, clear),
-            };
-            let gradient = NSGradient::initWithStartingColor_endingColor(
+            if self.ivars().edge == Edge::Top {
+                stops.reverse();
+            }
+            let gradient = NSGradient::initWithColors(
                 NSGradient::alloc(),
-                &bottom,
-                &top,
+                &NSArray::from_retained_slice(&stops),
             );
             if let Some(gradient) = gradient {
                 gradient.drawInRect_angle(self.bounds(), 90.0);
