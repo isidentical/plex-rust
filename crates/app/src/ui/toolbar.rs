@@ -180,6 +180,11 @@ impl Toolbar {
         }
     }
 
+    /// What the search field says, without the spaces around it.
+    pub fn search_text(&self) -> String {
+        self.ivars().search.searchField().stringValue().to_string().trim().to_owned()
+    }
+
     /// Writes `text` in the search field without searching for it.
     pub fn set_search_text(&self, text: &str) {
         self.ivars().search.searchField().setStringValue(&NSString::from_str(text));

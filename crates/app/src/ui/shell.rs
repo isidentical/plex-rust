@@ -844,7 +844,14 @@ impl Shell {
     /// screen of the library, and in one step: a sidebar that slid in
     /// would push that screen sideways as it arrived.
     fn set_browsing_shown(&self, shown: bool) {
-        self.sidebar_item.setCollapsed(!shown);
+        // Taken out of the split, not collapsed in it: View > Show Sidebar
+        // brings a collapsed sidebar back, and this one has nothing in it.
+        let held = self.split.splitViewItems().containsObject(&self.sidebar_item);
+        match (shown, held) {
+            (true, false) => self.split.insertSplitViewItem_atIndex(&self.sidebar_item, 0),
+            (false, true) => self.split.removeSplitViewItem(&self.sidebar_item),
+            _ => {}
+        }
         self.toolbar.set_visible(shown);
     }
 
@@ -964,6 +971,16 @@ impl Shell {
         // item's download since.
         if let Screen::Detail(detail) = &screen {
             detail.show_download();
+        }
+        // The search field says what was searched for while the results
+        // are on screen and at no other time: left as it was, it would
+        // claim that Home is what a search for it found.
+        let searched = match &route {
+            Route::Search(query) => query.as_str(),
+            _ => "",
+        };
+        if self.toolbar.search_text() != searched {
+            self.toolbar.set_search_text(searched);
         }
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.

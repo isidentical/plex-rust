@@ -118,7 +118,12 @@ impl Shell {
         };
         let scrolled = first_scroller_in(screen.view())
             .map_or(0.0, |scroller| scroller.contentView().bounds().origin.y);
-        timing::mark(&format!("state: {title:?} cards={cards} scrolled={scrolled:.0}"));
+        let searched = self.toolbar.search_text();
+        let sidebar = self.split.splitViewItems().containsObject(&self.sidebar_item);
+        timing::mark(&format!(
+            "state: {title:?} cards={cards} scrolled={scrolled:.0} search={searched:?} \
+             sidebar={sidebar}"
+        ));
     }
 
     /// Prints that `what` was handed to the views, and then when they had
