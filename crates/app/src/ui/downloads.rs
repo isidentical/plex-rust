@@ -442,7 +442,10 @@ fn away_strip(
     strip.addSubview(&button);
     let margin = theme::PAGE_MARGIN;
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        words.leadingAnchor().constraintEqualToAnchor_constant(&strip.leadingAnchor(), margin),
+        // From where the sidebar ends: the strip runs on under its glass.
+        words
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&strip.safeAreaLayoutGuide().leadingAnchor(), margin),
         words.centerYAnchor().constraintEqualToAnchor(&strip.centerYAnchor()),
         button.trailingAnchor().constraintEqualToAnchor_constant(&strip.trailingAnchor(), -margin),
         button.centerYAnchor().constraintEqualToAnchor(&strip.centerYAnchor()),
