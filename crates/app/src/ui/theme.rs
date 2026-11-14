@@ -189,13 +189,26 @@ pub const HOME_HERO_HEIGHT_PER_WIDTH: f64 = 0.37;
 pub const HOME_HERO_MOST: f64 = 0.45;
 /// The size the home screen's backdrop is requested at, in points.
 pub const HOME_HERO_REQUEST: (u32, u32) = (960, 540);
-/// How dark the left edge of that backdrop is made, where the text is,
-/// and how far across the darkening reaches before it is gone.
-pub const HOME_HERO_SCRIM_OPACITY: f64 = 0.85;
-pub const HOME_HERO_SCRIM_REACH: f64 = 0.75;
+/// The least of the card's width the backdrop takes, at its right. It is
+/// shown whole where that is wider.
+pub const HOME_HERO_ART_LEAST: f64 = 0.6;
+/// How much of the backdrop's width, from its near edge, the card's colour
+/// runs over, and how strong the colour is at each point of the way.
+pub const HOME_HERO_FADE: f64 = 0.6;
+pub const HOME_HERO_FADE_STOPS: [(f64, f64); 5] =
+    [(0.0, 1.0), (0.25, 0.86), (0.5, 0.58), (0.75, 0.24), (1.0, 0.0)];
+/// The white of a card whose item has no colours of its own.
+pub const HOME_HERO_PLAIN_WHITE: f64 = 0.14;
+pub const HOME_HERO_TITLE_LINES: isize = 2;
 /// The bar beside the hero's button that shows how much was watched.
-pub const HOME_HERO_PROGRESS_WIDTH: f64 = 160.0;
+pub const HOME_HERO_PROGRESS_WIDTH: f64 = 120.0;
 pub const HOME_HERO_TRACK_OPACITY: f64 = 0.3;
+/// The capsule in the hero's corner that leads from one item to the next.
+pub const HOME_HERO_PAGER_HEIGHT: f64 = SPACE_XL;
+pub const HOME_HERO_PAGER_OPACITY: f64 = 0.45;
+pub const HOME_HERO_DOT_SIZE: f64 = 6.0;
+/// How strong the dot of an item that is not the one shown is.
+pub const HOME_HERO_DOT_OPACITY: f64 = 0.4;
 
 /// A download in the list: its poster on the left, text beside it, and
 /// its buttons on the right.

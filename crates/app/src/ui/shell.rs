@@ -1028,7 +1028,7 @@ impl Shell {
             // The hero lives as long as this closure, which the entry keeps.
             move |hubs: &Vec<Hub>| {
                 let mut shelves = home_shelves(hubs);
-                hero.show(hero::feature(&mut shelves));
+                hero.show(hero::features(&mut shelves));
                 shown.show(shelves);
             },
         );

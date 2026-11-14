@@ -161,7 +161,7 @@ impl Layers {
 }
 
 /// A corner colour, darkened so that white text on it stays readable.
-fn tint(color: Rgb) -> Retained<NSColor> {
+pub fn tint(color: Rgb) -> Retained<NSColor> {
     let part = |byte: u8| f64::from(byte) / 255.0 * theme::TINT_BRIGHTNESS;
     NSColor::colorWithSRGBRed_green_blue_alpha(
         part(color.red),

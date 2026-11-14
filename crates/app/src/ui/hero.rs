@@ -1,18 +1,25 @@
-//! The top of the home screen: the first thing to watch, large, on its
-//! backdrop, with a button that plays it.
+//! The top of the home screen: the first few things to watch, one at a
+//! time and large. Each has its backdrop on the right, running into a
+//! panel of the artwork's own colour that holds its title and a button
+//! that plays it.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSColor, NSLayoutConstraint, NSTextField, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSColor, NSImageView, NSLayoutConstraint,
+    NSLayoutPriorityDefaultHigh, NSStackView, NSTextField, NSView,
 };
 use objc2_core_foundation::CGPoint;
-use objc2_foundation::{NSArray, NSString};
-use objc2_quartz_core::{CAAutoresizingMask, CAGradientLayer, kCACornerCurveContinuous};
-use plex::model::{Item, Kind};
+use objc2_foundation::{NSArray, NSNumber, NSString, ns_string};
+use objc2_quartz_core::{
+    CAAutoresizingMask, CAGradientLayer, CAMediaTiming, CATransaction, CATransition,
+    kCACornerCurveContinuous, kCATransitionFade,
+};
+use plex::model::{Item, Kind, Rgb};
 
 use super::artwork::{self, ArtView};
 use super::backdrop;
@@ -21,52 +28,62 @@ use super::detail::Pill;
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
-use super::poster::{self, Card};
+use super::poster;
 use super::posters::{Action, Shelf};
 use super::text;
 use super::theme;
 use crate::images::Images;
 
-/// What the hero shows: an item, and the title of the shelf it leads.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Feature {
-    pub shelf: String,
-    pub item: Item,
-}
+/// How many items the hero pages through at most.
+const PAGES: usize = 3;
 
-/// Takes the first item of the first shelf out of `shelves` to show it
-/// large above them, so that it is not on the screen twice. A shelf left
+/// Takes the first few items of the first shelf out of `shelves` to show
+/// them large above it, so that none is on the screen twice. A shelf left
 /// with nothing goes too.
-pub fn feature(shelves: &mut Vec<Shelf>) -> Option<Feature> {
-    let first = shelves.first_mut()?;
-    let Some(Card::Item(item)) = first.cards.first().cloned() else {
-        return None;
+pub fn features(shelves: &mut Vec<Shelf>) -> Vec<Item> {
+    let Some(first) = shelves.first_mut() else {
+        return Vec::new();
     };
-    first.cards.remove(0);
-    let shelf = first.title.clone();
+    let items: Vec<Item> =
+        first.cards.iter().take(PAGES).map_while(|card| card.item().cloned()).collect();
+    first.cards.drain(..items.len());
     if first.cards.is_empty() {
         shelves.remove(0);
     }
-    Some(Feature { shelf, item })
+    items
 }
 
-pub struct Hero {
+pub struct Hero(Rc<Views>);
+
+struct Views {
     view: Retained<NSView>,
+    /// Clipped to rounded corners, and painted in the colour of the item.
     card: Retained<HoverView>,
-    art: Rc<ArtView>,
-    /// Everything drawn over the artwork, hidden until there is an item.
+    art: ArtView,
+    /// Runs the card's colour over the near edge of the artwork.
+    shade: Retained<NSView>,
+    fade: Retained<CAGradientLayer>,
+    /// The hairline around the card, which brightens under the pointer.
+    frame: Retained<NSView>,
+    /// Everything that says something about the item, hidden until there
+    /// is one.
     overlay: Retained<NSView>,
-    shelf: Retained<NSTextField>,
     title: Retained<NSTextField>,
     facts: Retained<NSTextField>,
     play: Pill,
-    /// How much was watched, beside the button: a track and its filled
-    /// part.
+    /// How much is left, in words over a bar, beside the button.
+    left: Retained<NSTextField>,
     track: Retained<NSView>,
     fill: Retained<NSView>,
     fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
-    shown: Rc<RefCell<Option<Item>>>,
+    /// The way from one item to the next, shown when there are several.
+    pager: Retained<NSView>,
+    dots: Vec<Retained<HoverView>>,
+    items: RefCell<Vec<Item>>,
+    /// Which of the items is shown.
+    at: Cell<usize>,
     images: Rc<Images>,
+    on_action: Box<dyn Fn(Action)>,
     /// Kept because a button does not retain its target.
     _pressed: Retained<Callback>,
 }
@@ -80,45 +97,80 @@ impl Hero {
         images: Rc<Images>,
         on_action: impl Fn(Action) + 'static,
     ) -> Self {
-        let shown: Rc<RefCell<Option<Item>>> = Rc::new(RefCell::new(None));
-        let on_action = Rc::new(on_action);
-        // Cloned out of the cell first, so that the handler is free to
-        // show something else.
-        let act = |make: fn(Item) -> Action| {
-            let (shown, on_action) = (Rc::clone(&shown), Rc::clone(&on_action));
-            move || {
-                let item = shown.borrow().clone();
-                if let Some(item) = item {
-                    on_action(make(item));
+        let views = Rc::new_cyclic(|this: &Weak<Views>| {
+            // Each handler looks the hero up when it runs, and does
+            // nothing once the hero is gone.
+            let with = |act: fn(&Views)| {
+                let this = Weak::clone(this);
+                move || {
+                    if let Some(views) = this.upgrade() {
+                        act(&views);
+                    }
                 }
-            }
-        };
+            };
+            Views::new(main_thread, images, Box::new(on_action), this, with)
+        });
+        views.place();
+        views.show_item(false);
+        Self(views)
+    }
 
-        let art = Rc::new(ArtView::new(main_thread, theme::RADIUS_XL));
+    pub fn view(&self) -> &NSView {
+        &self.0.view
+    }
+
+    /// Shows the first of `items`, or the one that was on screen if it is
+    /// still among them, and offers the others. With none it leaves the
+    /// space empty.
+    pub fn show(&self, items: Vec<Item>) {
+        let views = &self.0;
+        let was = views.items.borrow().get(views.at.get()).map(|item| item.rating_key.clone());
+        let at = was.and_then(|was| items.iter().position(|item| item.rating_key == was));
+        views.at.set(at.unwrap_or(0));
+        views.items.replace(items);
+        views.show_item(false);
+    }
+}
+
+impl Views {
+    fn new<H: Fn() + 'static>(
+        main_thread: MainThreadMarker,
+        images: Rc<Images>,
+        on_action: Box<dyn Fn(Action)>,
+        this: &Weak<Self>,
+        with: impl Fn(fn(&Self)) -> H,
+    ) -> Self {
+        let art = ArtView::new(main_thread, 0.0);
         art.set_flat();
-        let lit = Rc::clone(&art);
-        let card =
-            HoverView::pressable(main_thread, move |over| lit.set_hovered(over), act(Action::Open));
+        let frame = artwork::layered(main_thread);
+        let lit = frame.clone();
+        let card = HoverView::pressable(
+            main_thread,
+            move |over| outline(&lit, over),
+            with(|views| views.act(Action::Open)),
+        );
         card.setTranslatesAutoresizingMaskIntoConstraints(false);
-        card.set_live(false);
+        card.setWantsLayer(true);
         // VoiceOver reads the hero as one button that opens the item, with
         // the play button inside it as another.
         card.setAccessibilityElement(true);
         // SAFETY: the role is a constant that AppKit provides.
         card.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
-        layout::cover(&card, art.view());
-
-        let overlay = scrim(main_thread);
-        overlay.setHidden(true);
-        layout::cover(&card, &overlay);
+        let rounded: [&NSView; 2] = [&card, &frame];
+        for view in rounded {
+            round(view);
+        }
+        outline(&frame, false);
 
         let white = NSColor::whiteColor();
         let faint = theme::white(theme::SECONDARY_ON_ART_OPACITY);
-        let shelf = label::line(theme::FONT_BODY, Weight::Semibold, &faint, main_thread);
-        let title = label::line(theme::FONT_LARGE_TITLE, Weight::Bold, &white, main_thread);
+        let lines = theme::HOME_HERO_TITLE_LINES;
+        let title =
+            label::paragraph(theme::FONT_LARGE_TITLE, Weight::Bold, &white, lines, main_thread);
         let facts = label::line(theme::FONT_HEADLINE, Weight::Medium, &faint, main_thread);
+        let left = label::line(theme::FONT_CAPTION, Weight::Medium, &faint, main_thread);
 
-        let press = act(Action::Play);
+        let press = with(|views| views.act(Action::Play));
         let pressed = Callback::new(main_thread, move |_| press());
         let play = Pill::new("Play", "play.fill", true, main_thread);
         // SAFETY: the hero keeps the target for as long as it keeps the
@@ -137,59 +189,53 @@ impl Hero {
                 layer.setCornerRadius(theme::PROGRESS_BAR_HEIGHT / 2.0);
             }
         }
-        overlay.addSubview(&track);
-        track.addSubview(&fill);
 
-        for view in [&**shelf, &**title, &**facts, &**play.button] {
-            let view: &NSView = view;
-            overlay.addSubview(view);
-            view.leadingAnchor()
-                .constraintEqualToAnchor_constant(&overlay.leadingAnchor(), theme::SPACE_XXL)
-                .setActive(true);
+        let dots: Vec<Retained<HoverView>> = (0..PAGES)
+            .map(|page| {
+                let this = Weak::clone(this);
+                dot(main_thread, move || {
+                    if let Some(views) = this.upgrade() {
+                        views.turn_to(page);
+                    }
+                })
+            })
+            .collect();
+        let back = chevron("chevron.left", "Previous", with(|views| views.turn(-1)), main_thread);
+        let on = chevron("chevron.right", "Next", with(|views| views.turn(1)), main_thread);
+        let mut stops: Vec<&NSView> = vec![&back];
+        stops.extend(dots.iter().map(|dot| -> &NSView { dot }));
+        stops.push(&on);
+        let pager = pager(&stops, main_thread);
+
+        Self {
+            view: NSView::new(main_thread),
+            card,
+            art,
+            shade: artwork::layered(main_thread),
+            fade: CAGradientLayer::new(),
+            frame,
+            overlay: artwork::layered(main_thread),
+            title,
+            facts,
+            play,
+            left,
+            track,
+            fill,
+            fill_width: RefCell::new(None),
+            pager,
+            dots,
+            items: RefCell::new(Vec::new()),
+            at: Cell::new(0),
+            images,
+            on_action,
+            _pressed: pressed,
         }
-        // Only now, with the button in the overlay too: a constraint needs
-        // both its views in one hierarchy.
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            track
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&play.button.trailingAnchor(), theme::SPACE_L),
-            track.centerYAnchor().constraintEqualToAnchor(&play.button.centerYAnchor()),
-            track.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PROGRESS_WIDTH),
-            track.heightAnchor().constraintEqualToConstant(theme::PROGRESS_BAR_HEIGHT),
-            fill.leadingAnchor().constraintEqualToAnchor(&track.leadingAnchor()),
-            fill.topAnchor().constraintEqualToAnchor(&track.topAnchor()),
-            fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
-        ]));
-        let text_width = theme::HERO_TEXT_WIDTH;
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            // From the bottom up: the button, the facts, the title and
-            // the shelf's name.
-            play.button
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -theme::SPACE_XXL),
-            facts
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&play.button.topAnchor(), -theme::SPACE_L),
-            title
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&facts.topAnchor(), -theme::SPACE_XS),
-            shelf
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&title.topAnchor(), -theme::SPACE_XXS),
-            title.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
-            title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(
-                &overlay.trailingAnchor(),
-                -theme::SPACE_XXL,
-            ),
-            facts.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
-            facts.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(
-                &overlay.trailingAnchor(),
-                -theme::SPACE_XXL,
-            ),
-        ]));
+    }
 
-        let view = NSView::new(main_thread);
-        view.addSubview(&card);
+    /// Puts the views where they belong, once.
+    fn place(&self) {
+        let (view, card, art, overlay) = (&self.view, &self.card, self.art.view(), &self.overlay);
+        view.addSubview(card);
         let margin = theme::PAGE_MARGIN;
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             card.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
@@ -199,35 +245,144 @@ impl Hero {
                 .constraintEqualToAnchor_constant(&view.bottomAnchor(), -theme::SPACE_L),
         ]));
 
-        Self {
-            view,
-            card,
-            art,
-            overlay,
-            shelf,
-            title,
-            facts,
-            play,
-            track,
-            fill,
-            fill_width: RefCell::new(None),
-            shown,
-            images,
-            _pressed: pressed,
+        // The artwork keeps to the right at its own proportions, so that
+        // no window cuts the faces out of it, and reaches past the card
+        // by its own hairline, which the card's corners then clip away.
+        card.addSubview(art);
+        let past = theme::ARTWORK_OUTLINE_WIDTH;
+        let uncut = art
+            .widthAnchor()
+            .constraintEqualToAnchor_multiplier(&art.heightAnchor(), 1.0 / theme::LANDSCAPE_ASPECT);
+        uncut.setPriority(NSLayoutPriorityDefaultHigh);
+        // In a card far wider than the artwork is, the artwork is cut top
+        // and bottom to keep the card from being mostly empty.
+        let least = art.widthAnchor().constraintGreaterThanOrEqualToAnchor_multiplier(
+            &card.widthAnchor(),
+            theme::HOME_HERO_ART_LEAST,
+        );
+        let shade = &self.shade;
+        card.addSubview(shade);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            art.trailingAnchor().constraintEqualToAnchor_constant(&card.trailingAnchor(), past),
+            art.topAnchor().constraintEqualToAnchor_constant(&card.topAnchor(), -past),
+            art.bottomAnchor().constraintEqualToAnchor_constant(&card.bottomAnchor(), past),
+            uncut,
+            least,
+            shade.leadingAnchor().constraintEqualToAnchor(&art.leadingAnchor()),
+            shade.topAnchor().constraintEqualToAnchor(&card.topAnchor()),
+            shade.bottomAnchor().constraintEqualToAnchor(&card.bottomAnchor()),
+            shade
+                .widthAnchor()
+                .constraintEqualToAnchor_multiplier(&art.widthAnchor(), theme::HOME_HERO_FADE),
+        ]));
+        self.fade.setStartPoint(CGPoint { x: 0.0, y: 0.5 });
+        self.fade.setEndPoint(CGPoint { x: 1.0, y: 0.5 });
+        // The gradient is not the view's own layer, so it has to be told to
+        // follow the view's size.
+        self.fade.setAutoresizingMask(
+            CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable,
+        );
+        if let Some(layer) = shade.layer() {
+            self.fade.setFrame(layer.bounds());
+            layer.addSublayer(&self.fade);
+        }
+        layout::cover(card, overlay);
+        layout::cover(card, &self.frame);
+
+        let (title, facts, play, left) = (&self.title, &self.facts, &self.play.button, &self.left);
+        let (track, fill, pager) = (&self.track, &self.fill, &self.pager);
+        let parts: [&NSView; 6] = [title, facts, play, left, track, pager];
+        for part in parts {
+            overlay.addSubview(part);
+        }
+        track.addSubview(fill);
+        let (inset, text_width) = (theme::SPACE_XXL, theme::HERO_TEXT_WIDTH);
+        for words in [title, facts] {
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                words
+                    .leadingAnchor()
+                    .constraintEqualToAnchor_constant(&overlay.leadingAnchor(), inset),
+                words.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
+                // No further over the artwork than where it is half
+                // faded, so the words always have the colour under them.
+                words.trailingAnchor().constraintLessThanOrEqualToAnchor(&shade.centerXAnchor()),
+            ]));
+        }
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            // From the bottom up: the button, the facts and the title.
+            play.leadingAnchor().constraintEqualToAnchor_constant(&overlay.leadingAnchor(), inset),
+            play.bottomAnchor().constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -inset),
+            facts
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&play.topAnchor(), -theme::SPACE_L),
+            title
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&facts.topAnchor(), -theme::SPACE_XS),
+            // Beside the button, the words sit on the bar.
+            left.leadingAnchor()
+                .constraintEqualToAnchor_constant(&play.trailingAnchor(), theme::SPACE_L),
+            left.bottomAnchor()
+                .constraintEqualToAnchor_constant(&play.centerYAnchor(), -theme::SPACE_XXS),
+            track.leadingAnchor().constraintEqualToAnchor(&left.leadingAnchor()),
+            track
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&play.centerYAnchor(), theme::SPACE_XS),
+            track.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PROGRESS_WIDTH),
+            track.heightAnchor().constraintEqualToConstant(theme::PROGRESS_BAR_HEIGHT),
+            fill.leadingAnchor().constraintEqualToAnchor(&track.leadingAnchor()),
+            fill.topAnchor().constraintEqualToAnchor(&track.topAnchor()),
+            fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
+            pager
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&overlay.trailingAnchor(), -theme::SPACE_L),
+            pager
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -theme::SPACE_L),
+        ]));
+    }
+
+    /// Tells the owner what the viewer asked of the item on screen.
+    fn act(&self, make: fn(Item) -> Action) {
+        // Cloned out of the cell first, so that the handler is free to
+        // show something else.
+        let item = self.items.borrow().get(self.at.get()).cloned();
+        if let Some(item) = item {
+            (self.on_action)(make(item));
         }
     }
 
-    pub fn view(&self) -> &NSView {
-        &self.view
+    /// Goes `by` items on, around the ends.
+    fn turn(&self, by: isize) {
+        let count = self.items.borrow().len().cast_signed();
+        if count > 0 {
+            self.turn_to((self.at.get().cast_signed() + by).rem_euclid(count).cast_unsigned());
+        }
     }
 
-    /// Shows `feature`, or with none leaves the space empty.
-    pub fn show(&self, feature: Option<Feature>) {
-        self.card.setHidden(feature.is_none());
-        self.card.set_live(feature.is_some());
-        self.overlay.setHidden(feature.is_none());
-        let Some(Feature { shelf, item }) = feature else {
-            self.shown.replace(None);
+    fn turn_to(&self, page: usize) {
+        if page != self.at.get() && page < self.items.borrow().len() {
+            self.at.set(page);
+            self.show_item(true);
+        }
+    }
+
+    /// Makes the views say what the item on screen is. `turned` says the
+    /// viewer went from one item to another, which fades.
+    fn show_item(&self, turned: bool) {
+        let items = self.items.borrow();
+        let item = items.get(self.at.get());
+        if let (true, false, Some(layer)) = (turned, theme::reduces_motion(), self.card.layer()) {
+            let fade = CATransition::new();
+            // SAFETY: the type is a constant that Core Animation provides.
+            fade.setType(unsafe { kCATransitionFade });
+            fade.setDuration(theme::MOTION_ARRIVE);
+            layer.addAnimation_forKey(&fade, Some(ns_string!("page")));
+        }
+        self.card.set_live(item.is_some());
+        self.overlay.setHidden(item.is_none());
+        self.art.view().setHidden(item.is_none());
+        self.paint(item.and_then(|item| item.colors).map(|colors| colors.bottom_left));
+        let Some(item) = item else {
             return;
         };
 
@@ -238,26 +393,62 @@ impl Hero {
             _ => item.art.as_deref(),
         };
         self.art.show(art.or(item.thumb.as_deref()), theme::HOME_HERO_REQUEST, None, &self.images);
-        self.set_progress(item.progress());
 
         let title = match item.kind {
             Kind::Episode => item.grandparent_title.as_deref().unwrap_or(&item.title),
             _ => &item.title,
         };
-        let facts = facts(&item);
-        label::set(&self.shelf, &shelf);
+        let (facts, left) = (facts(item), text::remaining(item));
         label::set(&self.title, title);
         label::set(&self.facts, &facts);
-        let verb = if item.view_offset.is_some() { "Resume" } else { "Play" };
-        self.play.set_title(verb);
-        self.play.button.setHidden(!poster::is_playable(&item));
-        let spoken = format!("{shelf}, {title}, {facts}");
-        self.card.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
-        self.shown.replace(Some(item));
-    }
-}
+        label::set(&self.left, left.as_deref().unwrap_or_default());
+        self.set_progress(item.progress());
+        self.play.set_title(if item.view_offset.is_some() { "Resume" } else { "Play" });
+        self.play.button.setHidden(!poster::is_playable(item));
+        let spoken: Vec<&str> = [title, &facts]
+            .into_iter()
+            .chain(left.as_deref())
+            .filter(|part| !part.is_empty())
+            .collect();
+        self.card.setAccessibilityLabel(Some(&NSString::from_str(&spoken.join(", "))));
 
-impl Hero {
+        self.pager.setHidden(items.len() < 2);
+        for (page, dot) in self.dots.iter().enumerate() {
+            dot.setHidden(page >= items.len());
+            let opacity = if page == self.at.get() { 1.0 } else { theme::HOME_HERO_DOT_OPACITY };
+            for mark in dot.subviews() {
+                artwork::fill_with(&mark, &theme::white(opacity));
+            }
+        }
+    }
+
+    /// Paints the card in `colour`, darkened until white text reads on it,
+    /// and runs the same colour over the near edge of the artwork. Without
+    /// a colour, in the grey of artwork that has not arrived.
+    fn paint(&self, colour: Option<Rgb>) {
+        let colour = match colour {
+            Some(colour) => backdrop::tint(colour),
+            None => NSColor::colorWithWhite_alpha(theme::HOME_HERO_PLAIN_WHITE, 1.0),
+        };
+        let stops = theme::HOME_HERO_FADE_STOPS;
+        let colours: Vec<_> = stops
+            .iter()
+            .map(|(_, opacity)| colour.colorWithAlphaComponent(*opacity).CGColor())
+            .collect();
+        let colours: Vec<&AnyObject> = colours.iter().map(|colour| (**colour).as_ref()).collect();
+        let places: Vec<Retained<NSNumber>> =
+            stops.iter().map(|(place, _)| NSNumber::new_f64(*place)).collect();
+        // Without this the colours would glide from one item's to the
+        // next's by themselves, out of step with the fade of the rest.
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        artwork::fill_with(&self.card, &colour);
+        // SAFETY: a gradient layer takes an array of CGColors.
+        unsafe { self.fade.setColors(Some(&NSArray::from_slice(&colours))) };
+        self.fade.setLocations(Some(&NSArray::from_retained_slice(&places)));
+        CATransaction::commit();
+    }
+
     /// Draws how much was watched, from 0 to 1. Zero hides the bar.
     fn set_progress(&self, fraction: f64) {
         self.track.setHidden(fraction <= 0.0);
@@ -273,8 +464,8 @@ impl Hero {
     }
 }
 
-/// The line under the title: which episode it is and how much is left, or
-/// for something not started its year and length.
+/// The line under the title: which episode it is, or for a film its year,
+/// rating and length.
 fn facts(item: &Item) -> String {
     let mut facts: Vec<String> = Vec::new();
     if item.kind == Kind::Episode {
@@ -282,38 +473,98 @@ fn facts(item: &Item) -> String {
         facts.push(item.title.clone());
     } else {
         facts.extend(item.year.map(|year| year.to_string()));
+        facts.extend(item.content_rating.clone());
+        facts.extend(item.duration.map(|length| text::length(length.into())));
     }
-    let length = || item.duration.map(|length| text::length(length.into()));
-    facts.extend(text::remaining(item).or_else(length));
     facts.join(" · ")
 }
 
-/// A view that darkens the left of the artwork under it, where the text
-/// is, and holds that text.
-fn scrim(main_thread: MainThreadMarker) -> Retained<NSView> {
-    let view = artwork::layered(main_thread);
-    let gradient = CAGradientLayer::new();
-    gradient.setStartPoint(CGPoint { x: 0.0, y: 0.5 });
-    gradient.setEndPoint(CGPoint { x: theme::HOME_HERO_SCRIM_REACH, y: 0.5 });
-    backdrop::set_gradient(
-        &gradient,
-        &theme::black(theme::HOME_HERO_SCRIM_OPACITY),
-        &NSColor::clearColor(),
-    );
-    // The gradient is not the view's own layer, so it has to be told to
-    // follow the view's size.
-    gradient.setAutoresizingMask(
-        CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable,
-    );
+/// Rounds the corners of `view` as a card's are, cutting off what is in it.
+fn round(view: &NSView) {
     if let Some(layer) = view.layer() {
-        gradient.setFrame(layer.bounds());
         layer.setCornerRadius(theme::RADIUS_XL);
         // SAFETY: the curve is a constant that Core Animation provides.
         unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
         layer.setMasksToBounds(true);
-        layer.addSublayer(&gradient);
     }
-    view
+}
+
+/// Draws the hairline of `frame`, brighter with the pointer over the card.
+fn outline(frame: &NSView, over: bool) {
+    let opacity = match over {
+        true => theme::ARTWORK_HOVER_OUTLINE_OPACITY,
+        false => theme::artwork_outline_opacity(),
+    };
+    if let Some(layer) = frame.layer() {
+        layer.setBorderWidth(theme::ARTWORK_OUTLINE_WIDTH);
+        layer.setBorderColor(Some(&theme::white(opacity).CGColor()));
+    }
+}
+
+/// One of the marks that say how many items there are and which is shown.
+/// A click on it shows its item.
+fn dot(main_thread: MainThreadMarker, on_click: impl Fn() + 'static) -> Retained<HoverView> {
+    let dot = HoverView::pressable(main_thread, |_| {}, on_click);
+    let mark = artwork::layered(main_thread);
+    if let Some(layer) = mark.layer() {
+        layer.setCornerRadius(theme::HOME_HERO_DOT_SIZE / 2.0);
+    }
+    dot.addSubview(&mark);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        dot.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE + theme::SPACE_S),
+        dot.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
+        mark.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE),
+        mark.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE),
+        mark.centerXAnchor().constraintEqualToAnchor(&dot.centerXAnchor()),
+        mark.centerYAnchor().constraintEqualToAnchor(&dot.centerYAnchor()),
+    ]));
+    dot
+}
+
+/// An arrow at one end of the pager, which VoiceOver calls `spoken`.
+fn chevron(
+    symbol: &str,
+    spoken: &str,
+    on_click: impl Fn() + 'static,
+    main_thread: MainThreadMarker,
+) -> Retained<HoverView> {
+    let glyph = NSImageView::new(main_thread);
+    glyph.setImage(artwork::symbol(symbol, theme::FONT_CAPTION, Weight::Bold).as_deref());
+    glyph.setContentTintColor(Some(&theme::white(theme::SECONDARY_ON_ART_OPACITY)));
+    glyph.setTranslatesAutoresizingMaskIntoConstraints(false);
+    glyph.setAccessibilityElement(false);
+    let lit = glyph.clone();
+    let on_hover = move |over| {
+        let opacity = if over { 1.0 } else { theme::SECONDARY_ON_ART_OPACITY };
+        lit.setContentTintColor(Some(&theme::white(opacity)));
+    };
+    let arrow = HoverView::pressable(main_thread, on_hover, on_click);
+    arrow.setAccessibilityElement(true);
+    // SAFETY: the role is a constant that AppKit provides.
+    arrow.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+    arrow.setAccessibilityLabel(Some(&NSString::from_str(spoken)));
+    arrow.addSubview(&glyph);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        arrow.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
+        arrow.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
+        glyph.centerXAnchor().constraintEqualToAnchor(&arrow.centerXAnchor()),
+        glyph.centerYAnchor().constraintEqualToAnchor(&arrow.centerYAnchor()),
+    ]));
+    arrow
+}
+
+/// A dark capsule holding `stops` in a row, so that they show on any
+/// artwork.
+fn pager(stops: &[&NSView], main_thread: MainThreadMarker) -> Retained<NSView> {
+    let pager = artwork::layered(main_thread);
+    artwork::fill_with(&pager, &theme::black(theme::HOME_HERO_PAGER_OPACITY));
+    if let Some(layer) = pager.layer() {
+        layer.setCornerRadius(theme::HOME_HERO_PAGER_HEIGHT / 2.0);
+    }
+    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(stops), main_thread);
+    row.setSpacing(0.0);
+    layout::cover(&pager, &row);
+    pager
 }
 
 #[cfg(test)]
@@ -330,16 +581,19 @@ mod tests {
         Shelf::of(title, Style::Shelf(Shape::Poster), keys.iter().map(item).collect())
     }
 
-    #[test]
-    fn the_featured_item_leaves_its_shelf() {
-        let mut shelves = vec![shelf("a", &["1", "2"]), shelf("b", &["3"])];
-        let feature = feature(&mut shelves).unwrap();
-        assert_eq!((feature.shelf.as_str(), feature.item.rating_key.as_str()), ("a", "1"));
-        assert_eq!(shelves, [shelf("a", &["2"]), shelf("b", &["3"])]);
+    fn keys(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|item| item.rating_key.as_str()).collect()
+    }
 
-        let mut shelves = vec![shelf("a", &["1"]), shelf("b", &["3"])];
-        assert!(super::feature(&mut shelves).is_some());
-        assert_eq!(shelves, [shelf("b", &["3"])]);
-        assert_eq!(super::feature(&mut Vec::new()), None);
+    #[test]
+    fn the_featured_items_leave_their_shelf() {
+        let mut shelves = vec![shelf("a", &["1", "2", "3", "4"]), shelf("b", &["5"])];
+        assert_eq!(keys(&features(&mut shelves)), ["1", "2", "3"]);
+        assert_eq!(shelves, [shelf("a", &["4"]), shelf("b", &["5"])]);
+
+        let mut shelves = vec![shelf("a", &["1", "2"]), shelf("b", &["5"])];
+        assert_eq!(keys(&features(&mut shelves)), ["1", "2"]);
+        assert_eq!(shelves, [shelf("b", &["5"])]);
+        assert!(features(&mut Vec::new()).is_empty());
     }
 }
