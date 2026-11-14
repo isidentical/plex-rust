@@ -8,6 +8,8 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use libmpv2_sys as sys;
 use objc2_open_gl::{
@@ -16,11 +18,28 @@ use objc2_open_gl::{
     CGLSetCurrentContext,
 };
 
+use crate::clock::HostTime;
 use crate::core::Player;
 use crate::error::{Error, Result, check};
 
-/// Called by mpv, on a thread of its choosing, when a new frame is ready.
-type FrameCallback = Box<dyn Fn() + Send + Sync>;
+/// What mpv's frame signal reaches, on a thread of mpv's choosing.
+struct Signal {
+    on_frame: Box<dyn Fn() + Send + Sync>,
+    /// When the signal last fired, in host nanoseconds.
+    at: AtomicU64,
+}
+
+/// The times of one draw, for measuring how evenly frames are shown.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameTiming {
+    /// When mpv last asked for a draw.
+    pub signalled: HostTime,
+    /// When mpv wants the frame on screen. `None` when the draw repeated a
+    /// frame that was already shown.
+    pub due: Option<HostTime>,
+    pub began: HostTime,
+    pub ended: HostTime,
+}
 
 /// Draws the player's video with OpenGL.
 ///
@@ -36,8 +55,13 @@ pub struct Renderer {
     pixel_format: CGLPixelFormatObj,
     /// Width and height in pixels of the last frame drawn.
     drawn_size: Cell<(i32, i32)>,
-    // Boxed twice so that mpv can hold a thin pointer to it.
-    _on_frame: Box<FrameCallback>,
+    /// Host time minus mpv's clock, in nanoseconds. Both count the same
+    /// ticks, mpv from when it started (osdep/timer.c).
+    clock_offset: i64,
+    /// The draws since [`record_timings`](Self::record_timings), if any.
+    timings: Mutex<Option<Vec<FrameTiming>>>,
+    // Boxed so that mpv can hold a pointer to it that stays valid.
+    signal: Box<Signal>,
     // Keeps mpv alive for as long as the render context exists.
     _player: Player,
 }
@@ -88,23 +112,28 @@ impl Renderer {
             }
         };
 
-        let on_frame: Box<FrameCallback> = Box::new(Box::new(on_frame));
+        let signal = Box::new(Signal { on_frame: Box::new(on_frame), at: AtomicU64::new(0) });
         // SAFETY: the render context is valid. The callback data points into
         // a box that `Renderer` keeps until after the context is freed.
         unsafe {
             sys::mpv_render_context_set_update_callback(
                 mpv.as_ptr(),
                 Some(frame_ready),
-                ptr::from_ref::<FrameCallback>(&on_frame).cast_mut().cast(),
+                ptr::from_ref::<Signal>(&signal).cast_mut().cast(),
             );
         }
+        // SAFETY: the handle is valid.
+        let mpv_now = unsafe { sys::mpv_get_time_ns(player.raw()) };
+        let clock_offset = HostTime::now().nanos().cast_signed() - mpv_now;
 
         Ok(Self {
             mpv,
             gl,
             pixel_format,
             drawn_size: Cell::new((0, 0)),
-            _on_frame: on_frame,
+            clock_offset,
+            timings: Mutex::new(None),
+            signal,
             _player: player.clone(),
         })
     }
@@ -125,9 +154,45 @@ impl Renderer {
         self.pixel_format
     }
 
+    /// Starts keeping the times of every draw, dropping any kept so far.
+    pub fn record_timings(&self) {
+        *self.timings.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
+    }
+
+    /// The draws since [`record_timings`](Self::record_timings), oldest
+    /// first. Recording stops.
+    pub fn take_timings(&self) -> Vec<FrameTiming> {
+        self.timings.lock().unwrap_or_else(PoisonError::into_inner).take().unwrap_or_default()
+    }
+
+    /// When mpv wants the frame it is holding out to be on screen. `None`
+    /// when it holds none, or only a request to draw the last one again.
+    fn next_frame_due(&self) -> Option<HostTime> {
+        let mut info = sys::mpv_render_frame_info { flags: 0, target_time: 0 };
+        // SAFETY: the render context is valid and `info` is the type this
+        // parameter writes to.
+        let status = unsafe {
+            sys::mpv_render_context_get_info(
+                self.mpv.as_ptr(),
+                param(sys::mpv_render_param_type_MPV_RENDER_PARAM_NEXT_FRAME_INFO, &mut info),
+            )
+        };
+        let is_new = info.flags & FRAME_PRESENT != 0 && info.flags & FRAME_REDRAW == 0;
+        if status < 0 || !is_new || info.target_time <= 0 {
+            return None;
+        }
+        // render.h says microseconds, but mpv 0.42 stores the frame's time
+        // in nanoseconds on the clock of `mpv_get_time_ns` (vo_libmpv.c,
+        // `info->target_time = frame->pts`).
+        let nanos = info.target_time.saturating_add(self.clock_offset);
+        Some(HostTime::from_nanos(u64::try_from(nanos).unwrap_or(0)))
+    }
+
     /// Draws the current frame into the framebuffer that is bound for
     /// drawing in the renderer's context, filling the viewport.
     pub fn render(&self) -> Result<()> {
+        let began = HostTime::now();
+        let due = self.next_frame_due();
         let mut framebuffer = 0;
         // x, y, width, height in pixels.
         let mut viewport = [0; 4];
@@ -178,6 +243,10 @@ impl Renderer {
         unsafe {
             glFlush();
             sys::mpv_render_context_report_swap(self.mpv.as_ptr());
+        }
+        if let Some(timings) = &mut *self.timings.lock().unwrap_or_else(PoisonError::into_inner) {
+            let signalled = HostTime::from_nanos(self.signal.at.load(Ordering::Relaxed));
+            timings.push(FrameTiming { signalled, due, began, ended: HostTime::now() });
         }
         Ok(())
     }
@@ -240,6 +309,9 @@ fn create_context(pixel_format: CGLPixelFormatObj) -> Result<CGLContextObj> {
     Ok(context)
 }
 
+const FRAME_PRESENT: u64 = sys::mpv_render_frame_info_flag_MPV_RENDER_FRAME_INFO_PRESENT as u64;
+const FRAME_REDRAW: u64 = sys::mpv_render_frame_info_flag_MPV_RENDER_FRAME_INFO_REDRAW as u64;
+
 const GL_VIEWPORT: u32 = 0x0BA2;
 const GL_DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 
@@ -266,8 +338,9 @@ unsafe extern "C" fn gl_symbol(_: *mut c_void, name: *const libc::c_char) -> *mu
 }
 
 unsafe extern "C" fn frame_ready(data: *mut c_void) {
-    // SAFETY: `data` is the pointer to the boxed callback registered in
+    // SAFETY: `data` is the pointer to the boxed signal registered in
     // `Renderer::new`, which stays alive until the render context is freed.
-    let on_frame = unsafe { &*data.cast::<FrameCallback>() };
-    on_frame();
+    let signal = unsafe { &*data.cast::<Signal>() };
+    signal.at.store(HostTime::now().nanos(), Ordering::Relaxed);
+    (signal.on_frame)();
 }

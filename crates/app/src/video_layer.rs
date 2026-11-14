@@ -22,7 +22,7 @@ use objc2_core_video::CVTimeStamp;
 use objc2_foundation::NSObject;
 use objc2_open_gl::{CGLContextObj, CGLPixelFormatObj, CGLRetainContext, CGLRetainPixelFormat};
 use objc2_quartz_core::{CALayer, CAOpenGLLayer};
-use player::{Colors, Player, Renderer};
+use player::{Colors, FrameTiming, Player, Renderer};
 
 pub struct Ivars {
     renderer: Rc<Renderer>,
@@ -109,6 +109,16 @@ impl VideoLayer {
     /// Width and height in pixels of the last frame drawn.
     pub fn drawn_size(&self) -> (i32, i32) {
         self.ivars().renderer.drawn_size()
+    }
+
+    /// Starts keeping the times of every draw.
+    pub fn record_timings(&self) {
+        self.ivars().renderer.record_timings();
+    }
+
+    /// The draws since [`record_timings`](Self::record_timings).
+    pub fn take_timings(&self) -> Vec<FrameTiming> {
+        self.ivars().renderer.take_timings()
     }
 
     /// Sets up the layer and the player for the colours of the video that

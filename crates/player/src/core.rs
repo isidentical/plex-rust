@@ -314,6 +314,12 @@ impl Player {
         Ok(self.number("frame-drop-count")?.unwrap_or(0))
     }
 
+    /// The current text of any mpv property, for reports on how playback
+    /// is going. `None` while the property has no value.
+    pub fn diagnostic(&self, name: &str) -> Result<Option<String>> {
+        self.string(name)
+    }
+
     /// How the picture now playing is encoded, or `None` before the first
     /// frame has been decoded.
     pub fn video_colors(&self) -> Result<Option<Colors>> {

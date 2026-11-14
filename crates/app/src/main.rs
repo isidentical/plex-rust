@@ -4,6 +4,7 @@ mod account;
 mod background;
 mod error;
 mod images;
+mod pacing;
 mod play;
 mod progress;
 mod seeks;
@@ -42,7 +43,8 @@ usage: plex-rust
        plex-rust api [--post] <path>
        plex-rust play <file-or-url> [--unattended <seconds>]
        plex-rust play item:<rating-key> [--unattended <seconds>]
-       plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...";
+       plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
+       plex-rust pacing <file-or-url-or-item:<rating-key>> <speed> <seconds>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -94,6 +96,7 @@ fn run(args: &[&str]) -> Result<()> {
             let steps = seeks::parse(script).ok_or(Error::Usage(USAGE))?;
             play(what, Some(Check::Seeks(steps)))
         }
+        ["pacing", what, speed, seconds] => pacing::run(what, speed, seconds),
         _ => Err(Error::Usage(USAGE)),
     }
 }
