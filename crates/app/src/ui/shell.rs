@@ -1345,8 +1345,8 @@ impl Shell {
             |server| async move { server.home(SHELF_LENGTH).await },
             // The hero lives as long as this closure, which the entry keeps.
             move |hubs: &Vec<Hub>| {
-                let mut shelves = home_shelves(hubs);
-                hero.show(hero::features(&mut shelves));
+                let shelves = home_shelves(hubs);
+                hero.show(hero::features(&shelves));
                 shown.show(shelves);
             },
         );

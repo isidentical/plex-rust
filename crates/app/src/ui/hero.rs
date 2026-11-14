@@ -38,20 +38,14 @@ use crate::images::Images;
 /// How many items the hero pages through at most.
 const PAGES: usize = 3;
 
-/// Takes the first few items of the first shelf out of `shelves` to show
-/// them large above it, so that none is on the screen twice. A shelf left
-/// with nothing goes too.
-pub fn features(shelves: &mut Vec<Shelf>) -> Vec<Item> {
-    let Some(first) = shelves.first_mut() else {
+/// The first few items of the first shelf, to show large above it. They
+/// stay on their shelf too: taken off it, a shelf of four or five would be
+/// left with one or two cards in a row made for many.
+pub fn features(shelves: &[Shelf]) -> Vec<Item> {
+    let Some(first) = shelves.first() else {
         return Vec::new();
     };
-    let items: Vec<Item> =
-        first.cards.iter().take(PAGES).map_while(|card| card.item().cloned()).collect();
-    first.cards.drain(..items.len());
-    if first.cards.is_empty() {
-        shelves.remove(0);
-    }
-    items
+    first.cards.iter().take(PAGES).map_while(|card| card.item().cloned()).collect()
 }
 
 pub struct Hero(Rc<Views>);
@@ -654,14 +648,11 @@ mod tests {
     }
 
     #[test]
-    fn the_featured_items_leave_their_shelf() {
-        let mut shelves = vec![shelf("a", &["1", "2", "3", "4"]), shelf("b", &["5"])];
-        assert_eq!(keys(&features(&mut shelves)), ["1", "2", "3"]);
-        assert_eq!(shelves, [shelf("a", &["4"]), shelf("b", &["5"])]);
-
-        let mut shelves = vec![shelf("a", &["1", "2"]), shelf("b", &["5"])];
-        assert_eq!(keys(&features(&mut shelves)), ["1", "2"]);
-        assert_eq!(shelves, [shelf("b", &["5"])]);
-        assert!(features(&mut Vec::new()).is_empty());
+    fn the_featured_items_are_the_first_of_the_first_shelf() {
+        let shelves = [shelf("a", &["1", "2", "3", "4"]), shelf("b", &["5"])];
+        assert_eq!(keys(&features(&shelves)), ["1", "2", "3"]);
+        let shelves = [shelf("a", &["1", "2"]), shelf("b", &["5"])];
+        assert_eq!(keys(&features(&shelves)), ["1", "2"]);
+        assert!(features(&[]).is_empty());
     }
 }
