@@ -21,13 +21,16 @@ use std::time::Duration;
 
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSControlStateValueOn, NSCursor, NSMenu, NSMenuItem, NSView,
     NSWindowStyleMask,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSUUID, ns_string};
+use objc2_foundation::{
+    NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSString, NSTimer,
+    NSUUID, ns_string,
+};
 use player::{Chapter, EndReason, Event, Player, Track, TrackKind};
 use plex::MediaServer;
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
@@ -152,6 +155,9 @@ pub struct Ivars {
     /// film, and for an episode until the server has listed its season.
     neighbours: RefCell<Option<Neighbours>>,
     up_next: Cell<UpNext>,
+    /// Held while playing, so that the display does not go to sleep in the
+    /// middle of a film. Given up while paused and on closing.
+    awake: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -256,6 +262,7 @@ impl PlayerScreen {
             chapters: RefCell::new(Vec::new()),
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
+            awake: RefCell::new(None),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             duration: Cell::new(None),
@@ -293,6 +300,7 @@ impl PlayerScreen {
             )
         };
         *screen.ivars().timer.borrow_mut() = Some(timer);
+        screen.keep_display_awake(true);
         screen.follow_events(main_thread);
         screen.find_neighbours();
         Ok(screen)
@@ -389,6 +397,7 @@ impl PlayerScreen {
             return false;
         };
         timer.invalidate();
+        self.keep_display_awake(false);
         NSCursor::setHiddenUntilMouseMoves(false);
         if let (Some(chrome), Some(window)) =
             (ivars.chrome.borrow_mut().take(), ivars.root.window())
@@ -396,6 +405,26 @@ impl PlayerScreen {
             chrome.restore(&window);
         }
         true
+    }
+
+    /// Holds off the display's sleep, or stops holding it off. Nobody
+    /// touches the keyboard during a film, which to the system looks like
+    /// nobody being there. A check holds nothing: it must leave no trace.
+    fn keep_display_awake(&self, awake: bool) {
+        let mut held = self.ivars().awake.borrow_mut();
+        let process = NSProcessInfo::processInfo();
+        match (held.take(), awake && self.ivars().purpose == Purpose::Watching) {
+            (None, true) => {
+                *held = Some(process.beginActivityWithOptions_reason(
+                    NSActivityOptions::UserInitiated | NSActivityOptions::IdleDisplaySleepDisabled,
+                    ns_string!("Playing video"),
+                ));
+            }
+            (Some(activity), true) => *held = Some(activity),
+            // SAFETY: the activity is the one `beginActivity` returned.
+            (Some(activity), false) => unsafe { process.endActivity(&activity) },
+            (None, false) => {}
+        }
     }
 
     /// Says what each control does.
@@ -1156,6 +1185,7 @@ impl PlayerScreen {
         let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
         self.ivars().controls.toggle.set_name(name);
+        self.keep_display_awake(!pause);
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);
         Ok(())
