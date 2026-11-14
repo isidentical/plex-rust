@@ -61,14 +61,19 @@ pub const MOTION_ARRIVE: f64 = 0.2;
 /// How long something takes to leave when nobody sent it away.
 pub const MOTION_LEAVE: f64 = 0.35;
 
+/// The least a control measures each way where a finger has to land on
+/// it. What is drawn may be smaller: the room around it takes the press.
+pub const TOUCH_TARGET: f64 = 44.0;
+
 pub const PAGE_MARGIN: f64 = SPACE_XXL;
 pub const CELL_SPACING: f64 = SPACE_L;
 /// Between the last row of one shelf and the heading of the next.
 pub const SHELF_SPACING: f64 = SPACE_XL;
-pub const SHELF_HEADING_HEIGHT: f64 = 44.0;
+pub const SHELF_HEADING_HEIGHT: f64 = TOUCH_TARGET;
 /// The round arrows at the end of a heading that page its shelf sideways.
-pub const SHELF_ARROW_SIZE: f64 = SPACE_XL;
+pub const SHELF_ARROW_SIZE: f64 = 28.0;
 pub const SHELF_ARROW_WASH_OPACITY: f64 = 0.1;
+pub const SHELF_ARROW_HOVER_OPACITY: f64 = 0.22;
 /// How strong an arrow is that has nowhere left to go.
 pub const SHELF_ARROW_SPENT_OPACITY: f64 = 0.35;
 

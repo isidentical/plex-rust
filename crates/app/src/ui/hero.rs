@@ -271,10 +271,7 @@ impl Views {
             .collect();
         let back = chevron("chevron.left", "Previous", with(|views| views.turn(-1)), main_thread);
         let on = chevron("chevron.right", "Next", with(|views| views.turn(1)), main_thread);
-        let mut stops: Vec<&NSView> = vec![&back];
-        stops.extend(dots.iter().map(|dot| -> &NSView { dot }));
-        stops.push(&on);
-        let pager = pager(&stops, main_thread);
+        let pager = pager(&back, &dots, &on, main_thread);
 
         let ring = artwork::layered(main_thread);
         ring.setHidden(true);
@@ -429,9 +426,12 @@ impl Views {
             fill.leadingAnchor().constraintEqualToAnchor(&track.leadingAnchor()),
             fill.topAnchor().constraintEqualToAnchor(&track.topAnchor()),
             fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
-            pager
-                .trailingAnchor()
-                .constraintEqualToAnchor_constant(&card.trailingAnchor(), -margin),
+            // The capsule ends at the margin. The arrow at its end takes a
+            // press this much further out.
+            pager.trailingAnchor().constraintEqualToAnchor_constant(
+                &card.trailingAnchor(),
+                theme::TOUCH_TARGET - theme::HOME_HERO_PAGER_HEIGHT - margin,
+            ),
             pager.centerYAnchor().constraintEqualToAnchor(&play.centerYAnchor()),
         ]));
     }
@@ -706,8 +706,8 @@ fn dot(main_thread: MainThreadMarker, on_click: impl Fn() + 'static) -> Retained
     }
     dot.addSubview(&mark);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        dot.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE + theme::SPACE_S),
-        dot.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
+        dot.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE + theme::SPACE_M),
+        dot.heightAnchor().constraintEqualToConstant(theme::TOUCH_TARGET),
         mark.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE),
         mark.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_DOT_SIZE),
         mark.centerXAnchor().constraintEqualToAnchor(&dot.centerXAnchor()),
@@ -716,7 +716,9 @@ fn dot(main_thread: MainThreadMarker, on_click: impl Fn() + 'static) -> Retained
     dot
 }
 
-/// An arrow at one end of the pager, which VoiceOver calls `spoken`.
+/// An arrow at one end of the pager, which VoiceOver calls `spoken`. It
+/// is as large as a finger needs, and [`pager`] puts its glyph at the end
+/// of it that is inside the capsule.
 fn chevron(
     symbol: &str,
     spoken: &str,
@@ -740,25 +742,53 @@ fn chevron(
     arrow.setAccessibilityLabel(Some(&NSString::from_str(spoken)));
     arrow.addSubview(&glyph);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        arrow.widthAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
-        arrow.heightAnchor().constraintEqualToConstant(theme::HOME_HERO_PAGER_HEIGHT),
-        glyph.centerXAnchor().constraintEqualToAnchor(&arrow.centerXAnchor()),
+        arrow.widthAnchor().constraintEqualToConstant(theme::TOUCH_TARGET),
+        arrow.heightAnchor().constraintEqualToConstant(theme::TOUCH_TARGET),
         glyph.centerYAnchor().constraintEqualToAnchor(&arrow.centerYAnchor()),
     ]));
     arrow
 }
 
-/// A dark capsule holding `stops` in a row, so that they show on any
-/// artwork.
-fn pager(stops: &[&NSView], main_thread: MainThreadMarker) -> Retained<NSView> {
-    let pager = artwork::layered(main_thread);
-    artwork::fill_with(&pager, &theme::black(theme::HOME_HERO_PAGER_OPACITY));
-    if let Some(layer) = pager.layer() {
+/// The way from one item to the next: `back`, a dot for each item and
+/// `on` in a row, on a dark capsule so that they show on any artwork. The
+/// capsule is no taller than the dots need. The row is as tall as a
+/// finger needs, and the arrows reach out past the capsule's ends.
+fn pager(
+    back: &HoverView,
+    dots: &[Retained<HoverView>],
+    on: &HoverView,
+    main_thread: MainThreadMarker,
+) -> Retained<NSView> {
+    let pager = NSView::new(main_thread);
+    pager.setTranslatesAutoresizingMaskIntoConstraints(false);
+    let capsule = artwork::layered(main_thread);
+    artwork::fill_with(&capsule, &theme::black(theme::HOME_HERO_PAGER_OPACITY));
+    if let Some(layer) = capsule.layer() {
         layer.setCornerRadius(theme::HOME_HERO_PAGER_HEIGHT / 2.0);
     }
-    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(stops), main_thread);
+    pager.addSubview(&capsule);
+    let mut stops: Vec<&NSView> = vec![back];
+    stops.extend(dots.iter().map(|dot| -> &NSView { dot }));
+    stops.push(on);
+    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&stops), main_thread);
     row.setSpacing(0.0);
     layout::cover(&pager, &row);
+
+    // Each arrow's glyph is in the middle of the round end of the capsule.
+    let end = theme::HOME_HERO_PAGER_HEIGHT;
+    let glyph_in =
+        |arrow: &HoverView| arrow.subviews().firstObject().map(|glyph| glyph.centerXAnchor());
+    let (Some(back_glyph), Some(on_glyph)) = (glyph_in(back), glyph_in(on)) else {
+        return pager;
+    };
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        capsule.leadingAnchor().constraintEqualToAnchor_constant(&back.trailingAnchor(), -end),
+        capsule.trailingAnchor().constraintEqualToAnchor_constant(&on.leadingAnchor(), end),
+        capsule.heightAnchor().constraintEqualToConstant(end),
+        capsule.centerYAnchor().constraintEqualToAnchor(&pager.centerYAnchor()),
+        back_glyph.constraintEqualToAnchor_constant(&back.trailingAnchor(), -end / 2.0),
+        on_glyph.constraintEqualToAnchor_constant(&on.leadingAnchor(), end / 2.0),
+    ]));
     pager
 }
 

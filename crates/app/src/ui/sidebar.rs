@@ -8,7 +8,8 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSControlTextEditingDelegate, NSImage, NSImageView, NSLayoutConstraint,
     NSLineBreakMode, NSScrollView, NSTableCellView, NSTableColumn, NSTableView,
-    NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField, NSView,
+    NSTableViewDataSource, NSTableViewDelegate, NSTableViewRowSizeStyle, NSTableViewStyle,
+    NSTextField, NSView,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSString, ns_string,
@@ -104,6 +105,9 @@ impl Sidebar {
         let table = NSTableView::new(main_thread);
         table.setStyle(NSTableViewStyle::SourceList);
         table.setHeaderView(None);
+        // The largest rows the system has for a sidebar, with the symbol
+        // and the text it sets in them: 40 points, for a finger.
+        table.setRowSizeStyle(NSTableViewRowSizeStyle::Large);
         let column = NSTableColumn::initWithIdentifier(
             NSTableColumn::alloc(main_thread),
             ns_string!("destination"),

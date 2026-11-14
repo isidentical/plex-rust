@@ -6,8 +6,8 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSColor, NSLayoutConstraint, NSPopUpButton, NSSegmentSwitchTracking,
-    NSSegmentedControl, NSTextField, NSView,
+    NSAccessibility, NSColor, NSControlSize, NSLayoutConstraint, NSPopUpButton,
+    NSSegmentSwitchTracking, NSSegmentedControl, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
 use plex::library::{Listing, Sort};
@@ -51,6 +51,9 @@ impl LibraryBar {
         // The menu shows only the order in use, such as "Title", which
         // does not say what it is the title of.
         order.setAccessibilityLabel(Some(ns_string!("Sort by")));
+        // As tall as the toolbar's own controls above them, which is the
+        // most the system gives a control: 36 points.
+        order.setControlSize(NSControlSize::ExtraLarge);
 
         // Two segments, of which one is always lit: which items are
         // listed can be read at a glance, in a window that is in front or
@@ -68,6 +71,7 @@ impl LibraryBar {
         };
         shown.setSelectedSegment(if listing.unwatched_only { UNWATCHED_SEGMENT } else { 0 });
         shown.setAccessibilityLabel(Some(ns_string!("Show")));
+        shown.setControlSize(NSControlSize::ExtraLarge);
 
         let secondary = NSColor::secondaryLabelColor();
         let sort_by = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
