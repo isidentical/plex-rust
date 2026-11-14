@@ -30,6 +30,10 @@ your browser for it.
 open target/plex-rust.app
 ```
 
+It opens where you left it: the same window, and the library or page that
+was on screen. When the server cannot be reached, what was last seen stays,
+with a line at the bottom that says so and a button to try again.
+
 ## Keys while browsing
 
 | Key | Action |

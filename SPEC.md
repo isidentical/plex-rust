@@ -16,8 +16,6 @@ similar layout that browses faster, always plays the original file, buffers far
 ahead, stays smooth at high playback speed, and uses as little battery as
 possible.
 
-/Users/batuhan/projects/native-plex-client is empty and not a git repo [V].
-
 ## 2. Decisions
 
 | Topic | Decision |
@@ -113,44 +111,89 @@ about AppKit.
 Cargo.toml
 crates/
   plex/        pure Rust, no UI, no mpv
-    src/auth.rs        PIN login against plex.tv
+    src/auth.rs        PIN login against plex.tv, the account's identifier
     src/discovery.rs   resources list, connection probing and choice
-    src/client.rs      one reqwest Client, headers, JSON, pagination
+    src/client.rs      one reqwest Client and the headers on every request
+    src/server.rs      one server: its requests, and their answers kept
+    src/cache.rs       a folder of kept answers, held under a size
     src/library.rs     hubs, sections, items, children, search
-    src/playback.rs    part URL, timeline, scrobble, markers
-    src/image.rs       photo transcode URLs
+    src/playback.rs    part URL, timeline, stream choice, scrobble
+    src/download.rs    the original file, in one go or carried on
+    src/image.rs       photo transcode requests
     src/model.rs       typed serde models and newtypes
     src/error.rs
-    tests/fixtures/    recorded JSON from the real server, tokens removed
+    tests/fixtures/    recorded JSON from the real server, titles replaced
   player/      safe wrapper over libmpv
     src/core.rs        handle, options, commands, typed properties, events
     src/render.rs      OpenGL render context
+    src/cadence.rs     which display refresh each frame appears at
+    src/clock.rs       the clock frame times are measured on
+    src/offscreen.rs   drawing where nobody sees it, for checks
+    src/probe.rs       timing what mpv does, for `play --seeks`
     src/error.rs
   app/         the AppKit binary
-    src/main.rs        NSApplication, delegate, menu
-    src/runtime.rs     tokio runtime + the one bridge back to the main thread
-    src/store.rs       SQLite: response cache, downloads
-    src/account.rs     sign-in, token and client identifier storage
-    src/images.rs      disk + memory image cache, ImageIO decode
-    src/downloads.rs   resumable original-file downloads
-    src/ui/            window, sidebar, home, library, detail, search,
-                       downloads, player (video layer, controls, hdr)
+    src/main.rs        the command line
+    src/background.rs  tokio runtime + the one bridge back to the main thread
+    src/account.rs     sign-in, token, client identifier, the saved server
+    src/settings.rs    what is remembered between launches, as JSON files
+    src/images.rs      memory + disk artwork cache, ImageIO decode
+    src/source.rs      a library item as something the player can load
+    src/downloads.rs   downloads as they run
+    src/store.rs       downloads on disk
+    src/video_layer.rs the layer that shows the video, and its frame clock
+    src/play.rs        `plex-rust play`, with progress.rs and seeks.rs
+    src/pacing.rs      `plex-rust pacing`
+    src/timing.rs      timestamps for `plex-rust snapshot walk`
+    src/ui/shell.rs    the window: navigation, loading, refresh, history
+    src/ui/shell/walk.rs  the scripted walk that times them
+    src/ui/            one module a screen or a piece of one: sidebar,
+                       toolbar, menus, hero, posters, poster, episode,
+                       detail, downloads, library_bar, heading, notice,
+                       stale, failure, confirm, artwork, backdrop, formats,
+                       text, label, layout, hover, callback, theme, snapshot
+    src/ui/player/     the player screen: controls, chips, sliders, menus,
+                       input, media keys (remote), up next, zoom, info,
+                       failure, and a theme of its own
+scripts/build-libmpv.sh  builds the static libmpv into vendor/
+scripts/patches/       three patches to mpv 0.42.0
 scripts/bundle.sh      builds plex-rust.app, writes Info.plist, ad hoc signs
 ```
 
-Crates used, all current versions confirmed on crates.io [V]: objc2 0.6.5,
-objc2-foundation / app-kit / quartz-core / image-io / io-kit 0.3.2, block2
-0.6.2, dispatch2 0.3.1, libmpv2 7.0.1 (LGPL-2.1, exposes the OpenGL render
-API), reqwest 0.13.5, tokio 1.54.1, serde 1.0.229, serde_json 1.0.154,
-rusqlite 0.42.0, thiserror.
+Crates used, at the versions in Cargo.lock: objc2 0.6.5, objc2-foundation /
+app-kit / quartz-core / core-graphics / core-video / core-foundation /
+image-io / media-player / open-gl 0.3.2, block2 0.6.2, dispatch2 0.3.1,
+libmpv2-sys 4.0.1 (the raw bindings; the safe wrapper over them is the
+`player` crate's own), libc, reqwest 0.13.5 with native-tls, tokio 1.54.1,
+futures-util, url, serde 1.0.229, serde_json 1.0.154, rustix, thiserror.
+There is no database.
 
-Threading has two rules. AppKit lives on the main thread; network and disk
-run on a tokio runtime, and `runtime::spawn(future, on_main)` runs the future
-off the main thread and delivers its `Result` to a closure on the main queue.
-Video frames are drawn on one more thread, the frame clock in
-`video_layer.rs`, so that the interface cannot delay a frame: a busy main
-thread used to. Whoever draws holds the lock of the renderer's OpenGL
-context. No other cross-thread path exists.
+Threading has three rules. AppKit lives on the main thread. Network and
+disk run on a tokio runtime, and `Background::run(main_thread, future, then)`
+runs the future off the main thread and hands its result to a closure on the
+main queue. It returns a task that can be cancelled, after which the
+closure is not called. Video frames are drawn on one more thread, the frame
+clock in `video_layer.rs`, so that the interface cannot delay a frame: a
+busy main thread used to. Whoever draws holds the lock of the renderer's
+OpenGL context. Besides those, each open player has one thread that waits
+for mpv's events and passes them to the main queue.
+
+What the app keeps, and where:
+
+| Where | What |
+| --- | --- |
+| `~/Library/Application Support/plex-rust/` | `token` and `client-identifier`; `server.json`, the server last used with its address, token, machine identifier and the account's identifier; `settings.json`, speed, volume and Low Power; `listings.json`, the order and filter of each library; `place.json`, where the viewer was |
+| `~/Library/Caches/plex-rust/responses/` | The server's answers to library requests, up to 64 MiB |
+| `~/Library/Caches/plex-rust/images/` | Artwork as the server sent it, up to 512 MiB |
+| `~/Movies/plex-rust/` | Downloads (section 9) |
+
+Both cache folders are a `plex::Cache`. A file is named by a hash of the
+server's machine identifier, the account's identifier at plex.tv and the
+question, so one server has one cache at every address it is reached at,
+and two accounts on one server never read each other's answers. A file is
+written under a temporary name and renamed. Reading one marks it as used,
+and once an eighth of the limit has been written the folder is swept down
+to three quarters of it, least recently used first. An answer is kept only
+if it decoded, and a kept picture that no longer decodes is fetched again.
 
 ## 6. Plex API surface
 
@@ -168,25 +211,31 @@ once), `X-Plex-Token`, `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`,
 - The token is stored in `~/Library/Application Support/plex-rust/token`, readable
   only by its owner. Not the Keychain: it ties access to the exact binary, so
   every rebuild of an ad hoc signed app asks for the login password again.
-  `GET https://plex.tv/api/v2/user` returning 401 means log in again.
+  `GET https://plex.tv/api/v2/user` gives the account's `uuid`, which keeps
+  one account's cache apart from another's.
 - The newer JWT flow is not used: Plex's doc recommends it, but developers on
   Plex's forum report that the media server only accepts legacy tokens. The
   PIN flow is the one both sources agree works.
 
 **Discovery:** `GET https://clients.plex.tv/api/v2/resources?includeHttps=1`.
 Use each server's `accessToken`. Candidates are its non-relay `connections`
-plus one optional address typed by the user (for Tailscale). All candidates
-are probed in parallel; the first reachable one in this order wins: local
-https, local http, manual address, remote https. No candidate reachable is an
-error screen listing what was tried.
+plus one optional address given by hand (for Tailscale), which only
+`plex-rust servers <address>` passes today: the app has no field for it.
+All candidates are probed in parallel; the first reachable one in this order
+wins: local https, local http, manual address, remote https. No candidate
+reachable is an error screen that names what was tried. The server found is
+saved, and the next launch asks it directly, going back to plex.tv only if
+it does not answer within 3 seconds.
 
-**Browsing:** `/hubs`, `/hubs/continueWatching`, `/library/sections/all`,
+**Browsing:** `/hubs`, `/library/sections/all`,
 `/library/sections/{id}/all` (paged with `X-Plex-Container-Start` and
-`X-Plex-Container-Size`, total from `X-Plex-Container-Total-Size`),
-`/library/metadata/{id}`, `/children`, `/hubs/search?query=`.
+`X-Plex-Container-Size`, total from `totalSize`), `/library/metadata/{id}`,
+its `/children` and `/allLeaves`, `/hubs/metadata/{id}/related`,
+`/hubs/search?query=`, and the paths the server itself hands out for the
+whole of a shelf.
 
 **Images:** `/photo/:/transcode?url=..&width=..&height=..&minSize=1&format=jpg`
-requested at the exact pixel size of the cell.
+requested at the pixel size each kind of card is drawn at.
 
 **Playback:** direct play only. The stream URL is the server address plus
 `Part.key` (`/library/parts/{partId}/{changestamp}/{file}`). The token is sent
@@ -264,8 +313,12 @@ and `framedrop=vo` stay at defaults. No interpolation.
 
 **Power:**
 - Hardware decode, zero-copy, draw only on new frames.
-- While the controls are hidden nothing polls. While visible, position is
-  read 4 times per second. The only other timer is the 10 second timeline.
+- One timer ticks 4 times a second while a player is open, and the 10
+  second timeline rides on it. With the controls up, each tick reads the
+  position. With them hidden, the position is read once a second, and only
+  for an item with an intro or credits to skip or an episode to follow.
+  Paused with the controls away, or after a failure, the timer is put off
+  until something happens.
 - The system Low Power Mode is never consulted, so picture quality is the
   same whether it is on or off.
 - The plex-rust menu has one Low Power item, off by default and checked
@@ -289,8 +342,11 @@ takes to decode from a keyframe up to the target.
 `plex-rust play item:<key> --seeks 3x10,-3x10` measures all of it.
 
 **Subtitles and audio:** mpv renders embedded text and image subtitles
-itself. Plex sidecar subtitles are added by URL with `sub-add`. Track menus
-come from `track-list`.
+itself. Subtitles Plex keeps in files of their own, which are the streams it
+lists with a `key`, are added with `sub-add` by their address on the server
+once the video is open, with the same token header. Track menus come from
+`track-list`, named as the server names each stream. A download played from
+disk gets only the subtitles inside its file.
 
 **Skip intro / credits:** a button shown while the position is inside a
 marker. **Next episode:** on end of file, play the episode that follows in
@@ -334,7 +390,8 @@ icon and font assets:
 - **Search:** results grouped by hub.
 - **Player:** video fills the window, controls fade out: scrubber with
   buffered range and chapter ticks, time, speed, audio/subtitle menus, skip
-  button, fullscreen. Space, arrows, `[` `]` for speed, `F` for fullscreen.
+  button, fullscreen. Space, arrows, `S` and `D` for speed, `R` for normal
+  speed, `F` for fullscreen: the README lists every key.
   Media keys through `MPRemoteCommandCenter`, and what is playing through
   `MPNowPlayingInfoCenter`, both held only while a player is open and
   someone is watching: a snapshot or other check never takes them.
@@ -343,10 +400,30 @@ Collection views use the classic `NSCollectionViewDataSource` protocol.
 `NSCollectionViewDiffableDataSource` has no usable initializer in
 objc2-app-kit 0.3.2 [V].
 
-**Why it will feel faster:** every screen draws first from the SQLite
-response cache, then refreshes from the server and updates in place. Posters
-are requested at exact cell size, decoded off the main thread with ImageIO,
-kept in a memory cache and a disk cache. Cells are reused.
+**Why it feels fast:** every screen draws first from the response cache,
+then asks the server and updates in place where the answer differs. Posters
+are requested at the size they are drawn, decoded off the main thread with
+ImageIO, kept in a memory cache and a disk cache. Cells are reused.
+
+**Between and behind the screens:**
+- A launch starts where the last one ended: the same window, and from Home
+  on to the library, list, page or Downloads that was on screen.
+- Back and Forward show a place as it was left, scrolled as it was, and
+  then ask the server about it again.
+- When the pointer or the keyboard has been on a card for 120 ms, what its
+  page will ask is asked ahead and its backdrop fetched, so the page opens
+  from saved answers.
+- Leaving a place gives up what it was still asking. The search field
+  searches at every letter, and the search for the letters before is given
+  up, so an earlier answer cannot replace a later one.
+- A grid is refreshed with every page it holds, not its first.
+- Coming back to the app after more than 30 seconds asks about the place on
+  screen again. After the player closes, the place behind it is asked about
+  once the server has heard where the viewer stopped.
+- When the server does not answer, what was saved stays, with a line at the
+  bottom that says so and a button to look for the server again. An error
+  page takes the screen only when nothing was saved for it, or when the
+  sign-in is over.
 
 ## 9. Offline downloads
 
@@ -354,9 +431,10 @@ kept in a memory cache and a disk cache. Cells are reused.
   `Range` request, renamed when the byte count equals `Part.size`. A size
   mismatch is an error, not a retry loop.
 - The item's metadata JSON and poster are stored next to it so Downloads
-  works with no server.
-- Offline playback hands mpv the local path. Position is stored locally and
-  sent as one timeline call with `offline=1` when the server is next reached.
+  works with no server. Those files are the only record of a download.
+- Offline playback hands mpv the local path. Position is stored next to the
+  file and sent as one timeline call with `offline=1` when the server is
+  next reached.
 
 ## 10. Packaging: one self-contained app
 
@@ -396,8 +474,9 @@ How each step is checked without a person:
 | Need | Mechanism |
 | --- | --- |
 | Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when signed in |
-| Video plays right | `plex-rust play <url> --for 20s --report` prints JSON: `hwdec-current`, dropped frames, cache seconds, HDR state. Asserted by a script |
+| Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds>` prints JSON: the hardware decoder, dropped frames, the buffer, the colours, the tracks. `--seeks` times jumps, off screen, and `plex-rust pacing` measures how evenly frames reach the display |
 | UI looks right | `plex-rust snapshot <screen> <out.png>` puts the window where no display shows it and saves the window server's picture of it, glass included. An app may read back its own window, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
+| Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` takes a scripted walk off screen and prints the milliseconds from each step to each thing shown |
 | Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs plex-rust. `sudo powermetrics` needs a password [V] and stays optional |
 | Packaging | `otool -L`, then launch the bundled app and run the same play report |
 
@@ -406,7 +485,9 @@ waiting for a decision. If a fallback also fails, work stops on that
 milestone with the evidence and the rest continues where it does not depend
 on it.
 
-`play --report` and `snapshot` are the only test-only code paths in the app.
+The test-only code paths in the app are `snapshot`, with its walk, the
+checks of `play` (`--unattended` and `--seeks`), and `pacing`. `servers` and
+`api` print what plex.tv and the server say.
 
 ## 12. Milestones
 
@@ -420,7 +501,8 @@ Each milestone is a branch. Each bullet is roughly one commit.
 - Checks, results written into the commit bodies:
   - [U] libmpv2 7.0.1 links against the static libmpv 0.42 (its headers are
     client API 2.5, mpv is 2.6). Fallback: our own bindings for the roughly
-    20 C functions used, in `player/src/ffi.rs`.
+    20 C functions used, in `player/src/ffi.rs`. As built: the raw bindings
+    of libmpv2-sys 4.0.1, under a wrapper of our own in `player/src/core.rs`.
   - [U] `CAOpenGLLayer` and CGL are reachable from the objc2 crates.
     Fallback: hand-written `extern_class!` bindings for that one class.
   - [U] `hwdec-current` reports `videotoolbox` for H.264, HEVC 10-bit, AV1.
@@ -446,7 +528,7 @@ cache, Home shelves, library grid, detail page, search.
 
 **M3. Watch.** Player view and controls, resume and timeline reporting, track
 menus and sidecar subtitles, markers and skip button, next episode, speed
-controls, media keys, sleep assertion, Settings with the "Low power" switch.
+controls, media keys, sleep assertion, the Low Power menu item.
 
 **M4. Offline.** Download engine with resume, Downloads screen, offline
 playback and progress sync.
@@ -464,8 +546,8 @@ playback and progress sync.
   screen, play a 4K HDR file with the report, seek, 2x and 3x speed, switch
   audio and subtitle tracks, read the resume point back from the server after
   quitting mid-episode, download an episode and play it from disk.
-- Speed: time from launch to Home drawn, measured by the app's own log
-  timestamps, cold and warm cache.
+- Speed: time from launch to Home drawn, and from each click to its
+  content, measured by `plex-rust snapshot walk`, cold and warm cache.
 - Left for you, optional: watch something for real, and a
   `sudo powermetrics --samplers cpu_power,gpu_power,tasks --show-process-energy`
   run on battery for wattage. `powermetrics` calls its values estimates [V],
