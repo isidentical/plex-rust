@@ -1,3 +1,4 @@
+use reqwest::Method;
 use serde::de::DeserializeOwned;
 
 use crate::client::{Client, Token, header};
@@ -42,13 +43,8 @@ impl MediaServer {
 
     /// Fetches `path`, which starts with `/`, and returns the body as text.
     pub async fn get_text(&self, path: &str) -> Result<String> {
-        Ok(self
-            .request(path)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?)
+        let response = self.request(Method::GET, path).send().await?;
+        Ok(response.error_for_status()?.text().await?)
     }
 
     /// Fetches `path` and decodes the contents of its `MediaContainer`.
@@ -57,21 +53,24 @@ impl MediaServer {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<T> {
-        let envelope: Envelope<T> = self
-            .request(path)
-            .query(query)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let response = self.request(Method::GET, path).query(query).send().await?;
+        let envelope: Envelope<T> = response.error_for_status()?.json().await?;
         Ok(envelope.media_container)
     }
 
-    fn request(&self, path: &str) -> reqwest::RequestBuilder {
+    /// A request to this server that carries its token.
+    pub(crate) fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .http
-            .get(format!("{}{path}", self.address))
+            .request(method, format!("{}{path}", self.address))
             .header(header("x-plex-token"), self.token.secret())
+    }
+
+    pub(crate) fn client(&self) -> &Client {
+        &self.client
+    }
+
+    pub(crate) fn token(&self) -> &Token {
+        &self.token
     }
 }

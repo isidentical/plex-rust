@@ -1,0 +1,103 @@
+//! Playing an item: where its file is, and telling the server how far the
+//! viewer got.
+
+use std::time::Duration;
+
+use reqwest::Method;
+
+use crate::client::header;
+use crate::error::Result;
+use crate::model::{Part, RatingKey};
+use crate::server::MediaServer;
+
+/// The identifier of the server's library, which several endpoints require.
+const LIBRARY: &str = "com.plexapp.plugins.library";
+
+/// An HTTP request that returns a file from the server.
+#[derive(Debug, Clone)]
+pub struct FileRequest {
+    pub url: String,
+    /// Headers the request must carry, as name and value. The token is one
+    /// of them, so it never appears in the URL.
+    pub headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Buffering,
+    Stopped,
+}
+
+/// A moment of one playback, as reported to the server.
+#[derive(Debug, Clone)]
+pub struct Progress<'a> {
+    pub item: &'a RatingKey,
+    /// Unique for each playback. It lets the server tell two playbacks of
+    /// the same item apart.
+    pub session: &'a str,
+    pub state: PlaybackState,
+    pub position: Duration,
+    pub duration: Duration,
+}
+
+impl MediaServer {
+    /// The request for the original file of `part`, untouched by the server.
+    pub fn original_file(&self, part: &Part) -> FileRequest {
+        let identity = &self.client().identity;
+        FileRequest {
+            url: format!("{}{}", self.address(), part.key),
+            headers: vec![
+                ("X-Plex-Token".into(), self.token().secret().into()),
+                (
+                    "X-Plex-Client-Identifier".into(),
+                    identity.client_identifier.clone(),
+                ),
+                ("X-Plex-Product".into(), "Reel".into()),
+            ],
+        }
+    }
+
+    /// Tells the server where a playback is. The server uses this for the
+    /// resume position, for marking items watched, and for its dashboard.
+    ///
+    /// Plex asks for a report on every state change and every 10 seconds
+    /// while playing.
+    pub async fn report(&self, progress: &Progress<'_>) -> Result<()> {
+        let state = match progress.state {
+            PlaybackState::Playing => "playing",
+            PlaybackState::Paused => "paused",
+            PlaybackState::Buffering => "buffering",
+            PlaybackState::Stopped => "stopped",
+        };
+        self.request(Method::POST, "/:/timeline")
+            .header(header("x-plex-session-identifier"), progress.session)
+            .query(&[
+                ("ratingKey", progress.item.as_str()),
+                ("key", &format!("/library/metadata/{}", progress.item)),
+                ("state", state),
+                ("time", &progress.position.as_millis().to_string()),
+                ("duration", &progress.duration.as_millis().to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Marks an item as watched or unwatched.
+    pub async fn set_watched(&self, item: &RatingKey, watched: bool) -> Result<()> {
+        let path = if watched {
+            "/:/scrobble"
+        } else {
+            "/:/unscrobble"
+        };
+        self.request(Method::PUT, path)
+            .query(&[("identifier", LIBRARY), ("key", item.as_str())])
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+}

@@ -14,6 +14,10 @@ use serde::Deserialize;
 pub struct RatingKey(String);
 
 impl RatingKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

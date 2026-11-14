@@ -7,8 +7,10 @@ pub mod auth;
 mod client;
 pub mod discovery;
 mod error;
+mod image;
 pub mod library;
 pub mod model;
+pub mod playback;
 mod server;
 
 pub use crate::client::{Client, Identity, Token};
