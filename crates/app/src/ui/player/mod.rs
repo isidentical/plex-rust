@@ -297,6 +297,7 @@ impl PlayerScreen {
         video.setLayer(Some(&layer));
         video.setWantsLayer(true);
         crate::ui::layout::cover(&root, &video);
+        root.hold_picture(&video);
         let material = Material::choose();
         let controls = Controls::new(main_thread, &root, item, material);
 

@@ -5,7 +5,7 @@ use std::cell::{Cell, OnceCell};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2::{
-    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
     NSEvent, NSEventModifierFlags, NSEventSubtype, NSEventType, NSGestureRecognizer,
@@ -183,6 +183,8 @@ pub struct Ivars {
     /// Whether a drag moves the picture: only while it is larger than
     /// the view.
     pannable: Cell<bool>,
+    /// The view the video is drawn in, which lies over this one.
+    picture: OnceCell<Retained<NSView>>,
 }
 
 define_class!(
@@ -412,6 +414,13 @@ impl InputView {
         }
     }
 
+    /// Names the view the video is drawn in. It covers this one, so it is
+    /// what a finger or the pointer on the picture lands on. Can be
+    /// called once.
+    pub fn hold_picture(&self, picture: &NSView) {
+        let _ = self.ivars().picture.set(picture.retain());
+    }
+
     /// Whether `place`, in the window's coordinates, is on the picture
     /// and on none of the controls in front of it.
     fn is_bare_at(&self, place: NSPoint) -> bool {
@@ -419,7 +428,10 @@ impl InputView {
         // the same point in the view above it, which a hit test is given.
         let hit = self.window().and_then(|window| window.contentView()?.hitTest(place));
         let this: &NSView = self;
-        hit.is_some_and(|hit| std::ptr::eq(&*hit, this))
+        let picture = self.ivars().picture.get();
+        hit.is_some_and(|hit| {
+            std::ptr::eq(&*hit, this) || picture.is_some_and(|picture| hit == *picture)
+        })
     }
 
     /// Sets what happens on input. `on_key` returns whether it acted on the
