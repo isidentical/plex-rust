@@ -200,9 +200,9 @@ crates/
     src/ui/            one module a screen or a piece of one: sidebar,
                        toolbar, menus, hero, posters, poster, episode,
                        detail, downloads, library_bar, jump, heading,
-                       notice, stale, failure, confirm, artwork, backdrop,
-                       formats, text, label, layout, hover, callback, theme,
-                       snapshot
+                       notice, stale, toast, failure, confirm, artwork,
+                       backdrop, banner, person, formats, text, label,
+                       layout, hover, callback, theme, snapshot
     src/ui/player/     the player screen: controls, chips, sliders, menus,
                        input, media keys (remote), up next, zoom, info,
                        failure, and a theme of its own
@@ -241,8 +241,10 @@ What the app keeps, and where:
 Both cache folders are a `plex::Cache`. A file is named by a hash of the
 server's machine identifier, the account's identifier at plex.tv and the
 question, so one server has one cache at every address it is reached at,
-and two accounts on one server never read each other's answers. A file is
-written under a temporary name and renamed. Reading one marks it as used,
+and two accounts on one server never read each other's answers. A file
+starts with those three as they are, and one found under the hash of
+another question is not read as its answer. A file is written under a temporary
+name and renamed. Reading one marks it as used,
 and once an eighth of the limit has been written the folder is swept down
 to three quarters of it, least recently used first. An answer is kept only
 if it decoded, and a kept picture that no longer decodes is fetched again.
@@ -296,7 +298,10 @@ Both were read from a running server's answers; each has a recorded fixture
 in `crates/plex/tests/fixtures`.
 
 **Images:** `/photo/:/transcode?url=..&width=..&height=..&minSize=1&format=jpg`
-requested at the pixel size each kind of card is drawn at.
+requested at the pixel size each kind of card is drawn at. A title logo,
+which an item lists among its `Image`s as `clearLogo`, is asked for with
+`format=png` and without `minSize`: it comes back clear around its letters
+and scaled to fit the box.
 
 **Playback:** direct play only. The stream URL is the server address plus
 `Part.key` (`/library/parts/{partId}/{changestamp}/{file}`). The token is sent
@@ -419,7 +424,8 @@ the measurements and their conditions.
 itself. Subtitles Plex keeps in files of their own, which are the streams it
 lists with a `key`, are added with `sub-add` by their address on the server
 once the video is open, with the same token header. Track menus come from
-`track-list`, named as the server names each stream. A download keeps those
+`track-list`, named as the server names each stream, or for one it calls
+Unknown by what is known of it (`formats::track_name`). A download keeps those
 files next to its video, and played from disk it gets them from there.
 
 **Skip intro / credits:** a button shown while the position is inside a
@@ -465,9 +471,17 @@ look and a dark appearance.
   filter and the sort menu, 40 for a sidebar row. A finger scrolls every
   scroll view by itself (`NSScrollView.touchScrollingEnabled`, on by
   default since macOS 27, per `NSScrollView.h` in the macOS 27 SDK).
-- **Detail:** backdrop, poster, title, year, rating, summary, Play / Resume,
-  watched toggle, download button, audio and subtitle pickers. Shows add a
-  season picker and episode list.
+- **Detail:** the backdrop from edge to edge of the window, under the
+  toolbar and the sidebar, giving way downwards to the artwork's colours.
+  On its lower part the title as the item's logo, or in words where it has
+  none, the facts, Play / Resume, the watched toggle and the download
+  button. Under it the tagline and the summary, and beside them the
+  version, audio and subtitle pickers, the director, the studio and the
+  genres. Shows add a season picker with a button that marks the season,
+  and an episode list. An episode leads with a frame of itself on its
+  show's backdrop. A member of the cast and the director of a film lead to
+  a page of their work in the library, under their photo and name. Nothing
+  on a page takes presses over less than 44 points.
 - **Search:** results grouped by hub.
 - **Player:** video fills the window, controls fade out: scrubber with
   buffered range and chapter ticks, time, speed, audio/subtitle menus, skip
@@ -504,7 +518,10 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
 - When the server does not answer, what was saved stays, with a line at the
   bottom that says so and a button to look for the server again. An error
   page takes the screen only when nothing was saved for it, or when the
-  sign-in is over. An item's page is never nothing: it stands as the card
+  sign-in is over. A change the viewer makes that does not reach the
+  server, a mark or a choice of track, leaves the page as it was and says
+  so on a line over it, with a button to try again. An item's page is
+  never nothing: it stands as the card
   it was opened from drew it, and for a downloaded item as the record next
   to its file has it.
 - Whether the server is there is one state, `reach.rs`, moved by what every
