@@ -108,6 +108,20 @@ pub const STILL_WIDTH: f64 = 160.0;
 pub const STILL_HEIGHT: f64 = 90.0;
 pub const STILL_RADIUS: f64 = 8.0;
 
+/// The sign that the picture is on its way.
+pub const WAITING_RADIUS: f64 = 22.0;
+pub const WAITING_PADDING: f64 = 18.0;
+pub const WAITING_SPACING: f64 = 10.0;
+
+/// The card that says a file stopped playing.
+pub const FAILURE_PADDING: f64 = 28.0;
+pub const FAILURE_LINE_SPACING: f64 = 8.0;
+pub const FAILURE_SYMBOL_SIZE: f64 = 30.0;
+pub const FAILURE_TITLE_FONT_SIZE: f64 = 17.0;
+/// The reason wraps at this width and is cut off after this many lines.
+pub const FAILURE_TEXT_WIDTH: f64 = 380.0;
+pub const FAILURE_REASON_LINES: isize = 3;
+
 /// Seconds the controls take to appear. Short, so that they feel instant.
 pub const FADE_IN: f64 = 0.12;
 /// Seconds they take to go away.

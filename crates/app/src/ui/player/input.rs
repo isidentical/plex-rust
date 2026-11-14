@@ -58,6 +58,10 @@ pub enum Scene {
     Wide,
     /// Playback inside the item's first intro or credits.
     Marker,
+    /// Playback held up waiting for the network.
+    Stalled,
+    /// Playback ended by a failure.
+    Failed,
 }
 
 impl Key {
@@ -85,6 +89,8 @@ impl Key {
             ("small", ..) => Some(Self::Scene(Scene::Small)),
             ("wide", ..) => Some(Self::Scene(Scene::Wide)),
             ("marker", ..) => Some(Self::Scene(Scene::Marker)),
+            ("stall", ..) => Some(Self::Scene(Scene::Stalled)),
+            ("fail", ..) => Some(Self::Scene(Scene::Failed)),
             ("end", ..) => Some(Self::NearEnd),
             ("wait", ..) => Some(Self::Wait),
             (_, Some(character), None) => Some(Self::Character(character)),

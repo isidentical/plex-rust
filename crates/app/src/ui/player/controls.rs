@@ -5,25 +5,26 @@
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSAccessibility, NSColor, NSLayoutAttribute};
+use objc2_app_kit::{NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
     NSImageSymbolConfiguration, NSLayoutConstraint, NSLayoutConstraintOrientation,
     NSLayoutPriorityDefaultLow, NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
 
 use super::badge::Badge;
 use super::chip::{Chip, Style};
+use super::failure::Failure;
 use super::layout::{add, cover, pin, row};
 use super::pane::Pane;
 use super::slider::{Reading, Slider};
 use super::surface::{Material, Surface};
 use super::theme;
 use super::upnext::UpNext;
+use super::waiting::Waiting;
 
 /// How much the bubble's wish to be over the pointer counts for in the
 /// layout: less than anything else there. At the default strengths it
@@ -69,9 +70,10 @@ pub struct Controls {
     pub skip: Retained<Chip>,
     /// Offers the next episode as this one ends, in the skip button's place.
     pub up_next: UpNext,
-    /// Turns while the picture is on its way: at the start, and whenever
-    /// playback stalls waiting for the network.
-    pub spinner: Retained<NSProgressIndicator>,
+    /// Says that the picture is on its way.
+    pub waiting: Waiting,
+    /// Says that the file stopped playing, and offers to try again.
+    pub failure: Failure,
     /// Briefly says what a key press did.
     pub badge: Badge,
 }
@@ -119,7 +121,8 @@ impl Controls {
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread, material),
-            spinner: NSProgressIndicator::new(main_thread),
+            waiting: Waiting::new(main_thread, material),
+            failure: Failure::new(main_thread, material),
             badge: Badge::new(main_thread, material),
         };
         controls.back.set_symbol("chevron.left", theme::BACK_SYMBOL_SIZE);
@@ -290,18 +293,17 @@ impl Controls {
         self.bubble.setHidden(true);
         self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
         self.bubble_x.setPriority(FOLLOWS_POINTER);
-        self.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
-        self.spinner.setIndeterminate(true);
-        self.spinner.setDisplayedWhenStopped(false);
-        self.spinner.setAccessibilityLabel(Some(&NSString::from_str("Loading")));
         add(root, &self.skip);
         add(root, self.up_next.view());
         add(root, self.badge.view());
-        add(root, &self.spinner);
+        add(root, self.waiting.view());
+        add(root, self.failure.view());
         add(root, &self.bubble);
         pin(&[
-            self.spinner.centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
-            self.spinner.centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()),
+            self.waiting.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
+            self.waiting.view().centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()),
+            self.failure.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
+            self.failure.view().centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()),
             self.skip.trailingAnchor().constraintEqualToAnchor(&self.bottom.trailingAnchor()),
             self.skip
                 .bottomAnchor()

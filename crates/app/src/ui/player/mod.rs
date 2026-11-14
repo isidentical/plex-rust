@@ -4,6 +4,7 @@ mod badge;
 mod chip;
 mod chrome;
 mod controls;
+mod failure;
 pub mod input;
 mod layout;
 mod menu;
@@ -16,6 +17,7 @@ mod surface;
 mod theme;
 mod tracks;
 mod upnext;
+mod waiting;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,7 +44,7 @@ use self::badge::Notice;
 use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
-use self::input::{Clicks, InputView, Key, Press};
+use self::input::{Clicks, InputView, Key, Press, Scene};
 use self::menu::Choice;
 use self::remote::{Command, Playing, Remote};
 use self::slider::{Grip, Pointed};
@@ -138,15 +140,9 @@ enum Phase {
     Opening,
     /// Its file is open: positions and the end of the file are its own.
     Playing,
-}
-
-/// How the screen came to close.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
-    /// The viewer left, or what was playing ended with nothing to follow.
-    Closed,
-    /// Playback failed. Holds the reason.
-    Failed(String),
+    /// It stopped because something went wrong, and the screen says so
+    /// until the viewer tries again or leaves.
+    Failed,
 }
 
 pub struct Ivars {
@@ -201,13 +197,15 @@ pub struct Ivars {
     ticks: Cell<u32>,
     /// The file's length, kept for when mpv no longer knows it.
     duration: Cell<Option<Duration>>,
+    /// Where the player last said it was in the file.
+    last_position: Cell<Option<Duration>>,
     background: Rc<Background>,
     images: Rc<Images>,
     server: MediaServer,
     /// Lets the server tell this playback from another of the same item.
     session: String,
     purpose: Purpose,
-    on_close: Box<dyn Fn(Outcome)>,
+    on_close: Box<dyn Fn()>,
 }
 
 define_class!(
@@ -270,7 +268,7 @@ impl PlayerScreen {
         item: &Item,
         settings: Settings,
         purpose: Purpose,
-        on_close: impl Fn(Outcome) + 'static,
+        on_close: impl Fn() + 'static,
     ) -> Result<Retained<Self>> {
         let player = Player::new()?;
         player.set_muted(purpose == Purpose::Check)?;
@@ -315,6 +313,7 @@ impl PlayerScreen {
             resting: Cell::new(false),
             ticks: Cell::new(0),
             duration: Cell::new(None),
+            last_position: Cell::new(None),
             background,
             images: Rc::clone(images),
             server,
@@ -330,7 +329,7 @@ impl PlayerScreen {
         screen.show_neighbours();
         // Loaded before the timer and the event thread exist: both keep the
         // screen and its player alive, so a failure after them would leak.
-        screen.load()?;
+        screen.load(None)?;
 
         // SAFETY: `tick:` is defined above. The timer retains the screen
         // until `close` invalidates it.
@@ -366,12 +365,15 @@ impl PlayerScreen {
         Rc::clone(&self.ivars().item.borrow())
     }
 
-    /// Hands the item's file to the player, to start where the viewer
-    /// left it.
-    fn load(&self) -> Result<()> {
+    /// Hands the item's file to the player, to start at `from`, or with
+    /// `None` where the viewer left it the last time.
+    fn load(&self, from: Option<Duration>) -> Result<()> {
         let (ivars, item) = (self.ivars(), self.item());
-        let source = source::of(&ivars.server, &item)?;
-        self.set_waiting(true);
+        let mut source = source::of(&ivars.server, &item)?;
+        if let Some(from) = from {
+            source.start = from;
+        }
+        ivars.controls.waiting.show(None);
         // The player knows neither time until the file is open, which can
         // take a while. The item knows both now, so the controls never show
         // a film that is being resumed as if it started over.
@@ -425,38 +427,77 @@ impl PlayerScreen {
         self.fit_to_display();
     }
 
-    /// Shows or hides the spinner that says the picture is on its way.
-    fn set_waiting(&self, waiting: bool) {
-        let spinner = &self.ivars().controls.spinner;
-        // SAFETY: the sender is optional and not kept.
-        unsafe {
-            if waiting {
-                spinner.startAnimation(None);
-            } else {
-                spinner.stopAnimation(None);
-            }
-        }
-    }
-
     fn fit_to_display(&self) {
         let ivars = self.ivars();
         self.or_log(video_layer::fit_to_display(&ivars.video, &ivars.player));
     }
 
     /// Stops playback and gives the screen up. Safe to call more than once.
-    pub fn close(&self, outcome: Outcome) {
+    pub fn close(&self) {
         if !self.stop_ticking() {
             return;
         }
         // `on_close` may drop the last other reference to this screen.
         let _alive = self.retain();
-        // After a failure mpv has no position, and a report without one
-        // gives the end of the file: the server would mark it as watched.
-        if !matches!(outcome, Outcome::Failed(_)) {
-            self.report(PlaybackState::Stopped);
-        }
+        // Nothing is reported after a failure: mpv has no position then,
+        // and a report without one gives the end of the file, which the
+        // server would mark as watched.
+        self.report(PlaybackState::Stopped);
         self.or_log(self.ivars().player.quit());
-        (self.ivars().on_close)(outcome);
+        (self.ivars().on_close)();
+    }
+
+    /// Stops on a failure and says so, with `reason` in the player's own
+    /// words. The screen stays: a film that fails an hour in, because the
+    /// network dropped for a moment, is one press away from playing on.
+    fn fail(&self, reason: &str) {
+        let ivars = self.ivars();
+        ivars.phase.set(Phase::Failed);
+        self.keep_display_awake(false);
+        ivars.up_next.set(UpNext::Waiting);
+        let controls = &ivars.controls;
+        controls.waiting.hide();
+        controls.skip.setHidden(true);
+        controls.up_next.hide();
+        controls.failure.show(&self.item().title, reason);
+        // The title and the way out stay. The bar steers a file that is
+        // no longer there.
+        self.show_controls(true);
+        controls.bottom.set_shown(false);
+        controls.bubble.setHidden(true);
+        self.show_neighbours();
+    }
+
+    /// Plays the file again from where it stopped.
+    fn retry(&self) {
+        let ivars = self.ivars();
+        ivars.controls.failure.hide();
+        ivars.controls.bottom.set_shown(ivars.controls_shown.get());
+        if let Err(error) = self.load(ivars.last_position.get()) {
+            self.fail(&with_causes(&error));
+        }
+    }
+
+    /// Puts away what is on top: the offer of the next episode, then full
+    /// screen, as Escape does everywhere, and then the player.
+    fn back_out(&self) {
+        if self.ivars().up_next.get() == UpNext::Counting {
+            self.turn_down_next_episode();
+        } else if self.is_full_screen() {
+            self.toggle_full_screen();
+        } else {
+            self.close();
+        }
+    }
+
+    /// Where the player is in the file, which is also kept for when it no
+    /// longer knows: after a failure.
+    fn position(&self) -> player::Result<Option<Duration>> {
+        let position = self.ivars().player.position()?;
+        if position.is_some() {
+            self.ivars().last_position.set(position);
+        }
+        Ok(position)
     }
 
     /// Like [`close`](Self::close), for when the app is quitting: it waits
@@ -548,7 +589,7 @@ impl PlayerScreen {
     fn obey(&self, command: Command) {
         // What the player holds for now is the episode before this one,
         // which is not there to be steered.
-        if self.ivars().phase.get() == Phase::Fetching {
+        if matches!(self.ivars().phase.get(), Phase::Fetching | Phase::Failed) {
             return;
         }
         let result = match command {
@@ -591,7 +632,9 @@ impl PlayerScreen {
     /// Says what each control does.
     fn connect_controls(&self) {
         let controls = &self.ivars().controls;
-        self.on_click(&controls.back, |screen| screen.close(Outcome::Closed));
+        self.on_click(&controls.back, Self::close);
+        self.on_click(&controls.failure.retry, Self::retry);
+        self.on_click(&controls.failure.leave, Self::close);
         self.on_click(&controls.toggle, |screen| screen.or_log(screen.toggle_pause()));
         self.on_click(&controls.rewind, |screen| {
             screen.or_log(screen.jump(-LONG_JUMP, Press::First))
@@ -693,6 +736,17 @@ impl PlayerScreen {
 
     fn act_on(&self, key: Key, press: Press) -> bool {
         self.wake();
+        // A file that has failed has two ways on, and the size of the
+        // window. Every other key is for a file that plays.
+        if self.ivars().phase.get() == Phase::Failed {
+            match (key, press) {
+                (Key::Return, Press::First) => self.retry(),
+                (Key::Escape, Press::First) => self.back_out(),
+                (Key::Character('f'), Press::First) => self.toggle_full_screen(),
+                _ => {}
+            }
+            return true;
+        }
         // Only the arrows mean something again and again while held. A
         // held Space must not pause and resume thirty times a second.
         let repeats = matches!(
@@ -735,15 +789,17 @@ impl PlayerScreen {
             }
             Key::Character('p') if is_episode => self.go_to_previous(),
             Key::Escape => {
-                // Escape puts away what is on top first: the offer of the
-                // next episode, then full screen, as it does everywhere.
-                if self.ivars().up_next.get() == UpNext::Counting {
-                    self.turn_down_next_episode();
-                } else if self.is_full_screen() {
-                    self.toggle_full_screen();
-                } else {
-                    self.close(Outcome::Closed);
-                }
+                self.back_out();
+                return true;
+            }
+            // What only the player itself brings about, sent the way the
+            // player sends it.
+            Key::Scene(Scene::Stalled) => {
+                self.handle(&Event::Buffering(true));
+                return true;
+            }
+            Key::Scene(Scene::Failed) => {
+                self.handle(&Event::Ended(EndReason::Failed("loading failed".to_owned())));
                 return true;
             }
             Key::Idle => {
@@ -818,7 +874,7 @@ impl PlayerScreen {
             shown || counting || (watches_position && ticks.is_multiple_of(TICKS_PER_SECOND));
         // Until the file is open the player's position is not this item's.
         if reads_position && ivars.phase.get() == Phase::Playing {
-            let position = ivars.player.position()?;
+            let position = self.position()?;
             self.offer_next_episode(position);
             // The countdown running out moves on to the next episode, and
             // this position is then no longer the one to act on.
@@ -842,15 +898,17 @@ impl PlayerScreen {
         Ok(())
     }
 
-    /// Puts the timer off for as long as nothing can change: the film is
-    /// paused, the bar is away and no notice is waiting to be taken down.
+    /// Puts the timer off for as long as nothing can change: the film has
+    /// failed, or is paused with the bar away, and no notice is waiting to
+    /// be taken down.
     /// Anything that happens next wakes it.
     fn rest_if_still(&self) -> player::Result<()> {
         let ivars = self.ivars();
-        let still = ivars.phase.get() == Phase::Playing
+        let paused_and_bare = ivars.phase.get() == Phase::Playing
             && !ivars.controls_shown.get()
-            && ivars.ticks_of_notice_left.get() == 0
             && ivars.player.is_paused()?;
+        let still = ivars.ticks_of_notice_left.get() == 0
+            && (paused_and_bare || ivars.phase.get() == Phase::Failed);
         if let (true, Some(timer)) = (still, ivars.timer.borrow().as_ref()) {
             timer.setFireDate(&NSDate::distantFuture());
             ivars.resting.set(true);
@@ -997,10 +1055,10 @@ impl PlayerScreen {
             }
             let loaded = item.map_err(Into::into).and_then(|item| {
                 *screen.ivars().item.borrow_mut() = Rc::new(item);
-                screen.load()
+                screen.load(None)
             });
             if let Err(error) = loaded {
-                screen.close(Outcome::Failed(with_causes(&error)));
+                screen.fail(&with_causes(&error));
             }
         });
     }
@@ -1022,6 +1080,7 @@ impl PlayerScreen {
         ivars.chapters.borrow_mut().clear();
         ivars.up_next.set(UpNext::Waiting);
         ivars.duration.set(None);
+        ivars.last_position.set(None);
         ivars.ticks_of_scrub_settling_left.set(0);
         // The media controls name the episode now too, standing still at
         // its start until its file plays.
@@ -1029,7 +1088,7 @@ impl PlayerScreen {
             remote.show(&Playing { item: &item, position: start, duration, rate: 0.0 });
         }
         *ivars.item.borrow_mut() = Rc::new(item);
-        self.set_waiting(true);
+        ivars.controls.waiting.show(None);
         self.find_neighbours();
         self.show_controls(true);
     }
@@ -1443,9 +1502,10 @@ impl PlayerScreen {
         if ivars.controls_shown.replace(shown) == shown {
             return;
         }
+        let failed = ivars.phase.get() == Phase::Failed;
         let paused = ivars.player.is_paused().unwrap_or(false);
-        ivars.controls.top.set_shown(shown || paused);
-        ivars.controls.bottom.set_shown(shown);
+        ivars.controls.top.set_shown(shown || paused || failed);
+        ivars.controls.bottom.set_shown(shown && !failed);
         if !shown {
             ivars.controls.bubble.setHidden(true);
         }
@@ -1485,6 +1545,10 @@ impl PlayerScreen {
     fn handle(&self, event: &Event) {
         self.wake();
         let ivars = self.ivars();
+        // What a failed file still has to say changes nothing.
+        if ivars.phase.get() == Phase::Failed {
+            return;
+        }
         // Until its file is open, what the player says is about the file
         // this item took over from, which is on its way out.
         let playing = ivars.phase.get() == Phase::Playing;
@@ -1502,17 +1566,18 @@ impl PlayerScreen {
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.
                 if playing {
-                    self.set_waiting(false);
+                    ivars.controls.waiting.hide();
                 }
                 self.fit_to_display();
             }
-            Event::Ended(EndReason::Failed(error)) => self.close(Outcome::Failed(error.clone())),
-            Event::Buffering(stalled) if playing => self.set_waiting(*stalled),
+            Event::Ended(EndReason::Failed(error)) => self.fail(error),
+            Event::Buffering(true) if playing => ivars.controls.waiting.show(Some("Buffering")),
+            Event::Buffering(false) if playing => ivars.controls.waiting.hide(),
             // A viewer who turned the next episode down gets none.
             Event::Ended(EndReason::Finished) if playing => {
                 let cancelled = ivars.up_next.get() == UpNext::Cancelled;
                 if cancelled || !self.next_episode_is_known() {
-                    self.close(Outcome::Closed);
+                    self.close();
                 } else {
                     self.go_to_next();
                 }
@@ -1661,7 +1726,7 @@ impl PlayerScreen {
                 return Ok(None);
             };
             ivars.duration.set(Some(duration));
-            Ok(Some((ivars.player.position()?.unwrap_or(duration), duration)))
+            Ok(Some((self.position()?.unwrap_or(duration), duration)))
         });
         match times {
             Ok(times) => times.map(|(position, duration)| Progress {

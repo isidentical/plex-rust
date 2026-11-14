@@ -36,7 +36,7 @@ usage: plex-rust
        plex-rust snapshot signin <png-path> [approving]
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
          keys: space, left, d, ..., and idle, end, wait, hover, drag,
-               pull, release, bright, small, wide, marker
+               pull, release, bright, small, wide, marker, stall, fail
          tweaks: narrow, wide, hover, link, season, scroll=<points>,
                  across=<points>, unwatched,
                  keys=<left|right|up|down|return>,...,

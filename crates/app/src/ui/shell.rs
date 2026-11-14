@@ -33,7 +33,7 @@ use super::library_bar::LibraryBar;
 use super::menus::{self, Commands};
 use super::notice::{Mark, Notice};
 use super::player::input::Key;
-use super::player::{Outcome, PlayerScreen, Purpose};
+use super::player::{PlayerScreen, Purpose};
 use super::poster::Shape;
 pub use super::posters::Press;
 use super::posters::{Action, Header, Outline, Posters, Shelf, Style};
@@ -1374,9 +1374,9 @@ impl Shell {
             item,
             self.settings.get(),
             purpose,
-            move |outcome| {
+            move || {
                 if let Some(shell) = closed.upgrade() {
-                    shell.player_closed(outcome, purpose, &opened_with);
+                    shell.player_closed(purpose, &opened_with);
                 }
             },
         );
@@ -1396,7 +1396,7 @@ impl Shell {
 
     /// Puts the browsing screens back in the window. `opened_with` is the
     /// item the player started on, which an episode may have moved on from.
-    fn player_closed(self: &Rc<Self>, outcome: Outcome, purpose: Purpose, opened_with: &RatingKey) {
+    fn player_closed(self: &Rc<Self>, purpose: Purpose, opened_with: &RatingKey) {
         let Some(screen) = self.playing.borrow_mut().take() else {
             return;
         };
@@ -1426,16 +1426,6 @@ impl Shell {
                 }
             }
             None => {}
-        }
-        if let Outcome::Failed(reason) = outcome {
-            let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
-            self.show_notice(Notice::new(
-                self.main_thread,
-                Mark::Symbol("exclamationmark.triangle"),
-                &format!("{} could not be played", screen.item().title),
-                &reason,
-                Some(("Go Back", Box::new(dismiss))),
-            ));
         }
     }
 

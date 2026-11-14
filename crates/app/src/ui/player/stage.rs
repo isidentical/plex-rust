@@ -81,6 +81,8 @@ pub fn set(
             let scrubber: &NSView = &controls.scrubber;
             send(root, NSEventType::LeftMouseUp, pull(controls).1, Some(scrubber));
         }
+        // The screen sets these two itself: they are the player's doing.
+        Scene::Stalled | Scene::Failed => {}
         Scene::Small => resize(root, SMALL),
         Scene::Wide => resize(root, WIDE),
         Scene::Marker => {
