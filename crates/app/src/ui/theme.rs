@@ -115,7 +115,7 @@ pub const CAPTIONS_HEIGHT: f64 = 46.0;
 pub const EPISODE_ROW_HEIGHT: f64 = 124.0;
 pub const EPISODE_STILL_WIDTH: f64 = 192.0;
 pub const EPISODE_TEXT_WIDTH: f64 = 640.0;
-pub const EPISODE_SUMMARY_LINES: isize = 3;
+pub const EPISODE_SUMMARY_LINES: isize = 2;
 /// How strongly white is laid over a row under the pointer.
 pub const ROW_HOVER_OPACITY: f64 = 0.06;
 

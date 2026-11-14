@@ -456,7 +456,9 @@ impl Detail {
                 let size = u32::try_from(listed.len()).unwrap_or(u32::MAX);
                 label::set(&self.hero.season_size, &text::count(size, "episode"));
                 self.hero.season_bar_hidden(listed.is_empty());
-                shelves.push(Shelf::of("", Style::List, listed));
+                let mut list = Shelf::of("", Style::List, listed);
+                list.current = next_up(&episodes).map(|episode| episode.rating_key.clone());
+                shelves.push(list);
             }
             // A season of one has no others to show.
             Kind::Episode if episodes.len() > 1 => {

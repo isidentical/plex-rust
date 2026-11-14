@@ -63,7 +63,8 @@ pub struct Shelf {
     /// Server path of the whole list this shelf is the start of. With it,
     /// the heading is a link to that list.
     pub more: Option<String>,
-    /// The item the page is about, which is marked among the others.
+    /// The item the page is about, which is marked among the others. In
+    /// a list of episodes, the one to watch next.
     pub current: Option<RatingKey>,
 }
 
@@ -940,7 +941,7 @@ impl Posters {
         match (held.style, card) {
             (Style::List, Card::Item(item)) => {
                 if let Some(cell) = cell.downcast_ref::<EpisodeItem>() {
-                    cell.show(item, &ivars.images);
+                    cell.show(item, is_current, &ivars.images);
                 }
             }
             (Style::Shelf(shape) | Style::Grid(shape), card) => {
