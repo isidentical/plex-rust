@@ -601,7 +601,9 @@ impl Hero {
             column
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&view.trailingAnchor(), -margin),
-            column.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
+            // A title has the width of the page. Only running text is
+            // kept to a width that reads well.
+            self.summary.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
             // The text never runs past the poster. When a long title takes
             // three lines, the summary gives up lines of its own.
             column.bottomAnchor().constraintLessThanOrEqualToAnchor(&poster.bottomAnchor()),
