@@ -316,8 +316,8 @@ icon and font assets:
   same source the current Plex apps use for their backgrounds.
 - **Motion:** system animations only: poster hover lift, shelf scrolling,
   cross fade between pages, controls fade. Nothing custom runs while idle.
-- Poster cells: rounded corners, progress bar for partly watched, unwatched
-  badge, title and year below.
+- Poster cells: rounded corners, progress bar for partly watched, a tick once
+  watched, the number of episodes left on a show, title and year below.
 
 - **Window:** `NSSplitViewController`. Sidebar: Home, one row per Movie/TV
   library, Downloads. Toolbar: back, search field. No `NSVisualEffectView` in

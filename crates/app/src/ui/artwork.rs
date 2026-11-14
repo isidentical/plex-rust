@@ -1,5 +1,5 @@
 //! A piece of artwork as every screen shows it: rounded, filled edge to
-//! edge, with its progress, its unwatched mark and its reaction to the
+//! edge, with its progress, its watched mark and its reaction to the
 //! pointer.
 
 use std::cell::{Cell, RefCell};
@@ -26,9 +26,10 @@ use crate::images::{Artwork, Images};
 /// What sits in the corner of the artwork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Badge {
+    /// Not watched yet, which is how things start out and needs no mark.
     None,
-    /// Not watched yet.
-    Unwatched,
+    /// Watched to the end.
+    Watched,
     /// This many episodes inside are not watched yet.
     Left(u32),
 }
@@ -49,7 +50,7 @@ pub struct ArtView {
     track: Retained<NSView>,
     fill: Retained<NSView>,
     fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
-    dot: Retained<NSView>,
+    check: Retained<NSView>,
     pill: Retained<NSView>,
     count: Retained<NSTextField>,
     /// The artwork path this view is waiting for. A cell is reused for
@@ -144,21 +145,10 @@ impl ArtView {
             fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
         ]));
 
-        let dot = layered(main_thread);
-        fill_with(&dot, &NSColor::controlAccentColor());
-        if let Some(layer) = dot.layer() {
-            layer.setCornerRadius(theme::BADGE_DOT_SIZE / 2.0);
-            // A white rim keeps the dot apart from dark artwork, and its
-            // own colour keeps it apart from light artwork.
-            layer.setBorderWidth(theme::BADGE_DOT_RIM_WIDTH);
-            layer.setBorderColor(Some(&theme::white(theme::BADGE_DOT_RIM_OPACITY).CGColor()));
-            layer.setShadowOpacity(theme::BADGE_SHADOW_OPACITY);
-            layer.setShadowRadius(theme::BADGE_SHADOW_RADIUS);
-            layer.setShadowOffset(CGSize::ZERO);
-        }
+        let check = check_mark(main_thread);
         let (pill, count) = count_pill(main_thread);
         let inset = theme::BADGE_INSET;
-        for badge in [&dot, &pill] {
+        for badge in [&check, &pill] {
             picture.addSubview(badge);
             NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
                 badge
@@ -167,10 +157,6 @@ impl ArtView {
                 badge.topAnchor().constraintEqualToAnchor_constant(&picture.topAnchor(), inset),
             ]));
         }
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            dot.widthAnchor().constraintEqualToConstant(theme::BADGE_DOT_SIZE),
-            dot.heightAnchor().constraintEqualToConstant(theme::BADGE_DOT_SIZE),
-        ]));
 
         let art = Self {
             root,
@@ -182,7 +168,7 @@ impl ArtView {
             track,
             fill,
             fill_width: RefCell::new(None),
-            dot,
+            check,
             pill,
             count,
             wanted: Rc::new(RefCell::new(None)),
@@ -283,7 +269,7 @@ impl ArtView {
     }
 
     pub fn set_badge(&self, badge: Badge) {
-        self.dot.setHidden(badge != Badge::Unwatched);
+        self.check.setHidden(badge != Badge::Watched);
         self.pill.setHidden(!matches!(badge, Badge::Left(_)));
         if let Badge::Left(episodes) = badge {
             label::set(&self.count, &episodes.to_string());
@@ -436,6 +422,30 @@ fn play_glyph(main_thread: MainThreadMarker) -> Retained<NSImageView> {
     // The card it is on speaks for it.
     glyph.setAccessibilityElement(false);
     glyph
+}
+
+/// A dark disc with a tick in it: quiet enough to sit on every poster of
+/// a library that was watched through.
+fn check_mark(main_thread: MainThreadMarker) -> Retained<NSView> {
+    let disc = layered(main_thread);
+    fill_with(&disc, &theme::black(theme::BADGE_BACKGROUND_OPACITY));
+    if let Some(layer) = disc.layer() {
+        layer.setCornerRadius(theme::BADGE_HEIGHT / 2.0);
+    }
+    let tick = NSImageView::new(main_thread);
+    tick.setImage(symbol("checkmark", theme::FONT_CAPTION, Weight::Bold).as_deref());
+    tick.setContentTintColor(Some(&NSColor::whiteColor()));
+    tick.setTranslatesAutoresizingMaskIntoConstraints(false);
+    // The card it is on says it.
+    tick.setAccessibilityElement(false);
+    disc.addSubview(&tick);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        disc.widthAnchor().constraintEqualToConstant(theme::BADGE_HEIGHT),
+        disc.heightAnchor().constraintEqualToConstant(theme::BADGE_HEIGHT),
+        tick.centerXAnchor().constraintEqualToAnchor(&disc.centerXAnchor()),
+        tick.centerYAnchor().constraintEqualToAnchor(&disc.centerYAnchor()),
+    ]));
+    disc
 }
 
 /// A dark capsule with a number in it.

@@ -252,7 +252,10 @@ pub fn is_playable(item: &Item) -> bool {
     matches!(item.kind, Kind::Movie | Kind::Episode | Kind::Clip)
 }
 
-/// What marks `item` as having something left to watch.
+/// The mark in the corner of `item`. What was never started has none: a
+/// library starts out that way, and a mark on everything says nothing.
+/// What was watched to the end has a tick, and a show or season with
+/// episodes left says how many.
 pub fn badge(item: &Item) -> Badge {
     if item.view_offset.is_some() || item.kind == Kind::Clip {
         // The progress bar says it, and a trailer is not there to be
@@ -261,8 +264,7 @@ pub fn badge(item: &Item) -> Badge {
     }
     match (item.leaf_count, item.viewed_leaf_count) {
         (Some(episodes), Some(watched)) if watched < episodes => Badge::Left(episodes - watched),
-        (Some(_), Some(_)) => Badge::None,
-        _ if item.view_count == 0 => Badge::Unwatched,
+        _ if item.is_watched() => Badge::Watched,
         _ => Badge::None,
     }
 }
@@ -278,7 +280,7 @@ pub fn spoken(card: &Card, title: &str, subtitle: &str, is_current: bool) -> Str
     }
     if let Card::Item(item) = card {
         match badge(item) {
-            Badge::Unwatched => parts.push("not watched".to_owned()),
+            Badge::Watched => parts.push("watched".to_owned()),
             Badge::Left(episodes) => {
                 parts.push(format!("{} not watched", text::count(episodes, "episode")));
             }
@@ -411,5 +413,11 @@ mod tests {
             "duration": 100, "viewOffset": 25, "viewCount": 1,
         }));
         assert_eq!(spoken(&Card::Item(film), "Film", "", false), "Film, 25 percent watched");
+        let seen = item(serde_json::json!({
+            "ratingKey": "1", "type": "movie", "title": "Film", "viewCount": 2,
+        }));
+        assert_eq!(spoken(&Card::Item(seen), "Film", "", false), "Film, watched");
+        let new = item(serde_json::json!({ "ratingKey": "1", "type": "movie", "title": "Film" }));
+        assert_eq!(spoken(&Card::Item(new), "Film", "", false), "Film");
     }
 }
