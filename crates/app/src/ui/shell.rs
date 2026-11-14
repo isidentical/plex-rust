@@ -48,7 +48,7 @@ use super::stale::{Reason, Stale};
 use super::theme;
 use super::toolbar::Toolbar;
 use crate::account;
-use crate::background::Background;
+use crate::background::{Background, Task};
 use crate::downloads::{self, Downloads, State};
 use crate::error::{Error, Result, with_causes};
 use crate::images::{self, Images};
@@ -121,6 +121,9 @@ struct Shell {
     /// Counts the moves from place to place, so that an answer arriving
     /// late can tell that the viewer has moved on.
     moves: Cell<u64>,
+    /// What the place on screen has asked the server and may not have
+    /// heard back about. None of it is wanted once the viewer moves on.
+    asked: RefCell<Vec<Task>>,
     /// A message shown in place of the current entry, such as an error.
     notice: RefCell<Option<Notice>>,
     /// Says, over the current entry, that it shows what was saved and not
@@ -514,6 +517,7 @@ impl Shell {
                 history: RefCell::new(Vec::new()),
                 position: Cell::new(0),
                 moves: Cell::new(0),
+                asked: RefCell::new(Vec::new()),
                 notice: RefCell::new(None),
                 stale,
                 split,
@@ -917,12 +921,24 @@ impl Shell {
 
     // Moving from place to place.
 
+    /// Counts a move away from the place on screen and gives up what it
+    /// was still asking the server. An answer for a place the viewer has
+    /// left is work for nothing, and for a search it is worse: the answer
+    /// to an earlier query can come in after the answer to a later one,
+    /// and would replace it.
+    fn leave(&self) {
+        self.moves.set(self.moves.get() + 1);
+        for task in self.asked.borrow_mut().drain(..) {
+            task.cancel();
+        }
+    }
+
     /// Goes somewhere new, leaving the current place one step back.
     fn go(self: &Rc<Self>, route: Route) {
         if self.playing.borrow().is_some() {
             return;
         }
-        self.moves.set(self.moves.get() + 1);
+        self.leave();
         let Some(entry) = self.build(route) else {
             return;
         };
@@ -939,7 +955,7 @@ impl Shell {
     /// Puts another place where the current one is, without a step back to
     /// it: the same library in another order, the next search.
     fn replace(self: &Rc<Self>, route: Route) {
-        self.moves.set(self.moves.get() + 1);
+        self.leave();
         let Some(entry) = self.build(route) else {
             return;
         };
@@ -968,7 +984,7 @@ impl Shell {
         if self.playing.borrow().is_some() {
             return;
         }
-        self.moves.set(self.moves.get() + 1);
+        self.leave();
         self.position.set(position);
         self.display(true);
         self.refresh();
@@ -1421,7 +1437,7 @@ impl Shell {
         let (Some(session), Some(Screen::Posters(posters))) = (self.session(), screen) else {
             return;
         };
-        self.moves.set(self.moves.get() + 1);
+        self.leave();
         let reload = self.search_loader(&session, &posters, query);
         if let Some(entry) = self.history.borrow_mut().get_mut(self.position.get()) {
             entry.route = Route::Search(query.to_owned());
@@ -1503,7 +1519,7 @@ impl Shell {
                 let (remembering, held) = (Rc::clone(&remembering), Rc::clone(&held));
                 let remembered = ask(server.remembered());
                 let then = Rc::clone(&shell);
-                shell.background.run(shell.main_thread, remembered, move |answer| {
+                let reading = shell.background.run(shell.main_thread, remembered, move |answer| {
                     if let (Ok(answer), false) = (answer, answered.get()) {
                         show(&answer);
                         then.mark_shown("remembered answer shown");
@@ -1514,12 +1530,13 @@ impl Shell {
                         then.not_answered(moves, shown.borrow().is_some(), unanswered, &error);
                     }
                 });
+                shell.asked.borrow_mut().push(reading);
             }
 
             let (shown, show) = (Rc::clone(&shown), Rc::clone(&show));
             let failed = Rc::clone(&shell);
             let fresh = ask(server.clone());
-            shell.background.run(shell.main_thread, fresh, move |answer| {
+            let asking = shell.background.run(shell.main_thread, fresh, move |answer| {
                 answered.set(answer.is_ok());
                 match answer {
                     Ok(answer) if shown.borrow().as_ref() == Some(&answer) => {
@@ -1538,6 +1555,7 @@ impl Shell {
                     }
                 }
             });
+            shell.asked.borrow_mut().push(asking);
         })
     }
 

@@ -94,8 +94,8 @@ define_class!(
 );
 
 impl Toolbar {
-    /// `on_search` is called with the text of the search field as the
-    /// viewer types, after each short pause. `on_leave_search` is called
+    /// `on_search` is called with the text of the search field at every
+    /// change the viewer makes to it. `on_leave_search` is called
     /// when the viewer steps out of the field towards the content.
     pub fn new(
         main_thread: MainThreadMarker,
@@ -121,6 +121,11 @@ impl Toolbar {
         );
         let field = search.searchField();
         field.setPlaceholderString(Some(ns_string!("Search")));
+        // Every letter searches. Left alone, the field waits for a pause
+        // in the typing before it says anything, and the results trail
+        // the typing by that pause. The search for the letters before is
+        // given up when the next one starts.
+        field.setSendsSearchStringImmediately(true);
         // SAFETY: the toolbar keeps the target for as long as it keeps the
         // field.
         unsafe {

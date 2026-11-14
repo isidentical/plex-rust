@@ -32,8 +32,10 @@ pub enum Step {
     Press(Press),
     Back,
     Forward,
-    /// Type this in the search field.
+    /// Have this in the search field all at once.
     Search(String),
+    /// Type this in the search field letter by letter, without a pause.
+    Type(String),
     /// Do nothing for one more pause.
     Wait,
 }
@@ -53,6 +55,7 @@ impl Step {
             Some(("list", path)) => Some(Self::List(path.to_owned())),
             Some(("scroll", points)) => points.parse().ok().map(Self::Scroll),
             Some(("search", query)) => Some(Self::Search(query.to_owned())),
+            Some(("type", query)) => Some(Self::Type(query.to_owned())),
             _ => None,
         }
     }
@@ -97,6 +100,12 @@ impl Shell {
             (Step::Search(query), _) => {
                 self.toolbar.set_search_text(&query);
                 self.search(&query);
+            }
+            (Step::Type(query), _) => {
+                for (end, _) in query.char_indices().skip(1).chain([(query.len(), ' ')]) {
+                    self.toolbar.set_search_text(&query[..end]);
+                    self.search(&query[..end]);
+                }
             }
             (Step::Wait | Step::Scroll(_) | Step::Press(_), _) => {}
         }
