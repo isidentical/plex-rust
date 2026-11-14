@@ -961,6 +961,12 @@ impl Hero {
             column.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
             column.setAlignment(NSLayoutAttribute::Leading);
             column.setSpacing(spacing);
+            // As tall as its lines: beside a taller column it is not
+            // spread out over that one's height.
+            column.setHuggingPriority_forOrientation(
+                NSLayoutPriorityDefaultHigh,
+                NSLayoutConstraintOrientation::Vertical,
+            );
             column.setTranslatesAutoresizingMaskIntoConstraints(false);
             column
         };
