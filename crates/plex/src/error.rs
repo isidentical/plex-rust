@@ -25,3 +25,10 @@ pub enum Error {
     #[error("the server has no item {0}")]
     Missing(crate::model::RatingKey),
 }
+
+impl Error {
+    /// Whether Plex turned the token down. Only signing in again helps.
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, Self::Http(error) if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
+    }
+}

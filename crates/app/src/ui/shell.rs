@@ -451,6 +451,9 @@ impl Shell {
                         shell.connected(server, sections, subject.as_ref());
                     }
                 }
+                // The stored token no longer works, and trying it again
+                // would not make it.
+                Err(Error::Plex(error)) if error.is_unauthorized() => shell.show_sign_in(),
                 Err(error) if shell.session().is_some() => {
                     eprintln!("plex-rust: {}", with_causes(&error));
                 }
