@@ -31,7 +31,7 @@ use objc2_foundation::{
     NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
 };
-use player::{Chapter, EndReason, Event, Player, Track, TrackKind};
+use player::{Chapter, DolbyVision, EndReason, Event, Player, Track, TrackKind};
 use plex::MediaServer;
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
@@ -62,6 +62,13 @@ const TICKS_UNTIL_HIDDEN: u32 = 3 * TICKS_PER_SECOND;
 
 /// A notice, such as the new volume, stays up for this many ticks.
 const TICKS_OF_NOTICE: u32 = 6;
+
+/// A warning is a sentence to read, and stays up for this many ticks.
+const TICKS_OF_WARNING: u32 = 8 * TICKS_PER_SECOND;
+
+/// What the viewer is told about a file that
+/// [`player::DolbyVision::is_shown_in_wrong_colors`].
+const WRONG_COLORS: &str = "Dolby Vision profile 5: this player shows it in the wrong colours";
 
 /// For this many ticks after the scrubber's knob is let go, the knob and
 /// the times stay where the viewer put them. The player needs a moment to
@@ -1114,10 +1121,25 @@ impl PlayerScreen {
 
     /// Says `text` in the corner for a moment.
     fn notify(&self, text: &str) {
+        self.notify_for(text, TICKS_OF_NOTICE);
+    }
+
+    fn notify_for(&self, text: &str, ticks: u32) {
         let ivars = self.ivars();
         ivars.controls.notice.set_title(text);
-        ivars.ticks_of_notice_left.set(TICKS_OF_NOTICE);
+        ivars.ticks_of_notice_left.set(ticks);
         self.set_notice_shown(true);
+    }
+
+    /// Tells the viewer if the file is one this player cannot show in its
+    /// own colours. Such a file plays like any other, so nothing else
+    /// would say so.
+    fn warn_of_wrong_colors(&self) -> player::Result<()> {
+        let dolby_vision = self.ivars().player.dolby_vision()?;
+        if dolby_vision.is_some_and(DolbyVision::is_shown_in_wrong_colors) {
+            self.notify_for(WRONG_COLORS, TICKS_OF_WARNING);
+        }
+        Ok(())
     }
 
     fn set_notice_shown(&self, shown: bool) {
@@ -1180,6 +1202,7 @@ impl PlayerScreen {
                 self.report(PlaybackState::Playing);
                 self.or_log(self.show_chapters());
                 self.or_log(self.refresh());
+                self.or_log(self.warn_of_wrong_colors());
             }
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.

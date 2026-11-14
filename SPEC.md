@@ -223,12 +223,34 @@ one, so a paused player wakes nothing.
 defaults stay (`scale=lanczos`, `dscale=hermite`). If a file cannot be played
 the user sees mpv's error, not a silent fallback.
 
-**HDR:** HDR10 and HLG follow IINA's working method [V]: when the video is
+**HDR:** HDR10 and HLG follow IINA's working method [V]: when the picture is
 PQ/HLG and the screen reports EDR headroom, the layer sets
 `wantsExtendedDynamicRangeContent` with a PQ colorspace and mpv gets
-`target-trc=pq`, `target-prim` and `target-peak`. Dolby Vision is not
-reshaped. When `track-list/N/dolby-vision-profile` is 5, the player shows a
-plain notice that colours will be wrong on this renderer.
+`target-trc=pq` and `target-prim`. `target-peak` stays at mpv's default.
+
+**Dolby Vision:** the OpenGL renderer applies none of it. `init_video` in
+mpv's video/out/gpu/video.c puts the picture's own colour tags back, and
+`mp_get_csp_matrix` in video/csputils.c marks the Dolby Vision matrix "Not
+supported" [V]. mpv applies it only in `gpu-next`, which the render API does
+not offer, and FFmpeg's `libplacebo` filter needs Vulkan, which this build
+leaves out [V]. So `vf=format:dolbyvision=no` takes the metadata off the
+frames, which stay in the hardware decoder's buffers, and what mpv then
+reports in `video-out-params` is the picture that is drawn. That picture
+decides between HDR and SDR output.
+- Profile 8.1 plays as the HDR10 underneath it. A frame of a public sample
+  is within 0.002 on average, in PQ code values from 0 to 1, of the same
+  frame decoded by AVFoundation [V]. The rendered frame is the same with and
+  without the filter [V].
+- Profile 8.4 plays as the HLG underneath it, converted to PQ by mpv [V].
+- Profile 7 has HDR10 underneath and is expected to play as that [U]: no
+  sample was at hand. mpv decodes its enhancement layer with a second
+  decoder even though this renderer has no use for it
+  (filters/f_enhancement_pair.c).
+- Profile 5 has no picture underneath that stands on its own, and comes out
+  in the wrong colours [V]. When
+  `current-tracks/video/dolby-vision-profile` is 5 the player says so in a
+  notice for 8 seconds after the file opens.
+- `plex-rust play ... --unattended` reports `dolby_vision_profile`.
 
 **Buffering:** `cache=yes`, `demuxer-max-bytes=2GiB`,
 `demuxer-max-back-bytes=512MiB`, `demuxer-hysteresis-secs=10` (the manual
