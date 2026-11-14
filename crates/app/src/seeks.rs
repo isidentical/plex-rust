@@ -3,7 +3,9 @@
 //! A script is a comma-separated list of steps. `3x20` presses "3 seconds
 //! forward" 20 times, letting playback pick up again after each press, and
 //! times every one. `-3x30@80` holds "3 seconds back" down: 30 presses, 80 ms
-//! apart, whether or not the one before has finished.
+//! apart, whether or not the one before has finished. A separate press is
+//! [`Player::seek_by`] and a press of a held key is [`Player::scan_by`], as
+//! in the player screen.
 
 use std::time::{Duration, Instant};
 
@@ -143,7 +145,7 @@ fn pressed(player: &Player, probe: &mut Probe, step: &Step) -> player::Result<Va
     let mut off_target: f64 = 0.0;
     for _ in 0..step.presses {
         let from = player.position()?.map(|position| position.as_secs_f64());
-        let stall = jump(player, probe, step.seconds)?;
+        let stall = jump(player, probe, step.seconds, Player::seek_by)?;
         if let (Some(from), Some(landed)) = (from, stall.landed) {
             off_target = off_target.max((landed - from - step.seconds).abs());
         }
@@ -167,10 +169,10 @@ fn held(player: &Player, probe: &mut Probe, step: &Step, every: Duration) -> pla
     let from = player.position()?.map(|position| position.as_secs_f64());
     let mut pictures = 0;
     for _ in 1..step.presses {
-        player.seek_by(step.seconds)?;
+        player.scan_by(step.seconds)?;
         pictures += idle(probe, every);
     }
-    let release = jump(player, probe, step.seconds)?;
+    let release = jump(player, probe, step.seconds, Player::scan_by)?;
     idle(probe, SETTLE);
     let ms = |time: Option<Duration>| time.map(|time| time.as_secs_f64() * 1000.0);
     Ok(json!({
@@ -184,10 +186,16 @@ fn held(player: &Player, probe: &mut Probe, step: &Step, every: Duration) -> pla
 }
 
 /// Presses once and watches until playback has fully picked up again.
-fn jump(player: &Player, probe: &mut Probe, seconds: f64) -> player::Result<Stall> {
+/// `press` is what the key does: [`Player::seek_by`] or [`Player::scan_by`].
+fn jump(
+    player: &Player,
+    probe: &mut Probe,
+    seconds: f64,
+    press: fn(&Player, f64) -> player::Result<()>,
+) -> player::Result<Stall> {
     let mut stall = Stall::default();
     let pressed = Instant::now();
-    player.seek_by(seconds)?;
+    press(player, seconds)?;
     while !stall.is_over() {
         let Some(moment) = probe.wait(GIVE_UP.saturating_sub(pressed.elapsed())) else {
             break;

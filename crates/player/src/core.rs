@@ -205,6 +205,22 @@ impl Player {
         self.command(&["seek", &seconds.to_string(), "relative+exact"])
     }
 
+    /// Moves the position by at least `seconds`, backwards if negative, to
+    /// the nearest picture that can be shown without decoding the ones
+    /// before it. This is for a key that is held down, where a new picture
+    /// with every repeat matters and where exactly it lands does not.
+    ///
+    /// [`seek_by`](Self::seek_by) decodes from the keyframe before its
+    /// target, which for a 4K film with a keyframe every 10 seconds takes
+    /// 270 ms on average. mpv gives up on a seek that takes over 300 ms
+    /// when the next one arrives (`execute_queued_seek` in mpv's
+    /// player/playloop.c), so a held key showed 1 to 3 pictures a second
+    /// there. Going from keyframe to keyframe takes about 20 ms and shows
+    /// one for nearly every repeat.
+    pub fn scan_by(&self, seconds: f64) -> Result<()> {
+        self.command(&["seek", &seconds.to_string(), "relative+keyframes"])
+    }
+
     pub fn set_paused(&self, paused: bool) -> Result<()> {
         self.set_string("pause", if paused { "yes" } else { "no" })
     }
