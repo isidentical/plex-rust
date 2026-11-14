@@ -562,7 +562,15 @@ impl Hero {
             season_name,
             episode_number,
             title,
-            facts: line(theme::FONT_HEADLINE, Weight::Medium, &secondary),
+            // Two lines, so that a narrow window wraps the last facts
+            // and does not cut them off.
+            facts: label::paragraph(
+                theme::FONT_HEADLINE,
+                Weight::Medium,
+                &secondary,
+                theme::HERO_FACTS_LINES,
+                main_thread,
+            ),
             badges,
             genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
             play,
@@ -679,7 +687,8 @@ impl Hero {
         let number = item.index.map(|number| format!("Episode {number}"));
         set(&self.episode_number, number.as_deref().unwrap_or_default());
         set(&self.title, &item.title);
-        set(&self.facts, &facts(item));
+        // A line may break after a dot between two facts, never before it.
+        set(&self.facts, &facts(item).replace(" · ", "\u{a0}· "));
         set(&self.summary, item.summary.as_deref().unwrap_or_default());
         set(&self.genres, &names(&item.genres, GENRES_SHOWN).join(", "));
         let directors = names(&item.directors, DIRECTORS_SHOWN);
