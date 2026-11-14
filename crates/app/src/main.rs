@@ -8,6 +8,7 @@ mod images;
 mod pacing;
 mod play;
 mod progress;
+mod reach;
 mod seeks;
 mod settings;
 mod source;

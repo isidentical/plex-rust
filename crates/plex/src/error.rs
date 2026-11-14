@@ -60,6 +60,12 @@ impl Error {
         }
     }
 
+    /// Whether this is the server's own word: it answered, though not
+    /// with what was asked for.
+    pub fn is_from_server(&self) -> bool {
+        matches!(self, Self::Shape { .. } | Self::Missing(_)) || self.status().is_some()
+    }
+
     /// Whether the answer was that the token is not accepted.
     pub fn is_unauthorized(&self) -> bool {
         self.status() == Some(reqwest::StatusCode::UNAUTHORIZED)
