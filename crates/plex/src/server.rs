@@ -70,6 +70,11 @@ impl MediaServer {
         Self { answers: Answers::Cache, ..self.clone() }
     }
 
+    /// The same server, keeping no answers on disk and remembering none.
+    pub(crate) fn forgetful(&self) -> Self {
+        Self { cache: None, ..self.clone() }
+    }
+
     /// The token for this server, for storing alongside its address.
     pub fn token(&self) -> &Token {
         &self.token

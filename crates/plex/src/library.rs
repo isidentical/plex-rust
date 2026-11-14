@@ -132,7 +132,9 @@ impl MediaServer {
     /// Results for `query`, one row per kind of item, up to `limit` each.
     pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<Hub>> {
         let query = [("query", query), ("limit", &limit.to_string())];
-        let hubs: Hubs = self.get("/hubs/search", &query).await?;
+        // Not kept: each pause in typing asks for what was typed so far,
+        // and all of it would stay on disk for good.
+        let hubs: Hubs = self.forgetful().get("/hubs/search", &query).await?;
         video_hubs(hubs, "/hubs/search")
     }
 
