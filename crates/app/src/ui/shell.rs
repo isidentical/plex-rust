@@ -301,15 +301,20 @@ pub struct Snapshot {
 
 /// Opens the main window and runs the app until it quits.
 ///
-/// With `snapshot`, the window stays off screen: once the subject has
-/// loaded, the window is saved to the path as a PNG and the app exits.
+/// With `snapshot`, the window is where no display shows it: once the
+/// subject has loaded, the window is saved to the path as a PNG and the
+/// app exits.
 pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
     let background = Rc::new(Background::new()?);
 
     let app = NSApplication::sharedApplication(main_thread);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // A snapshot is not an app to switch to: it gets no Dock icon.
+    app.setActivationPolicy(match snapshot {
+        Some(_) => NSApplicationActivationPolicy::Accessory,
+        None => NSApplicationActivationPolicy::Regular,
+    });
     // A film library looks right on dark, whatever the system is set to.
     // SAFETY: the name is a constant that AppKit provides.
     let dark = unsafe { NSAppearanceNameDarkAqua };
@@ -317,7 +322,14 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
 
     let downloads = Downloads::open(main_thread, Rc::clone(&background))?;
     let (settings, listings) = (Settings::load()?, Listings::load()?);
-    let shell = Shell::new(main_thread, Rc::clone(&background), settings, listings, downloads);
+    let shell = Shell::new(
+        main_thread,
+        Rc::clone(&background),
+        settings,
+        listings,
+        downloads,
+        snapshot.is_some(),
+    );
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
@@ -325,7 +337,10 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
         Some(snapshot) if snapshot.tweaks.wide => {
             shell.window.setContentSize(theme::WINDOW_WIDE_SIZE);
         }
-        Some(_) => {}
+        _ => {}
+    }
+    match &snapshot {
+        Some(_) => snapshot::stage(&shell.window, main_thread)?,
         None => {
             // Opens where and as large as it was last closed.
             shell.window.setFrameAutosaveName(ns_string!("main"));
@@ -360,13 +375,14 @@ impl Shell {
         settings: Settings,
         listings: Listings,
         downloads: Rc<Downloads>,
+        staged: bool,
     ) -> Rc<Self> {
         let content = NSView::new(main_thread);
         // The fade from one screen to the next is drawn by its layer.
         content.setWantsLayer(true);
         let content_controller = view_controller(main_thread);
         content_controller.setView(&content);
-        let window = window(main_thread);
+        let window = window(main_thread, staged);
         let split = NSSplitViewController::new(main_thread);
 
         // The sidebar, the toolbar and the menus call back into the shell,
@@ -1861,19 +1877,7 @@ impl Shell {
     }
 
     fn snapshot_and_exit(&self, path: &Path) {
-        // The content view's parent is the window's frame, which also draws
-        // the background and the title bar.
-        // SAFETY: the content view is in a window, so its parent is alive.
-        let frame = self.window.contentView().and_then(|view| unsafe { view.superview() });
-        let result = match frame {
-            Some(view) => {
-                // A window that was never on screen has not laid out yet.
-                view.layoutSubtreeIfNeeded();
-                snapshot::write_png(&view, path)
-            }
-            None => Err(Error::Snapshot),
-        };
-        if let Err(error) = result {
+        if let Err(error) = snapshot::write_png(&self.window, path) {
             eprintln!("plex-rust: {}", with_causes(&error));
             std::process::exit(1);
         }
@@ -1945,22 +1949,29 @@ fn saved_server(client: &Client) -> Result<(PathBuf, Option<MediaServer>)> {
     Ok((responses, saved))
 }
 
-fn window(main_thread: MainThreadMarker) -> Retained<NSWindow> {
+/// The main window. `staged` makes it one a snapshot can keep off every
+/// display.
+fn window(main_thread: MainThreadMarker, staged: bool) -> Retained<NSWindow> {
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
         | NSWindowStyleMask::Resizable
         | NSWindowStyleMask::FullSizeContentView;
-    // SAFETY: the arguments are valid, and `setReleasedWhenClosed(false)`
-    // below gives the window the ownership rules `Retained` expects.
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(main_thread),
-            NSRect::new(NSPoint::ZERO, theme::WINDOW_SIZE),
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        )
+    let frame = NSRect::new(NSPoint::ZERO, theme::WINDOW_SIZE);
+    let window = if staged {
+        snapshot::window(frame, style, main_thread)
+    } else {
+        // SAFETY: the arguments are valid, and `setReleasedWhenClosed(false)`
+        // below gives the window the ownership rules `Retained` expects.
+        unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(main_thread),
+                frame,
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        }
     };
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };

@@ -1,20 +1,114 @@
-//! Saving what a view shows as a PNG.
+//! Saving what the window shows as a PNG, without showing the window.
 //!
-//! The app draws itself into the image, so this needs no screen recording
-//! permission and works while the window is not on screen. It exists so
-//! that an unattended run can check what the interface looks like.
+//! The window is put on screen in the window server's sense, at a place no
+//! display reaches, and the picture is the one the window server composes
+//! of it: glass, the sidebar and the toolbar included, none of which a
+//! view can draw into an image of its own. A process may read back its
+//! own windows without the screen recording permission. It exists so that
+//! an unattended run can check what the interface looks like.
 
 use std::path::Path;
 
-use objc2_app_kit::{NSBitmapImageFileType, NSView};
-use objc2_foundation::NSDictionary;
+use objc2::rc::Retained;
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{
+    NSBackingStoreType, NSBitmapImageFileType, NSBitmapImageRep, NSScreen, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
+};
+#[allow(deprecated)]
+use objc2_core_graphics::CGWindowListCreateImage;
+use objc2_core_graphics::{CGRectNull, CGWindowID, CGWindowImageOption, CGWindowListOption};
+use objc2_foundation::{NSDictionary, NSPoint, NSRect};
 
 use crate::error::{Error, Result};
 
-pub fn write_png(view: &NSView, path: &Path) -> Result<()> {
-    let bounds = view.bounds();
-    let bitmap = view.bitmapImageRepForCachingDisplayInRect(bounds).ok_or(Error::Snapshot)?;
-    view.cacheDisplayInRect_toBitmapImageRep(bounds, &bitmap);
+/// How far past the last display the window is put.
+const CLEARANCE: f64 = 1000.0;
+
+define_class!(
+    // SAFETY: NSWindow is designed to be subclassed, and `Staged` does not
+    // implement `Drop`.
+    #[unsafe(super(NSWindow))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustStagedWindow"]
+    pub struct Staged;
+
+    impl Staged {
+        /// AppKit asks this to keep a window within reach on a display.
+        #[unsafe(method(constrainFrameRect:toScreen:))]
+        fn constrain(&self, frame: NSRect, _screen: Option<&NSScreen>) -> NSRect {
+            frame
+        }
+    }
+);
+
+/// A window that stays where it is put, even off every display.
+pub fn window(
+    frame: NSRect,
+    style: NSWindowStyleMask,
+    main_thread: MainThreadMarker,
+) -> Retained<NSWindow> {
+    // SAFETY: the arguments are valid, and the caller sets
+    // `setReleasedWhenClosed(false)` as for any window it owns.
+    let window: Retained<Staged> = unsafe {
+        msg_send![
+            Staged::alloc(main_thread),
+            initWithContentRect: frame,
+            styleMask: style,
+            backing: NSBackingStoreType::Buffered,
+            defer: false,
+        ]
+    };
+    Retained::into_super(window)
+}
+
+/// Has the window server draw `window` where no display shows it.
+pub fn stage(window: &NSWindow, main_thread: MainThreadMarker) -> Result<()> {
+    let screens = NSScreen::screens(main_thread);
+    let frames = || screens.iter().map(|screen| screen.frame());
+    let left = frames().map(|frame| frame.origin.x).fold(0.0, f64::min);
+    let bottom = frames().map(|frame| frame.origin.y).fold(0.0, f64::min);
+    // Not a window to list in Mission Control or to cycle to.
+    window.setCollectionBehavior(
+        NSWindowCollectionBehavior::Transient
+            | NSWindowCollectionBehavior::IgnoresCycle
+            | NSWindowCollectionBehavior::Stationary,
+    );
+    // A window is moved onto a display as it is ordered in, so it goes in
+    // clear and is moved away after, and is shown only once it is known
+    // to have stayed away.
+    window.setAlphaValue(0.0);
+    window.orderBack(None);
+    let size = window.frame().size;
+    window.setFrameOrigin(NSPoint {
+        x: left - size.width - CLEARANCE,
+        y: bottom - size.height - CLEARANCE,
+    });
+    let frame = window.frame();
+    if frames().any(|screen| intersects(screen, frame)) {
+        window.orderOut(None);
+        return Err(Error::Snapshot);
+    }
+    window.setAlphaValue(1.0);
+    Ok(())
+}
+
+/// Writes the window server's picture of `window`, which [`stage`] put on
+/// screen, to `path`.
+pub fn write_png(window: &NSWindow, path: &Path) -> Result<()> {
+    let id = CGWindowID::try_from(window.windowNumber()).map_err(|_| Error::Snapshot)?;
+    // Deprecated in favour of ScreenCaptureKit, which cannot read a window
+    // without the screen recording permission, not even the app's own.
+    // SAFETY: the null rectangle is a constant that Core Graphics provides.
+    #[allow(deprecated)]
+    let image = CGWindowListCreateImage(
+        unsafe { CGRectNull },
+        CGWindowListOption::OptionIncludingWindow,
+        id,
+        CGWindowImageOption::BoundsIgnoreFraming | CGWindowImageOption::BestResolution,
+    );
+    let image = image.ok_or(Error::Snapshot)?;
+    let bitmap = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &image);
 
     // SAFETY: PNG takes no properties, so the empty dictionary is valid.
     let png = unsafe {
@@ -23,4 +117,11 @@ pub fn write_png(view: &NSView, path: &Path) -> Result<()> {
     let png = png.ok_or(Error::Snapshot)?;
     std::fs::write(path, png.to_vec())
         .map_err(|source| Error::File { path: path.to_owned(), source })
+}
+
+fn intersects(a: NSRect, b: NSRect) -> bool {
+    a.origin.x < b.origin.x + b.size.width
+        && b.origin.x < a.origin.x + a.size.width
+        && a.origin.y < b.origin.y + b.size.height
+        && b.origin.y < a.origin.y + a.size.height
 }
