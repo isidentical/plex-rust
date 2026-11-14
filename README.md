@@ -69,6 +69,12 @@ last given.
 | P | Start of the episode. Pressed again there, the previous episode |
 | F, double click | Full screen |
 | Escape | Leave full screen, then the player |
+| Play/Pause media key | Pause and resume |
+| Next and Previous media keys | Next episode, and the start of this one or the one before. In a film they do nothing |
+
+The same goes for the buttons on headphones, and for Control Center,
+which also shows what is playing with its poster, jumps 10 seconds
+back and forward, and has a scrubber of its own.
 
 Low Power in the plex-rust menu draws the picture more cheaply, with plain
 scaling and no dithering. It is off until you turn it on, changes what is

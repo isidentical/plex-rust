@@ -216,7 +216,7 @@ fn exit_when_playback_ends(playback: &Playback) {
         match playback.player.wait_event() {
             Event::Loaded => playback.report(PlaybackState::Playing),
             Event::VideoChanged => match_video(&playback.player),
-            Event::Buffering(_) => {}
+            Event::Restarted | Event::Buffering(_) => {}
             Event::Ended(EndReason::Failed(error)) => {
                 eprintln!("plex-rust: playback failed: {error}");
                 std::process::exit(1);

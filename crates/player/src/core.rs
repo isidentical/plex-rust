@@ -162,6 +162,9 @@ pub enum TrackKind {
 pub enum Event {
     /// The file is open and playback is starting.
     Loaded,
+    /// Picture and sound are ready at a new position and playback goes on
+    /// from it: after a load, and after every seek.
+    Restarted,
     /// Playback has stalled waiting for data (`true`) or picked up again
     /// (`false`).
     Buffering(bool),
@@ -478,6 +481,7 @@ impl Player {
             match event.event_id {
                 sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return Event::Shutdown,
                 sys::mpv_event_id_MPV_EVENT_FILE_LOADED => return Event::Loaded,
+                sys::mpv_event_id_MPV_EVENT_PLAYBACK_RESTART => return Event::Restarted,
                 sys::mpv_event_id_MPV_EVENT_VIDEO_RECONFIG => return Event::VideoChanged,
                 sys::mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
                     // SAFETY: for PROPERTY_CHANGE, mpv sets `data` to a valid

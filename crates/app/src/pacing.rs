@@ -209,7 +209,7 @@ fn follow_events(player: &Player) {
                 eprintln!("plex-rust: playback ended before the measurement did");
                 std::process::exit(1);
             }
-            Event::Loaded | Event::Buffering(_) => {}
+            Event::Loaded | Event::Restarted | Event::Buffering(_) => {}
         }
     }
 }

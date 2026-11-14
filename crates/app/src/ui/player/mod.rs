@@ -6,6 +6,7 @@ mod controls;
 pub mod input;
 mod layout;
 mod pane;
+mod remote;
 mod season;
 mod slider;
 mod speed;
@@ -40,11 +41,13 @@ use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
+use self::remote::{Command, Playing, Remote};
 use self::season::Neighbours;
 use self::slider::{Grip, Pointed};
 use self::speed::Speed;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
+use crate::images::Images;
 use crate::settings::Settings;
 use crate::source;
 use crate::video_layer::{self, VideoLayer};
@@ -169,6 +172,10 @@ pub struct Ivars {
     /// Held while playing, so that the display does not go to sleep in the
     /// middle of a film. Given up while paused and on closing.
     awake: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
+    /// The system's media controls, held from open to close while someone
+    /// is watching. A check never holds them: it must not take the media
+    /// keys away from whatever the owner of the Mac is listening to.
+    remote: RefCell<Option<Remote>>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -230,10 +237,12 @@ impl PlayerScreen {
     ///
     /// `item` should be the full item from [`MediaServer::item`], which is
     /// the one that knows its intro and credits.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         main_thread: MainThreadMarker,
         background: Rc<Background>,
         server: MediaServer,
+        images: &Rc<Images>,
         item: &Item,
         settings: Settings,
         purpose: Purpose,
@@ -277,6 +286,7 @@ impl PlayerScreen {
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
             awake: RefCell::new(None),
+            remote: RefCell::new(None),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             duration: Cell::new(None),
@@ -320,6 +330,9 @@ impl PlayerScreen {
         unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
         *screen.ivars().timer.borrow_mut() = Some(timer);
         screen.keep_display_awake(true);
+        if purpose == Purpose::Watching {
+            screen.take_media_controls(images);
+        }
         screen.follow_events(main_thread);
         screen.find_neighbours();
         Ok(screen)
@@ -429,6 +442,9 @@ impl PlayerScreen {
             return false;
         };
         timer.invalidate();
+        if let Some(remote) = ivars.remote.borrow_mut().take() {
+            remote.release();
+        }
         self.keep_display_awake(false);
         NSCursor::setHiddenUntilMouseMoves(false);
         if let (Some(chrome), Some(window)) =
@@ -457,6 +473,71 @@ impl PlayerScreen {
             (Some(activity), false) => unsafe { process.endActivity(&activity) },
             (None, false) => {}
         }
+    }
+
+    /// Takes the system's media controls for this playback, and fetches
+    /// the poster they show next to its title.
+    fn take_media_controls(&self, images: &Rc<Images>) {
+        let item = &self.ivars().item;
+        let screen = Weak::new(self);
+        let remote = Remote::register(self.mtm(), item, LONG_JUMP, move |command| {
+            if let Some(screen) = screen.load() {
+                screen.obey(command);
+            }
+        });
+        *self.ivars().remote.borrow_mut() = Some(remote);
+
+        let Some(poster) = item.grandparent_thumb.as_deref().or(item.thumb.as_deref()) else {
+            return;
+        };
+        // The size the item's own page shows it at, so it is rarely fetched.
+        let (width, height) = crate::ui::theme::HERO_POSTER_REQUEST;
+        let scale = crate::ui::theme::RETINA_SCALE;
+        let screen = Weak::new(self);
+        images.load(poster, width * scale, height * scale, move |artwork| {
+            let Some(screen) = screen.load() else {
+                return;
+            };
+            if let Some(remote) = screen.ivars().remote.borrow().as_ref() {
+                remote.set_artwork(artwork);
+            }
+            screen.or_log(screen.show_now_playing());
+        });
+    }
+
+    /// Does what the viewer asked for through the media controls.
+    fn obey(&self, command: Command) {
+        let result = match command {
+            Command::Play => self.set_paused(false),
+            Command::Pause => self.set_paused(true),
+            Command::TogglePause => self.toggle_pause(),
+            Command::Next => {
+                self.go_to_next();
+                Ok(())
+            }
+            Command::Previous => self.go_to_previous(),
+            Command::Skip(seconds) => self.jump(seconds, Press::First),
+            Command::Seek(position) => self.ivars().player.seek(position),
+        };
+        self.or_log(result);
+    }
+
+    /// Tells the system's media controls where playback stands. They count
+    /// the position on by themselves, so they are told only when it jumps
+    /// or changes pace, and every ten seconds to correct what has drifted.
+    fn show_now_playing(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let remote = ivars.remote.borrow();
+        let Some(remote) = remote.as_ref() else {
+            return Ok(());
+        };
+        let player = &ivars.player;
+        let (Some(position), Some(duration)) = (player.position()?, player.duration()?) else {
+            return Ok(());
+        };
+        let rate = if player.is_paused()? { 0.0 } else { self.speed().factor() };
+        remote.show(&Playing { item: &ivars.item, position, duration, rate });
+        Ok(())
     }
 
     /// Says what each control does.
@@ -669,6 +750,7 @@ impl PlayerScreen {
         ivars.ticks.set(ticks);
         if ticks.is_multiple_of(TICKS_PER_REPORT) {
             self.report_current_state();
+            self.or_log(self.show_now_playing());
         }
 
         let notice_left = ivars.ticks_of_notice_left.get();
@@ -872,7 +954,7 @@ impl PlayerScreen {
         self.ivars().speed.set(speed);
         self.show_speed();
         self.notify(&format!("Speed {speed}"));
-        Ok(())
+        self.show_now_playing()
     }
 
     fn show_speed(&self) {
@@ -1216,6 +1298,7 @@ impl PlayerScreen {
                 self.or_log(self.refresh());
                 self.or_log(self.warn_of_wrong_colors());
             }
+            Event::Restarted => self.or_log(self.show_now_playing()),
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.
                 self.set_waiting(false);
@@ -1245,16 +1328,18 @@ impl PlayerScreen {
     }
 
     fn toggle_pause(&self) -> player::Result<()> {
-        let player = &self.ivars().player;
-        let pause = !player.is_paused()?;
-        player.set_paused(pause)?;
+        self.set_paused(!self.ivars().player.is_paused()?)
+    }
+
+    fn set_paused(&self, pause: bool) -> player::Result<()> {
+        self.ivars().player.set_paused(pause)?;
         let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
         self.ivars().controls.toggle.set_name(name);
         self.keep_display_awake(!pause);
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);
-        Ok(())
+        self.show_now_playing()
     }
 
     /// Brings the controls up to date with the player.

@@ -1218,6 +1218,7 @@ impl Shell {
             self.main_thread,
             Rc::clone(&self.background),
             session.server.clone(),
+            &session.images,
             item,
             self.settings.get(),
             purpose,

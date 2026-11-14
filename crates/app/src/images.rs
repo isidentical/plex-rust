@@ -5,12 +5,13 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, Message};
+use objc2::{AllocAnyThread, MainThreadMarker, Message};
+use objc2_app_kit::NSImage;
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType,
 };
 use objc2_core_graphics::CGImage;
-use objc2_foundation::{NSCache, NSString};
+use objc2_foundation::{NSCache, NSSize, NSString};
 use objc2_image_io::{
     CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways,
     kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceShouldCacheImmediately,
@@ -34,6 +35,14 @@ impl Artwork {
     /// The picture as a layer takes it, for `CALayer::setContents`.
     pub fn contents(&self) -> &AnyObject {
         &self.0
+    }
+
+    /// The picture as AppKit takes it, at one point a pixel.
+    pub fn image(&self) -> Retained<NSImage> {
+        // SAFETY: an `Artwork` is only ever made from a `CGImage`, in
+        // `Images::load`, and Core Foundation objects are Objective-C ones.
+        let image: &CGImage = unsafe { &*Retained::as_ptr(&self.0).cast() };
+        NSImage::initWithCGImage_size(NSImage::alloc(), image, NSSize::ZERO)
     }
 }
 

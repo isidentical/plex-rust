@@ -331,7 +331,9 @@ icon and font assets:
 - **Player:** video fills the window, controls fade out: scrubber with
   buffered range and chapter ticks, time, speed, audio/subtitle menus, skip
   button, fullscreen. Space, arrows, `[` `]` for speed, `F` for fullscreen.
-  Media keys through `MPRemoteCommandCenter`.
+  Media keys through `MPRemoteCommandCenter`, and what is playing through
+  `MPNowPlayingInfoCenter`, both held only while a player is open and
+  someone is watching: a snapshot or other check never takes them.
 
 Collection views use the classic `NSCollectionViewDataSource` protocol.
 `NSCollectionViewDiffableDataSource` has no usable initializer in
