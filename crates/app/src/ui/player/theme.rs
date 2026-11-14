@@ -40,6 +40,8 @@ pub const TOGGLE_WIDTH: f64 = 56.0;
 pub const CHIP_RADIUS: f64 = 12.0;
 pub const CHIP_PADDING: f64 = 12.0;
 pub const RIM_WIDTH: f64 = 1.0;
+/// The ring around the control the keyboard is on.
+pub const FOCUS_WIDTH: f64 = 2.5;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
 /// The height of a chip that only says something.
 pub const CAPTION_HEIGHT: f64 = 28.0;
@@ -136,6 +138,12 @@ pub fn text() -> Retained<NSColor> {
 
 pub fn secondary_text() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(1.0, 0.7)
+}
+
+/// The ring around the control the keyboard is on. The system's own
+/// accent, so that it reads as the keyboard's place as it does anywhere.
+pub fn focus() -> Retained<NSColor> {
+    NSColor::keyboardFocusIndicatorColor()
 }
 
 /// Behind a control the pointer is over.

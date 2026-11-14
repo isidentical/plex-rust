@@ -9,7 +9,7 @@ use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSEvent, NSEventModifierFlags,
     NSEventType, NSView, NSWindowOrderingMode,
 };
-use objc2_foundation::{NSPoint, NSProcessInfo, NSSize};
+use objc2_foundation::{NSPoint, NSProcessInfo, NSSize, ns_string};
 use player::Player;
 use plex::model::Item;
 
@@ -98,6 +98,29 @@ pub fn set(
 fn resize(root: &NSView, size: NSSize) {
     if let Some(window) = root.window() {
         window.setContentSize(size);
+    }
+}
+
+/// Sends `view` the key with hardware code `code` going down, as the
+/// window does to the view the keyboard is on.
+pub fn press_key(view: &NSView, code: u16) {
+    let Some(window) = view.window() else {
+        return;
+    };
+    let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        NSEventType::KeyDown,
+        NSPoint::ZERO,
+        NSEventModifierFlags::empty(),
+        NSProcessInfo::processInfo().systemUptime(),
+        window.windowNumber(),
+        None,
+        ns_string!(""),
+        ns_string!(""),
+        false,
+        code,
+    );
+    if let Some(event) = event {
+        view.keyDown(&event);
     }
 }
 

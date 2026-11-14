@@ -15,6 +15,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
 
 use super::controls::{medium, symbol};
+use super::input::code;
 use super::theme;
 
 /// What a chip looks like and whether it can be clicked.
@@ -40,6 +41,10 @@ pub struct Ivars {
     /// What the chip is, for a viewer who cannot see its symbol.
     name: RefCell<String>,
     hovered: Cell<bool>,
+    /// Whether the keyboard may be put on the chip right now.
+    takes_keys: Cell<bool>,
+    /// Whether the keyboard is on the chip.
+    focused: Cell<bool>,
     pressed: Cell<bool>,
     enabled: Cell<bool>,
     on_click: OnceCell<Box<dyn Fn()>>,
@@ -67,28 +72,63 @@ define_class!(
 
         #[unsafe(method(drawRect:))]
         fn draw(&self, _dirty: NSRect) {
-            let Some(fill) = self.fill() else {
-                return;
-            };
-            fill.setFill();
             let radius = theme::CHIP_RADIUS;
-            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), radius, radius)
+            if let Some(fill) = self.fill() {
+                fill.setFill();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    self.bounds(),
+                    radius,
+                    radius,
+                )
                 .fill();
-            if self.ivars().style != Style::Solid {
-                return;
             }
             // A light button on a white picture is white on white. A dark
             // line just inside its edge gives it an outline there, and is a
             // soft edge anywhere else.
-            let inset = theme::RIM_WIDTH / 2.0;
-            let rim = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                NSInsetRect(self.bounds(), inset, inset),
-                radius - inset,
-                radius - inset,
-            );
-            rim.setLineWidth(theme::RIM_WIDTH);
-            theme::rim().setStroke();
-            rim.stroke();
+            if self.ivars().style == Style::Solid {
+                self.outline(theme::RIM_WIDTH, &theme::rim());
+            }
+            if self.ivars().focused.get() {
+                self.outline(theme::FOCUS_WIDTH, &theme::focus());
+            }
+        }
+
+        /// Only when the screen has just put the keyboard on the chip. A
+        /// click must not: the chip would keep the keyboard afterwards,
+        /// and Space would press it again where the viewer means pause.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            self.ivars().takes_keys.get()
+        }
+
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            self.ivars().focused.set(true);
+            self.setNeedsDisplay(true);
+            true
+        }
+
+        #[unsafe(method(resignFirstResponder))]
+        fn resign_first_responder(&self) -> bool {
+            self.ivars().focused.set(false);
+            self.ivars().takes_keys.set(false);
+            self.setNeedsDisplay(true);
+            true
+        }
+
+        /// Space and Return press the chip the keyboard is on, as they
+        /// press any button. Every other key goes on to the player.
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let presses = matches!(event.keyCode(), code::SPACE | code::RETURN);
+            if presses && self.can_be_pressed() {
+                if !event.isARepeat() {
+                    self.click();
+                }
+                return;
+            }
+            // SAFETY: forwards the event to the superclass unchanged.
+            unsafe { msg_send![super(self), keyDown: event] }
         }
 
         #[unsafe(method(mouseEntered:))]
@@ -126,7 +166,7 @@ define_class!(
         /// VoiceOver pressing the chip. Returns whether it could be.
         #[unsafe(method(accessibilityPerformPress))]
         fn perform_press(&self) -> bool {
-            let can_press = self.ivars().style.is_button() && self.ivars().enabled.get();
+            let can_press = self.can_be_pressed();
             if can_press {
                 self.click();
             }
@@ -165,6 +205,8 @@ impl Chip {
             symbol: Cell::new(""),
             name: RefCell::new(String::new()),
             hovered: Cell::new(false),
+            takes_keys: Cell::new(false),
+            focused: Cell::new(false),
             pressed: Cell::new(false),
             enabled: Cell::new(true),
             on_click: OnceCell::new(),
@@ -220,6 +262,39 @@ impl Chip {
             (true, _) => title.to_string(),
         };
         self.setAccessibilityLabel(Some(&NSString::from_str(&label)));
+    }
+
+    /// Whether the chip is a button that is in view and has something to
+    /// do.
+    pub fn can_be_pressed(&self) -> bool {
+        let ivars = self.ivars();
+        ivars.style.is_button() && ivars.enabled.get() && !self.isHiddenOrHasHiddenAncestor()
+    }
+
+    /// Whether the keyboard is on the chip.
+    pub fn is_focused(&self) -> bool {
+        self.ivars().focused.get()
+    }
+
+    /// Puts the keyboard on the chip, which shows it with a ring.
+    pub fn take_keys(&self) {
+        if let Some(window) = self.window() {
+            self.ivars().takes_keys.set(true);
+            window.makeFirstResponder(Some(self));
+        }
+    }
+
+    /// Strokes a line of `width` just inside the chip's edge.
+    fn outline(&self, width: f64, color: &NSColor) {
+        let (inset, radius) = (width / 2.0, theme::CHIP_RADIUS);
+        let line = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+            NSInsetRect(self.bounds(), inset, inset),
+            radius - inset,
+            radius - inset,
+        );
+        line.setLineWidth(width);
+        color.setStroke();
+        line.stroke();
     }
 
     fn click(&self) {

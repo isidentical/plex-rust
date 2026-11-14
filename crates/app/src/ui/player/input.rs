@@ -20,6 +20,10 @@ pub enum Key {
     ShiftRight,
     Up,
     Down,
+    /// Moves the keyboard to the next control.
+    Tab,
+    /// Tab with Shift held, which moves it to the one before.
+    BackTab,
     /// A key that types a character, in lower case.
     Character(char),
     /// Not a key: the viewer doing nothing for long enough that the
@@ -80,6 +84,8 @@ impl Key {
             ("shift-right", ..) => Some(Self::ShiftRight),
             ("up", ..) => Some(Self::Up),
             ("down", ..) => Some(Self::Down),
+            ("tab", ..) => Some(Self::Tab),
+            ("shift-tab", ..) => Some(Self::BackTab),
             ("idle", ..) => Some(Self::Idle),
             ("hover", ..) => Some(Self::Scene(Scene::Hover)),
             ("drag", ..) => Some(Self::Scene(Scene::Drag)),
@@ -115,8 +121,9 @@ pub enum Clicks {
 }
 
 /// Hardware key codes of the keys that type no character.
-mod code {
+pub mod code {
     pub const RETURN: u16 = 36;
+    pub const TAB: u16 = 48;
     pub const SPACE: u16 = 49;
     pub const ESCAPE: u16 = 53;
     pub const LEFT: u16 = 123;
@@ -263,6 +270,8 @@ fn key(event: &NSEvent) -> Option<Key> {
         code::SPACE => Some(Key::Space),
         code::RETURN => Some(Key::Return),
         code::ESCAPE => Some(Key::Escape),
+        code::TAB if shift => Some(Key::BackTab),
+        code::TAB => Some(Key::Tab),
         code::LEFT if shift => Some(Key::ShiftLeft),
         code::RIGHT if shift => Some(Key::ShiftRight),
         code::LEFT => Some(Key::Left),

@@ -478,16 +478,88 @@ impl PlayerScreen {
         }
     }
 
-    /// Puts away what is on top: the offer of the next episode, then full
-    /// screen, as Escape does everywhere, and then the player.
+    /// Puts away what is on top: the keyboard's place among the buttons,
+    /// the offer of the next episode, then full screen, as Escape does
+    /// everywhere, and then the player.
     fn back_out(&self) {
-        if self.ivars().up_next.get() == UpNext::Counting {
+        if self.focused().is_some() {
+            self.drop_focus();
+        } else if self.ivars().up_next.get() == UpNext::Counting {
             self.turn_down_next_episode();
         } else if self.is_full_screen() {
             self.toggle_full_screen();
         } else {
             self.close();
         }
+    }
+
+    /// The buttons the keyboard can be put on right now, in the order
+    /// they are read in.
+    fn focusable(&self) -> Vec<&Chip> {
+        let controls = &self.ivars().controls;
+        let chips: [&Chip; 17] = [
+            &controls.back,
+            &controls.failure.retry,
+            &controls.failure.leave,
+            &controls.skip,
+            &controls.up_next.play,
+            &controls.up_next.cancel,
+            &controls.remaining,
+            &controls.mute,
+            &controls.previous,
+            &controls.rewind,
+            &controls.toggle,
+            &controls.forward,
+            &controls.next,
+            &controls.speed,
+            &controls.audio,
+            &controls.subtitles,
+            &controls.full_screen,
+        ];
+        chips.into_iter().filter(|chip| chip.can_be_pressed()).collect()
+    }
+
+    /// The button the keyboard is on, if it is on one.
+    fn focused(&self) -> Option<&Chip> {
+        self.focusable().into_iter().find(|chip| chip.is_focused())
+    }
+
+    /// Moves the keyboard to the next button, or the one before. Past the
+    /// last, and before the first, it is back on the video, where every
+    /// key means what it always does.
+    ///
+    /// The controls come up for it and stay while the keyboard is on one
+    /// of them, so it is never on a button that cannot be seen.
+    fn move_focus(&self, forward: bool) {
+        self.show_controls(true);
+        let chips = self.focusable();
+        let current = chips.iter().position(|chip| chip.is_focused());
+        let next = match (current, forward) {
+            (None, true) => chips.first(),
+            (None, false) => chips.last(),
+            (Some(index), true) => chips.get(index + 1),
+            (Some(index), false) => index.checked_sub(1).and_then(|index| chips.get(index)),
+        };
+        match next {
+            Some(chip) => chip.take_keys(),
+            None => self.drop_focus(),
+        }
+    }
+
+    /// Puts the keyboard back on the video.
+    fn drop_focus(&self) {
+        let root = &self.ivars().root;
+        if let Some(window) = root.window() {
+            window.makeFirstResponder(Some(root));
+        }
+    }
+
+    /// Switches the time right of the scrubber between what is left and
+    /// the full length.
+    fn switch_time_shown(&self) -> player::Result<()> {
+        let shows_length = &self.ivars().shows_length;
+        shows_length.set(!shows_length.get());
+        self.refresh()
     }
 
     /// Where the player is in the file, which is also kept for when it no
@@ -645,11 +717,7 @@ impl PlayerScreen {
         self.on_click(&controls.previous, |screen| screen.or_log(screen.go_to_previous()));
         self.on_click(&controls.next, |screen| screen.go_to_next());
         self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
-        self.on_click(&controls.remaining, |screen| {
-            let shows_length = &screen.ivars().shows_length;
-            shows_length.set(!shows_length.get());
-            screen.or_log(screen.refresh());
-        });
+        self.on_click(&controls.remaining, |screen| screen.or_log(screen.switch_time_shown()));
         self.on_click(&controls.speed, |screen| screen.offer_speeds());
         self.on_click(&controls.audio, |screen| {
             screen.or_log(screen.offer_tracks(TrackKind::Audio));
@@ -730,8 +798,20 @@ impl PlayerScreen {
 
     /// Acts on a key going down. Returns whether the key means anything
     /// here.
+    ///
+    /// With the keyboard on a button, Space and Return go to that button
+    /// as key events, as they do from a real keyboard.
     pub fn press(&self, key: Key) -> bool {
-        self.act_on(key, Press::First)
+        let code = match key {
+            Key::Space => Some(input::code::SPACE),
+            Key::Return => Some(input::code::RETURN),
+            _ => None,
+        };
+        match self.focused().zip(code) {
+            Some((chip, code)) => stage::press_key(chip, code),
+            None => return self.act_on(key, Press::First),
+        }
+        true
     }
 
     fn act_on(&self, key: Key, press: Press) -> bool {
@@ -742,6 +822,8 @@ impl PlayerScreen {
             match (key, press) {
                 (Key::Return, Press::First) => self.retry(),
                 (Key::Escape, Press::First) => self.back_out(),
+                (Key::Tab, _) => self.move_focus(true),
+                (Key::BackTab, _) => self.move_focus(false),
                 (Key::Character('f'), Press::First) => self.toggle_full_screen(),
                 _ => {}
             }
@@ -751,7 +833,14 @@ impl PlayerScreen {
         // held Space must not pause and resume thirty times a second.
         let repeats = matches!(
             key,
-            Key::Left | Key::Right | Key::ShiftLeft | Key::ShiftRight | Key::Up | Key::Down
+            Key::Left
+                | Key::Right
+                | Key::ShiftLeft
+                | Key::ShiftRight
+                | Key::Up
+                | Key::Down
+                | Key::Tab
+                | Key::BackTab
         );
         if press == Press::Held && !repeats {
             return true;
@@ -779,6 +868,11 @@ impl PlayerScreen {
             Key::Character('a') => self.next_track(TrackKind::Audio),
             Key::Character('c') => self.next_track(TrackKind::Subtitles),
             Key::Return => self.skip_marker(),
+            Key::Character('t') => self.switch_time_shown(),
+            Key::Tab | Key::BackTab => {
+                self.move_focus(key == Key::Tab);
+                return true;
+            }
             Key::Character('f') => {
                 self.toggle_full_screen();
                 Ok(())
@@ -888,8 +982,10 @@ impl PlayerScreen {
         self.refresh()?;
         let idle = ivars.ticks_idle.get() + 1;
         ivars.ticks_idle.set(idle);
-        // A pointer that is on the controls keeps them.
+        // A pointer that is on the controls keeps them, and so does the
+        // keyboard.
         let in_use = ivars.pointer_on_controls.get()
+            || self.focused().is_some()
             || ivars.controls.scrubber.is_dragging()
             || ivars.menu_open.get();
         if idle >= TICKS_UNTIL_HIDDEN && !in_use {
@@ -1508,6 +1604,9 @@ impl PlayerScreen {
         ivars.controls.bottom.set_shown(shown && !failed);
         if !shown {
             ivars.controls.bubble.setHidden(true);
+            if self.focused().is_some() {
+                self.drop_focus();
+            }
         }
         if let Some(window) = ivars.root.window() {
             chrome::show_buttons(&window, shown);
