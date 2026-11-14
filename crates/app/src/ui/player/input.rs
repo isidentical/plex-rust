@@ -209,10 +209,13 @@ define_class!(
         }
 
         /// A finger on the screen that lands on a control is that
-        /// control's. Only a touch on a screen says where in a view it is.
+        /// control's. Only a touch on a screen says where in a view it is,
+        /// and without a view it answers in "the root container of touch"
+        /// (NSTouch.h), which is not promised to be the window.
         #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
         fn should_receive(&self, _recognizer: &NSGestureRecognizer, touch: &NSTouch) -> bool {
-            touch.r#type() != NSTouchType::Direct || self.is_bare_at(touch.locationInView(None))
+            touch.r#type() != NSTouchType::Direct
+                || self.is_bare_at(self.convertPoint_toView(touch.locationInView(Some(self)), None))
         }
     }
 
