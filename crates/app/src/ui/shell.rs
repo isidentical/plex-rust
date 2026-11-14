@@ -179,6 +179,8 @@ pub struct Tweaks {
     pub narrow: bool,
     /// The pointer over the first item.
     pub hover: bool,
+    /// On an episode's page, its link to the show followed.
+    pub follow_link: bool,
     /// Scrolled this many points down.
     pub scroll: f64,
     /// For a library, which items and in what order.
@@ -1235,6 +1237,9 @@ impl Shell {
                 }
                 if let (true, Screen::Posters(posters)) = (snapshot.tweaks.hover, screen) {
                     posters.hover_first();
+                }
+                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.follow_link, screen) {
+                    detail.follow_show_link();
                 }
             }
             let settle = async { tokio::time::sleep(SNAPSHOT_TWEAKS_SETTLE).await };

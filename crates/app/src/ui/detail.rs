@@ -188,6 +188,15 @@ impl Detail {
         }
     }
 
+    /// Does what a click on an episode's poster, show name or season name
+    /// does: goes to the show, opened on the episode's season.
+    pub fn follow_show_link(&self) {
+        let item = self.ivars().item.borrow().clone();
+        if let Some(item) = item {
+            self.act(&item, Action::OpenShow);
+        }
+    }
+
     /// Marks the item as watched if it is not, and the other way round.
     pub fn press_watched(&self) {
         let item = self.ivars().item.borrow().clone();

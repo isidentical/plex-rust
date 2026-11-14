@@ -33,7 +33,7 @@ usage: plex-rust
        plex-rust snapshot search <query> <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path>
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
-         tweaks: narrow, hover, scroll=<points>, unwatched,
+         tweaks: narrow, hover, link, scroll=<points>, unwatched,
                  sort=title|added|released|rating|watched
        plex-rust login
        plex-rust servers [<address>]
@@ -100,6 +100,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
         match tweak.split_once('=') {
             None if *tweak == "narrow" => parsed.narrow = true,
             None if *tweak == "hover" => parsed.hover = true,
+            None if *tweak == "link" => parsed.follow_link = true,
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             Some(("scroll", points)) => {
                 parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
