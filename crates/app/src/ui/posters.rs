@@ -63,7 +63,7 @@ define_class!(
     // not implement `Drop`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelPosters"]
+    #[name = "PlexRustPosters"]
     #[ivars = Ivars]
     pub struct Posters;
 

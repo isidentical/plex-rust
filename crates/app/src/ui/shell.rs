@@ -475,7 +475,7 @@ impl Shell {
             None => Err(Error::Snapshot),
         };
         if let Err(error) = result {
-            eprintln!("reel: {}", with_causes(&error));
+            eprintln!("plex-rust: {}", with_causes(&error));
             std::process::exit(1);
         }
         std::process::exit(0);
@@ -508,7 +508,7 @@ fn window(main_thread: MainThreadMarker) -> Retained<NSWindow> {
     };
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(ns_string!("Reel"));
+    window.setTitle(ns_string!("plex-rust"));
     window.setContentMinSize(theme::WINDOW_MIN_SIZE);
     window
 }
@@ -525,7 +525,7 @@ fn main_menu(main_thread: MainThreadMarker) -> Retained<NSMenu> {
     let quit = unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             NSMenuItem::alloc(main_thread),
-            ns_string!("Quit Reel"),
+            ns_string!("Quit plex-rust"),
             Some(sel!(terminate:)),
             ns_string!("q"),
         )
@@ -544,7 +544,7 @@ define_class!(
     // does not implement `Drop`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelShellDelegate"]
+    #[name = "PlexRustShellDelegate"]
     #[ivars = Rc<Shell>]
     struct AppDelegate;
 

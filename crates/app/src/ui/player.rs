@@ -116,7 +116,7 @@ define_class!(
     // does not implement `Drop`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelPlayerScreen"]
+    #[name = "PlexRustPlayerScreen"]
     #[ivars = Ivars]
     pub struct PlayerScreen;
 
@@ -575,7 +575,7 @@ impl PlayerScreen {
         };
         let tracks = match ivars.player.tracks() {
             Ok(tracks) => tracks,
-            Err(error) => return eprintln!("reel: {error}"),
+            Err(error) => return eprintln!("plex-rust: {error}"),
         };
         // The player's id for a track is its position among the tracks of
         // its kind, which is also the order the server lists them in.
@@ -591,7 +591,7 @@ impl PlayerScreen {
         let save = async move { server.choose_streams(&part, audio, Some(subtitles)).await };
         ivars.background.run(self.mtm(), save, |saved| {
             if let Err(error) = saved {
-                eprintln!("reel: track choice was not saved: {}", with_causes(&error));
+                eprintln!("plex-rust: track choice was not saved: {}", with_causes(&error));
             }
         });
     }
@@ -744,7 +744,7 @@ impl PlayerScreen {
                 self.or_log(video_layer::match_video_in(&ivars.video, &ivars.player));
             }
             Event::Ended(EndReason::Failed(error)) => {
-                eprintln!("reel: playback failed: {error}");
+                eprintln!("plex-rust: playback failed: {error}");
                 self.close(Outcome::Closed);
             }
             Event::Ended(EndReason::Finished) => self.close(Outcome::Finished),
@@ -783,7 +783,7 @@ impl PlayerScreen {
         match self.ivars().player.is_paused() {
             Ok(true) => self.report(PlaybackState::Paused),
             Ok(false) => self.report(PlaybackState::Playing),
-            Err(error) => eprintln!("reel: {error}"),
+            Err(error) => eprintln!("plex-rust: {error}"),
         }
     }
 
@@ -820,7 +820,7 @@ impl PlayerScreen {
                 duration,
             }),
             Err(error) => {
-                eprintln!("reel: {error}");
+                eprintln!("plex-rust: {error}");
                 None
             }
         }
@@ -828,7 +828,7 @@ impl PlayerScreen {
 
     fn or_log(&self, result: player::Result<()>) {
         if let Err(error) = result {
-            eprintln!("reel: {error}");
+            eprintln!("plex-rust: {error}");
         }
     }
 }
@@ -857,7 +857,7 @@ impl Progress {
 
 fn log_unsaved(sent: plex::Result<()>) {
     if let Err(error) = sent {
-        eprintln!("reel: progress was not saved: {}", with_causes(&error));
+        eprintln!("plex-rust: progress was not saved: {}", with_causes(&error));
     }
 }
 

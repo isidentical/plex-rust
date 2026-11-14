@@ -1,4 +1,4 @@
-//! Reel, a native macOS client for Plex.
+//! plex-rust, a native macOS client for Plex.
 
 mod account;
 mod background;
@@ -22,16 +22,16 @@ use crate::ui::input::Key;
 use crate::ui::shell::Subject;
 
 const USAGE: &str = "\
-usage: reel
-       reel snapshot home <png-path>
-       reel snapshot library <index> <png-path>
-       reel snapshot item <rating-key> <png-path>
-       reel snapshot play <rating-key> <png-path> [<key>...]
-       reel login
-       reel servers [<address>]
-       reel api [--post] <path>
-       reel play <file-or-url> [--unattended <seconds>]
-       reel play item:<rating-key> [--unattended <seconds>]";
+usage: plex-rust
+       plex-rust snapshot home <png-path>
+       plex-rust snapshot library <index> <png-path>
+       plex-rust snapshot item <rating-key> <png-path>
+       plex-rust snapshot play <rating-key> <png-path> [<key>...]
+       plex-rust login
+       plex-rust servers [<address>]
+       plex-rust api [--post] <path>
+       plex-rust play <file-or-url> [--unattended <seconds>]
+       plex-rust play item:<rating-key> [--unattended <seconds>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("reel: {}", error::with_causes(&error));
+            eprintln!("plex-rust: {}", error::with_causes(&error));
             ExitCode::FAILURE
         }
     }

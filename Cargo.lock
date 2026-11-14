@@ -835,6 +835,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "plex-rust"
+version = "0.1.0"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-video",
+ "objc2-foundation",
+ "objc2-open-gl",
+ "objc2-quartz-core",
+ "player",
+ "plex",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -866,26 +886,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "reel"
-version = "0.1.0"
-dependencies = [
- "dispatch2",
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-video",
- "objc2-foundation",
- "objc2-open-gl",
- "objc2-quartz-core",
- "player",
- "plex",
- "serde_json",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "reqwest"

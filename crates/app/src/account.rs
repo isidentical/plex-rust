@@ -53,7 +53,7 @@ fn identity() -> Result<Identity> {
 
 fn support_directory() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
-    let path = PathBuf::from(home).join("Library/Application Support/Reel");
+    let path = PathBuf::from(home).join("Library/Application Support/plex-rust");
     fs::create_dir_all(&path).map_err(|source| Error::File { path: path.clone(), source })?;
     Ok(path)
 }

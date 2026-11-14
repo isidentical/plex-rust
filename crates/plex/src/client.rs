@@ -5,7 +5,8 @@ use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 
 use crate::error::Result;
 
-const PRODUCT: &str = "Reel";
+/// The name this app goes by in Plex's device lists and dashboards.
+pub(crate) const PRODUCT: &str = "plex-rust";
 
 /// How this installation presents itself to Plex.
 #[derive(Debug, Clone)]

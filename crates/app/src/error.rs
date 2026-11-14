@@ -29,7 +29,7 @@ pub enum Error {
     #[error("the server sent artwork that is not an image")]
     NotAnImage,
 
-    #[error("not signed in, run `reel login` first")]
+    #[error("not signed in, run `plex-rust login` first")]
     SignedOut,
 
     #[error("the home directory is unknown because HOME is not set")]

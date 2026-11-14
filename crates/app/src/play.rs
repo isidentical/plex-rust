@@ -1,4 +1,4 @@
-//! `reel play`: one file, URL or library item in a bare window.
+//! `plex-rust play`: one file, URL or library item in a bare window.
 
 use std::sync::Arc;
 use std::thread;
@@ -37,7 +37,7 @@ impl Playback {
             return;
         };
         if let Err(error) = progress.report(&self.player, state) {
-            eprintln!("reel: progress was not saved: {}", with_causes(&error));
+            eprintln!("plex-rust: progress was not saved: {}", with_causes(&error));
         }
     }
 
@@ -45,7 +45,7 @@ impl Playback {
         match self.player.is_paused() {
             Ok(true) => self.report(PlaybackState::Paused),
             Ok(false) => self.report(PlaybackState::Playing),
-            Err(error) => eprintln!("reel: {error}"),
+            Err(error) => eprintln!("plex-rust: {error}"),
         }
     }
 }
@@ -128,7 +128,7 @@ fn video_window(
     };
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(ns_string!("Reel"));
+    window.setTitle(ns_string!("plex-rust"));
     window.center();
 
     let layer = VideoLayer::new(player, main_thread)?;
@@ -146,7 +146,7 @@ fn exit_when_playback_ends(playback: &Playback) {
             Event::Loaded => playback.report(PlaybackState::Playing),
             Event::VideoChanged => match_video(&playback.player),
             Event::Ended(EndReason::Failed(error)) => {
-                eprintln!("reel: playback failed: {error}");
+                eprintln!("plex-rust: playback failed: {error}");
                 std::process::exit(1);
             }
             Event::Ended(EndReason::Finished | EndReason::Stopped) | Event::Shutdown => {
@@ -165,7 +165,7 @@ fn match_video(player: &Player) {
         view.map_or(Ok(()), |view| video_layer::match_video_in(&view, player))
     });
     if let Err(error) = matched {
-        eprintln!("reel: {error}");
+        eprintln!("plex-rust: {error}");
     }
 }
 
@@ -187,7 +187,7 @@ fn print_state_and_exit(playback: &Playback, delay: Duration) {
             std::process::exit(0);
         }
         Err(error) => {
-            eprintln!("reel: {error}");
+            eprintln!("plex-rust: {error}");
             std::process::exit(1);
         }
     }
@@ -246,7 +246,7 @@ define_class!(
     // does not implement `Drop`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelAppDelegate"]
+    #[name = "PlexRustAppDelegate"]
     #[ivars = Arc<Playback>]
     struct AppDelegate;
 

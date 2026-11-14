@@ -47,7 +47,7 @@ pub enum Kind {
     Show,
     Season,
     Episode,
-    /// Music, photos and everything else Reel does not show.
+    /// Music, photos and everything else plex-rust does not show.
     #[serde(other)]
     Other,
 }

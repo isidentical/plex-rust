@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds a static libmpv and everything under it into vendor/libmpv.
 #
-# Reel links this statically so the app depends only on macOS system
+# plex-rust links this statically so the app depends only on macOS system
 # libraries. Homebrew's mpv is not usable for that: it pulls in vapoursynth,
 # yt-dlp, luajit and a Vulkan stack, none of which the player needs.
 #

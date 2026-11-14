@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use url::form_urlencoded;
 
-use crate::client::{Client, Token};
+use crate::client::{Client, PRODUCT, Token};
 use crate::error::{Error, Result};
 
 const PINS: &str = "https://plex.tv/api/v2/pins";
@@ -40,7 +40,7 @@ impl Pin {
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("clientID", &client.identity.client_identifier)
             .append_pair("code", &self.code)
-            .append_pair("context[device][product]", "Reel")
+            .append_pair("context[device][product]", PRODUCT)
             .finish();
         format!("https://app.plex.tv/auth#?{query}")
     }

@@ -64,7 +64,7 @@ define_class!(
     // `PosterItem` does not implement `Drop`.
     #[unsafe(super(NSCollectionViewItem))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelPosterItem"]
+    #[name = "PlexRustPosterItem"]
     #[ivars = Ivars]
     pub struct PosterItem;
 

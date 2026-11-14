@@ -1,6 +1,7 @@
-# Spec: Reel, a native macOS Plex client in Rust
+# Spec: plex-rust, a native macOS Plex client in Rust
 
-"Reel" is a working title. No Plex name, logo or artwork is used in the app.
+The app is named plex-rust at its owner's choice. It is a personal, third-party
+client: it uses no Plex logo or artwork, and its icon is its own.
 
 Every claim below is tagged where it matters:
 - [V] verified against a primary source or on this Mac on 2026-11-13
@@ -28,7 +29,7 @@ possible.
 | Not in v1 | Music, Live TV / DVR, Photos, transcoding, relay connections, Picture in Picture |
 | Network | LAN or Tailscale. Direct connections only |
 | Audience | Personal use, Apple Silicon, macOS 26+, no sandbox, ad hoc signed |
-| Packaging | One self-contained Reel.app holding one executable that links only macOS system libraries. Nothing to install to run it |
+| Packaging | One self-contained plex-rust.app holding one executable that links only macOS system libraries. Nothing to install to run it |
 | Quality vs power | Quality is always first. The app never reads the macOS Low Power Mode state. One in-app "Low power" switch, off by default |
 | Execution | Built end to end without a human, after two one-time actions listed in section 11 |
 
@@ -97,7 +98,7 @@ developer wrote it.
      luajit, mujs, rubberband, libbluray, vulkan-loader and molten-vk [V], and
      that whole tree would have to ship with the app.
    - mpv is GPL by default [V]. Fine for personal use.
-4. `git init`, private GitHub repo `reel`, one branch per milestone, pushed
+4. `git init`, private GitHub repo `plex-rust`, one branch per milestone, pushed
    before merging to `main`.
 5. Already present [V]: rustfmt, clippy, rust-analyzer, clang 21, pkg-config,
    codesign, install_name_tool, plutil.
@@ -134,7 +135,7 @@ crates/
     src/downloads.rs   resumable original-file downloads
     src/ui/            window, sidebar, home, library, detail, search,
                        downloads, player (video layer, controls, hdr)
-scripts/bundle.sh      builds Reel.app, writes Info.plist, ad hoc signs
+scripts/bundle.sh      builds plex-rust.app, writes Info.plist, ad hoc signs
 ```
 
 Crates used, all current versions confirmed on crates.io [V]: objc2 0.6.5,
@@ -161,7 +162,7 @@ once), `X-Plex-Token`, `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`,
 - `POST https://plex.tv/api/v2/pins?strong=true`, open
   `https://app.plex.tv/auth#?clientID=..&code=..` in the browser, poll
   `GET /api/v2/pins/{id}` once per second until `authToken` is set.
-- The token is stored in `~/Library/Application Support/Reel/token`, readable
+- The token is stored in `~/Library/Application Support/plex-rust/token`, readable
   only by its owner. Not the Keychain: it ties access to the exact binary, so
   every rebuild of an ad hoc signed app asks for the login password again.
   `GET https://plex.tv/api/v2/user` returning 401 means log in again.
@@ -305,7 +306,7 @@ kept in a memory cache and a disk cache. Cells are reused.
 
 ## 9. Offline downloads
 
-- Original file to `~/Movies/Reel/`, written as `.part`, resumed with an HTTP
+- Original file to `~/Movies/plex-rust/`, written as `.part`, resumed with an HTTP
   `Range` request, renamed when the byte count equals `Part.size`. A size
   mismatch is an error, not a retry loop.
 - The item's metadata JSON and poster are stored next to it so Downloads
@@ -316,7 +317,7 @@ kept in a memory cache and a disk cache. Cells are reused.
 ## 10. Packaging: one self-contained app
 
 - A Mac GUI app has to be a `.app` bundle to carry its Info.plist and icon,
-  so the deliverable is `Reel.app`, not a bare file. Inside it there is one
+  so the deliverable is `plex-rust.app`, not a bare file. Inside it there is one
   executable and no bundled dylibs: libmpv and everything under it are linked
   statically. `otool -L` on the executable must list only `/usr/lib` and
   `/System/Library` paths. That is the acceptance check.
@@ -351,9 +352,9 @@ How each step is checked without a person:
 | Need | Mechanism |
 | --- | --- |
 | Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when signed in |
-| Video plays right | `reel play <url> --for 20s --report` prints JSON: `hwdec-current`, dropped frames, cache seconds, HDR state. Asserted by a script |
-| UI looks right | `reel snapshot <screen> <out.png>` renders a screen to a PNG from inside the app, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
-| Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs Reel. `sudo powermetrics` needs a password [V] and stays optional |
+| Video plays right | `plex-rust play <url> --for 20s --report` prints JSON: `hwdec-current`, dropped frames, cache seconds, HDR state. Asserted by a script |
+| UI looks right | `plex-rust snapshot <screen> <out.png>` renders a screen to a PNG from inside the app, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
+| Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs plex-rust. `sudo powermetrics` needs a password [V] and stays optional |
 | Packaging | `otool -L`, then launch the bundled app and run the same play report |
 
 Every [U] in this spec has a written fallback, so no check can stall the run
@@ -370,7 +371,7 @@ Each milestone is a branch. Each bullet is roughly one commit.
 **M0. Player core and proof.** Closes every [U] before UI work starts.
 - `scripts/build-libmpv.sh` and the static link.
 - `player` crate: mpv handle, options, typed properties, events.
-- OpenGL render context in a bare AppKit window: `reel <file-or-url>` plays.
+- OpenGL render context in a bare AppKit window: `plex-rust <file-or-url>` plays.
 - HDR layer setup.
 - Checks, results written into the commit bodies:
   - [U] libmpv2 7.0.1 links against the static libmpv 0.42 (its headers are
@@ -388,7 +389,7 @@ Each milestone is a branch. Each bullet is roughly one commit.
   - [U] The server allows `download=1` for this account. Fallback: download
     through the plain `Part.key` URL.
   - Power: `top` power score for the same 4K HEVC file, 5 minutes each at 1x
-    and 2x: Plex.app and Reel. The numbers go in the commit body. If Reel is
+    and 2x: Plex.app and plex-rust. The numbers go in the commit body. If plex-rust is
     not below Plex.app the result is reported and M1 still proceeds, since
     the Plex and UI work does not depend on the video path.
 

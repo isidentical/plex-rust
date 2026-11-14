@@ -34,7 +34,7 @@ define_class!(
     //   are its documented customization points.
     // - `VideoLayer` does not implement `Drop`.
     #[unsafe(super(CAOpenGLLayer, CALayer, NSObject))]
-    #[name = "ReelVideoLayer"]
+    #[name = "PlexRustVideoLayer"]
     #[ivars = Ivars]
     pub struct VideoLayer;
 
@@ -77,7 +77,7 @@ define_class!(
             _display_time: *const CVTimeStamp,
         ) {
             if let Err(error) = self.ivars().renderer.render() {
-                eprintln!("reel: {error}");
+                eprintln!("plex-rust: {error}");
             }
         }
     }

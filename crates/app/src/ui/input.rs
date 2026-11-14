@@ -70,7 +70,7 @@ define_class!(
     // not implement `Drop`.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ReelInputView"]
+    #[name = "PlexRustInputView"]
     #[ivars = Ivars]
     pub struct InputView;
 

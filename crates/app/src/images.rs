@@ -30,7 +30,7 @@ impl Images {
         server: MediaServer,
     ) -> Result<Self> {
         let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
-        let directory = PathBuf::from(home).join("Library/Caches/Reel/images");
+        let directory = PathBuf::from(home).join("Library/Caches/plex-rust/images");
         std::fs::create_dir_all(&directory)
             .map_err(|source| Error::File { path: directory.clone(), source })?;
         // SAFETY: the cache is created empty and only ever used with the key
@@ -84,7 +84,7 @@ impl Images {
                     unsafe { images.memory.setObject_forKey(&image, &key) };
                     then(&image);
                 }
-                Err(error) => eprintln!("reel: artwork not loaded: {}", with_causes(&error)),
+                Err(error) => eprintln!("plex-rust: artwork not loaded: {}", with_causes(&error)),
             }
         });
     }

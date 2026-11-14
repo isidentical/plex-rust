@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use reqwest::Method;
 
-use crate::client::header;
+use crate::client::{PRODUCT, header};
 use crate::error::Result;
 use crate::model::{Part, RatingKey};
 use crate::server::MediaServer;
@@ -51,7 +51,7 @@ impl MediaServer {
             headers: vec![
                 ("X-Plex-Token".into(), self.token().secret().into()),
                 ("X-Plex-Client-Identifier".into(), identity.client_identifier.clone()),
-                ("X-Plex-Product".into(), "Reel".into()),
+                ("X-Plex-Product".into(), PRODUCT.into()),
             ],
         }
     }
