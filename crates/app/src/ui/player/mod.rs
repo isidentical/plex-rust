@@ -11,6 +11,7 @@ mod slider;
 mod speed;
 mod theme;
 mod tracks;
+mod upnext;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -70,6 +71,19 @@ const SHORT_JUMP: f64 = 3.0;
 /// How far they jump with Shift held, and how far the buttons jump.
 const LONG_JUMP: f64 = 10.0;
 
+/// With no credits marked, the next episode is offered this long before
+/// the end, and starts when this one has run out.
+const UP_NEXT_LEAD: Duration = Duration::from_secs(30);
+
+/// With the closing credits marked, the next episode is offered when they
+/// start and takes over this far into them.
+const UP_NEXT_COUNTDOWN: Duration = Duration::from_secs(10);
+
+/// Credits are the closing credits if they end within this much of the
+/// end of the file. Credits with a scene after them are not: counting
+/// down over them would cut that scene off.
+const CLOSING_CREDITS_END_WITHIN: Duration = Duration::from_secs(10);
+
 /// This far into an episode, going back means going back to its start.
 /// Before that it means the episode before, as in every player.
 const RESTART_AFTER: Duration = Duration::from_secs(5);
@@ -85,6 +99,17 @@ pub enum Purpose {
     /// An unattended check. It is silent and tells the server nothing, so
     /// that checking the app never moves anyone's place in a film.
     Check,
+}
+
+/// Where the offer of the next episode stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpNext {
+    /// The episode is not near its end, or no next episode is known.
+    Waiting,
+    /// The card is up and counting down.
+    Counting,
+    /// The viewer turned the offer down. Nothing follows this episode.
+    Cancelled,
 }
 
 /// How a playback came to its end.
@@ -126,6 +151,7 @@ pub struct Ivars {
     /// The episodes before and after this one in its season. `None` for a
     /// film, and for an episode until the server has listed its season.
     neighbours: RefCell<Option<Neighbours>>,
+    up_next: Cell<UpNext>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -229,6 +255,7 @@ impl PlayerScreen {
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
             neighbours: RefCell::new(None),
+            up_next: Cell::new(UpNext::Waiting),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             duration: Cell::new(None),
@@ -399,6 +426,11 @@ impl PlayerScreen {
         });
         self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
         self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
+        self.on_click(&controls.up_next.play, |screen| screen.close(Outcome::Finished));
+        self.on_click(&controls.up_next.cancel, |screen| {
+            screen.ivars().up_next.set(UpNext::Cancelled);
+            screen.ivars().controls.up_next.hide();
+        });
 
         let (scrubbed, pointed, volume) = (Weak::new(self), Weak::new(self), Weak::new(self));
         controls.scrubber.listen(
@@ -520,6 +552,10 @@ impl PlayerScreen {
                 self.show_controls(false);
                 return true;
             }
+            Key::NearEnd => {
+                let player = &self.ivars().player;
+                player.seek(self.length_shown().saturating_sub(UP_NEXT_LEAD / 2))
+            }
             Key::Hover => {
                 let scrubber = &self.ivars().controls.scrubber;
                 scrubber.point_at(scrubber.bounds().size.width / 2.0);
@@ -569,11 +605,19 @@ impl PlayerScreen {
         }
 
         // While the controls are hidden the position is read only for an
-        // intro or credits that could be skipped, and then once a second.
+        // intro or credits that could be skipped and for the end of an
+        // episode that another follows, and then once a second. A running
+        // countdown is kept up with on every tick.
         let shown = ivars.controls_shown.get();
-        let has_markers = !ivars.item.markers.is_empty();
-        if shown || (has_markers && ticks.is_multiple_of(TICKS_PER_SECOND)) {
+        let counting = ivars.up_next.get() == UpNext::Counting;
+        let watches_position = !ivars.item.markers.is_empty() || self.next_episode_is_known();
+        if shown || counting || (watches_position && ticks.is_multiple_of(TICKS_PER_SECOND)) {
             let position = ivars.player.position()?;
+            self.offer_next_episode(position);
+            // The countdown running out closes the screen.
+            if ivars.timer.borrow().is_none() {
+                return Ok(());
+            }
             self.offer_skip(position);
         }
         if !shown {
@@ -617,7 +661,11 @@ impl PlayerScreen {
     }
 
     fn set_neighbours(&self, neighbours: Neighbours) {
-        self.ivars().controls.next.set_enabled(neighbours.next.is_some());
+        let controls = &self.ivars().controls;
+        controls.next.set_enabled(neighbours.next.is_some());
+        if let Some(next) = &neighbours.next {
+            controls.up_next.offer(self.mtm(), next);
+        }
         *self.ivars().neighbours.borrow_mut() = Some(neighbours);
     }
 
@@ -903,11 +951,67 @@ impl PlayerScreen {
         }
     }
 
+    fn next_episode_is_known(&self) -> bool {
+        self.ivars().neighbours.borrow().as_ref().is_some_and(|known| known.next.is_some())
+    }
+
+    /// The stretch of the episode in which the next one is offered: from
+    /// where the card comes up to where the next episode takes over.
+    fn up_next_stretch(&self) -> (Duration, Duration) {
+        let length = self.length_shown();
+        let closing_credits = self.ivars().item.markers.iter().find(|marker| {
+            let ends_before_end = length.saturating_sub(marker.end_time_offset.into());
+            marker.kind == MarkerKind::Credits && ends_before_end <= CLOSING_CREDITS_END_WITHIN
+        });
+        match closing_credits {
+            Some(credits) => {
+                let start: Duration = credits.start_time_offset.into();
+                (start, start + UP_NEXT_COUNTDOWN)
+            }
+            None => (length.saturating_sub(UP_NEXT_LEAD), length),
+        }
+    }
+
+    /// Shows, counts down or hides the offer of the next episode to match
+    /// `position`, and goes to that episode when the countdown runs out.
+    /// The countdown is a stretch of the episode, so pausing holds it and
+    /// jumping back out of that stretch takes the offer away again.
+    fn offer_next_episode(&self, position: Option<Duration>) {
+        let ivars = self.ivars();
+        let state = ivars.up_next.get();
+        let Some(position) = position.filter(|_| self.next_episode_is_known()) else {
+            return;
+        };
+        if state == UpNext::Cancelled {
+            return;
+        }
+        let (start, takeover) = self.up_next_stretch();
+        // A jump from before the stretch to past its end is the viewer
+        // going there on purpose, not a countdown running out.
+        let jumped_past = state == UpNext::Waiting && position >= takeover;
+        if position < start || jumped_past {
+            ivars.up_next.set(UpNext::Waiting);
+            ivars.controls.up_next.hide();
+            return;
+        }
+        if position >= takeover {
+            self.close(Outcome::Finished);
+            return;
+        }
+        ivars.up_next.set(UpNext::Counting);
+        let left = (takeover - position).as_secs_f64() / self.speed().factor();
+        // Shown in whole seconds, counted so that 0 is never seen.
+        ivars.controls.up_next.show(left.ceil() as u64);
+    }
+
     /// Shows or hides the skip button to match `position`.
     fn offer_skip(&self, position: Option<Duration>) {
         let skip = &self.ivars().controls.skip;
-        let Some(marker) = position.and_then(|position| self.ivars().item.marker_at(position))
-        else {
+        // The offer of the next episode takes the same corner, and its
+        // Play Now does what skipping the closing credits would.
+        let counting = self.ivars().up_next.get() == UpNext::Counting;
+        let marker = position.and_then(|position| self.ivars().item.marker_at(position));
+        let Some(marker) = marker.filter(|_| !counting) else {
             skip.setHidden(true);
             return;
         };
@@ -919,8 +1023,13 @@ impl PlayerScreen {
         skip.setHidden(false);
     }
 
-    /// Jumps to the end of the intro or credits that is playing, if any.
+    /// Jumps to the end of the intro or credits that is playing, if any,
+    /// or to the next episode while it is being offered.
     fn skip_marker(&self) -> player::Result<()> {
+        if self.ivars().up_next.get() == UpNext::Counting {
+            self.close(Outcome::Finished);
+            return Ok(());
+        }
         let player = &self.ivars().player;
         let marker: Option<&Marker> =
             player.position()?.and_then(|position| self.ivars().item.marker_at(position));
@@ -1018,7 +1127,11 @@ impl PlayerScreen {
             }
             Event::Ended(EndReason::Failed(error)) => self.close(Outcome::Failed(error.clone())),
             Event::Buffering(stalled) => self.set_waiting(*stalled),
-            Event::Ended(EndReason::Finished) => self.close(Outcome::Finished),
+            // A viewer who turned the next episode down gets none.
+            Event::Ended(EndReason::Finished) => {
+                let cancelled = self.ivars().up_next.get() == UpNext::Cancelled;
+                self.close(if cancelled { Outcome::Closed } else { Outcome::Finished });
+            }
             // Stopped is our own doing, and shutdown follows `close`.
             Event::Ended(EndReason::Stopped) | Event::Shutdown => {}
         }

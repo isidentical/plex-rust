@@ -52,6 +52,11 @@ pub const BUBBLE_GAP: f64 = 2.0;
 /// Space between the scrubber and the Skip Intro button above it.
 pub const SKIP_GAP: f64 = 16.0;
 
+pub const CARD_RADIUS: f64 = 14.0;
+pub const CARD_PADDING: f64 = 12.0;
+/// A longer episode title than fits in this ends in an ellipsis.
+pub const CARD_MAX_WIDTH: f64 = 360.0;
+
 /// Seconds the controls take to appear. Short, so that they feel instant.
 pub const FADE_IN: f64 = 0.12;
 /// Seconds they take to go away.
@@ -98,6 +103,11 @@ pub fn text_on_solid() -> Retained<NSColor> {
 /// Behind text that floats over the picture with no shade under it.
 pub fn backdrop() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(0.0, 0.6)
+}
+
+/// Behind a card that floats over the picture and holds buttons.
+pub fn card() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.0, 0.72)
 }
 
 pub fn shade(alpha: f64) -> Retained<NSColor> {

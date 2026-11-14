@@ -32,12 +32,15 @@ pub enum Key {
     /// Nor this: the pointer taking the scrubber's knob three quarters of
     /// the way along and keeping hold of it.
     Drag,
+    /// And a jump to 15 seconds before the end, where a snapshot would
+    /// otherwise have to play the whole file to get to.
+    NearEnd,
 }
 
 impl Key {
     /// Reads a key from its name, as written on a command line: `space`,
-    /// `left`, or a single character such as `d`. `idle`, `hover` and
-    /// `drag` stand for what a script cannot do by itself.
+    /// `left`, or a single character such as `d`. `idle`, `hover`,
+    /// `drag` and `end` stand for what a script cannot do by itself.
     pub fn named(name: &str) -> Option<Self> {
         let mut characters = name.chars();
         match (name, characters.next(), characters.next()) {
@@ -53,6 +56,7 @@ impl Key {
             ("idle", ..) => Some(Self::Idle),
             ("hover", ..) => Some(Self::Hover),
             ("drag", ..) => Some(Self::Drag),
+            ("end", ..) => Some(Self::NearEnd),
             (_, Some(character), None) => Some(Self::Character(character)),
             _ => None,
         }

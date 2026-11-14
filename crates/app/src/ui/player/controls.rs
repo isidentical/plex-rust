@@ -7,10 +7,10 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
-    NSFont, NSFontWeight, NSFontWeightRegular, NSFontWeightSemibold, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow,
-    NSLineBreakMode, NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
+    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
@@ -20,6 +20,7 @@ use super::layout::{add, pin, row};
 use super::pane::{Edge, Pane};
 use super::slider::Slider;
 use super::theme;
+use super::upnext::UpNext;
 
 /// The loudest the volume slider goes, which is the file's own level.
 pub const FULL_VOLUME: f64 = 100.0;
@@ -53,6 +54,8 @@ pub struct Controls {
     pub full_screen: Retained<Chip>,
     /// Offers to jump past the intro or the credits while they play.
     pub skip: Retained<Chip>,
+    /// Offers the next episode as this one ends, in the skip button's place.
+    pub up_next: UpNext,
     /// Turns while the picture is on its way: at the start, and whenever
     /// playback stalls waiting for the network.
     pub spinner: Retained<NSProgressIndicator>,
@@ -87,6 +90,7 @@ impl Controls {
             subtitles: button("captions.bubble", "Subtitles (C)"),
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen (F)"),
             skip: Chip::new(main_thread, Style::Solid),
+            up_next: UpNext::new(main_thread),
             spinner: NSProgressIndicator::new(main_thread),
             notice: Chip::new(main_thread, Style::Caption),
         };
@@ -228,6 +232,7 @@ impl Controls {
         self.spinner.setIndeterminate(true);
         self.spinner.setDisplayedWhenStopped(false);
         add(root, &self.skip);
+        add(root, self.up_next.view());
         add(root, &self.notice);
         add(root, &self.spinner);
         pin(&[
@@ -238,6 +243,11 @@ impl Controls {
                 &self.bottom.topAnchor(),
                 theme::SHADE_RUNOUT - theme::SKIP_GAP,
             ),
+            self.up_next
+                .view()
+                .trailingAnchor()
+                .constraintEqualToAnchor(&self.skip.trailingAnchor()),
+            self.up_next.view().bottomAnchor().constraintEqualToAnchor(&self.skip.bottomAnchor()),
             self.notice
                 .trailingAnchor()
                 .constraintEqualToAnchor_constant(&trailing, -theme::MARGIN),
@@ -262,7 +272,7 @@ fn heading(item: &Item) -> (String, Option<String>) {
 
 /// A line of text that gives way, by ending in an ellipsis, when there is
 /// no room for all of it.
-fn label(
+pub fn label(
     main_thread: MainThreadMarker,
     size: f64,
     weight: NSFontWeight,
@@ -279,6 +289,11 @@ fn label(
         NSLayoutConstraintOrientation::Horizontal,
     );
     label
+}
+
+pub fn medium() -> NSFontWeight {
+    // SAFETY: the weight is a constant that AppKit provides.
+    unsafe { NSFontWeightMedium }
 }
 
 fn regular() -> NSFontWeight {
