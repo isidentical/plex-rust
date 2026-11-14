@@ -58,7 +58,8 @@ pub struct Source {
     /// Extra HTTP request headers as name and value, for URLs that need a
     /// token.
     pub headers: Vec<(String, String)>,
-    /// Where to start playing.
+    /// Where to start playing. Playback starts on the keyframe at or
+    /// before it, so up to one keyframe interval earlier.
     pub start: Duration,
     /// The audio track to play, by its id. `None` leaves the choice to the
     /// file's own default.
@@ -180,7 +181,13 @@ impl Player {
             source.headers.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         self.set_strings("http-header-fields", &headers)?;
 
-        let mut options = vec![format!("start={}", source.start.as_secs_f64())];
+        // Without `hr-seek=no` mpv decodes from the keyframe before `start`
+        // up to it before it shows anything. Resuming the 4K film 7.7 s
+        // past a keyframe took 1.05 s that way and 0.44 s this way. The
+        // option holds for this file only, and every seek below says how
+        // exact it is, so it changes nothing else.
+        let mut options =
+            vec![format!("start={}", source.start.as_secs_f64()), "hr-seek=no".to_owned()];
         options.extend(source.audio.map(|id| format!("aid={id}")));
         options
             .push(source.subtitles.map_or_else(|| "sid=no".to_owned(), |id| format!("sid={id}")));
@@ -194,7 +201,7 @@ impl Player {
     }
 
     pub fn seek(&self, position: Duration) -> Result<()> {
-        self.command(&["seek", &position.as_secs_f64().to_string(), "absolute"])
+        self.command(&["seek", &position.as_secs_f64().to_string(), "absolute+exact"])
     }
 
     /// Moves the position by `seconds`, backwards if negative. Unlike a
