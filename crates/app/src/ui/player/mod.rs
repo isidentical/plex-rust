@@ -1,5 +1,9 @@
 //! The screen that plays one item: video with controls on top.
 
+pub mod input;
+mod layout;
+mod theme;
+
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -25,9 +29,7 @@ use plex::MediaServer;
 use plex::model::{Item, Kind, Marker, MarkerKind, StreamKind};
 use plex::playback::{self, PlaybackState};
 
-use super::input::{Clicks, InputView, Key};
-use super::layout;
-use super::theme;
+use self::input::{Clicks, InputView, Key};
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::settings::Settings;
@@ -220,7 +222,7 @@ impl PlayerScreen {
         let layer = VideoLayer::new(&player, main_thread)?;
         video.setLayer(Some(&layer));
         video.setWantsLayer(true);
-        layout::cover(&root, &video);
+        crate::ui::layout::cover(&root, &video);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
@@ -392,7 +394,7 @@ impl PlayerScreen {
             &full_screen,
         ];
         let bar = glass(&row(&bar, main_thread), main_thread);
-        layout::dock_bottom(&ivars.root, &bar, theme::PAGE_MARGIN);
+        layout::dock_bottom(&ivars.root, &bar, theme::MARGIN);
 
         let close = NSButton::new(main_thread);
         self.wire(&close, "chevron.left", sel!(close:));
@@ -400,10 +402,10 @@ impl PlayerScreen {
             NSTextField::labelWithString(&NSString::from_str(&title(&ivars.item)), main_thread);
         // SAFETY: the weight is a constant that AppKit provides.
         let semibold = unsafe { NSFontWeightSemibold };
-        title.setFont(Some(&NSFont::systemFontOfSize_weight(theme::TITLE_FONT_SIZE, semibold)));
+        title.setFont(Some(&NSFont::systemFontOfSize_weight(theme::FONT_SIZE, semibold)));
         let heading: [&NSView; 2] = [&close, &title];
         let heading = glass(&row(&heading, main_thread), main_thread);
-        layout::dock_top_leading(&ivars.root, &heading, theme::PAGE_MARGIN);
+        layout::dock_top_leading(&ivars.root, &heading, theme::MARGIN);
 
         // SAFETY: as for the scrubber.
         unsafe {
@@ -417,7 +419,7 @@ impl PlayerScreen {
 
         let notice = glass(&row(&[&*ivars.notice as &NSView], main_thread), main_thread);
         notice.setAlphaValue(0.0);
-        layout::dock_top_trailing(&ivars.root, &notice, theme::PAGE_MARGIN);
+        layout::dock_top_trailing(&ivars.root, &notice, theme::MARGIN);
         // Cannot fail: the controls are built once.
         let _ = ivars.notice_pane.set(notice);
 
@@ -984,7 +986,7 @@ fn readout(main_thread: MainThreadMarker) -> Retained<NSTextField> {
     // SAFETY: the weight is a constant that AppKit provides.
     let regular = unsafe { NSFontWeightRegular };
     // Digits of equal width keep the scrubber from shifting every second.
-    let font = NSFont::monospacedDigitSystemFontOfSize_weight(theme::TITLE_FONT_SIZE, regular);
+    let font = NSFont::monospacedDigitSystemFontOfSize_weight(theme::FONT_SIZE, regular);
     label.setFont(Some(&font));
     label
 }

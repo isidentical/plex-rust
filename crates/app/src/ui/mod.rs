@@ -2,9 +2,8 @@
 
 mod detail;
 mod hover;
-pub mod input;
 mod layout;
-mod player;
+pub mod player;
 mod poster;
 mod posters;
 pub mod shell;

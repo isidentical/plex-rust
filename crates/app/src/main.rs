@@ -19,7 +19,7 @@ use plex::model::RatingKey;
 
 use crate::error::{Error, Result};
 use crate::progress::Progress;
-use crate::ui::input::Key;
+use crate::ui::player::input::Key;
 use crate::ui::shell::Subject;
 
 const USAGE: &str = "\

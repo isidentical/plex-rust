@@ -22,8 +22,8 @@ use plex::library::Page;
 use plex::model::{Hub, Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
-use super::input::Key;
 use super::layout;
+use super::player::input::Key;
 use super::player::{Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
