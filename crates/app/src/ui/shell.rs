@@ -248,6 +248,8 @@ pub struct Tweaks {
     pub unanswered: bool,
     /// The first launch after signing in, before any server is known.
     pub looking: bool,
+    /// The sign-in screen once the browser has been opened.
+    pub approving: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -595,7 +597,7 @@ impl Shell {
     fn sign_in(self: &Rc<Self>) {
         const FAILED: &str = "The sign-in did not go through";
         if let Some(notice) = &*self.notice.borrow() {
-            notice.set_busy("Waiting for your browser…");
+            notice.set_busy("Opening Your Browser…");
         }
         let client = match account::client() {
             Ok(client) => client,
@@ -609,7 +611,9 @@ impl Shell {
                 Ok(pin) => pin,
                 Err(error) => return shell.show_failure(FAILED, &error, Self::show_sign_in),
             };
-            account::open_in_browser(&pin.approval_url(&client));
+            let page = pin.approval_url(&client);
+            account::open_in_browser(&page);
+            shell.show_awaiting_approval(page);
             let waiting = client.clone();
             let wait = async move { plex::auth::wait_for_token(&waiting, &pin).await };
             let signed_in = Rc::clone(&shell);
@@ -618,11 +622,31 @@ impl Shell {
                     .map_err(Error::from)
                     .and_then(|token| account::store_token(&token).map(|()| token));
                 match stored {
-                    Ok(token) => signed_in.connect(client, token, None),
+                    Ok(token) => {
+                        // The viewer is in the browser, with nothing more
+                        // to do there.
+                        #[allow(deprecated)]
+                        NSApplication::sharedApplication(signed_in.main_thread)
+                            .activateIgnoringOtherApps(true);
+                        signed_in.connect(client, token, None);
+                    }
                     Err(error) => signed_in.show_failure(FAILED, &error, Self::show_sign_in),
                 }
             });
         });
+    }
+
+    /// What the window shows while the viewer is in the browser, at
+    /// `page`. The button is for a page that was closed or never opened.
+    fn show_awaiting_approval(&self, page: String) {
+        self.show_notice(Notice::new(
+            self.main_thread,
+            Mark::Spinner,
+            "Waiting for you to approve",
+            "Approve the sign-in on the plex.tv page that opened in your browser. This window \
+             carries on by itself once you have.",
+            Some(("Open the Page Again", Box::new(move || account::open_in_browser(&page)))),
+        ));
     }
 
     // Moving from place to place.
@@ -1532,6 +1556,9 @@ impl Shell {
             }
             if snapshot.tweaks.looking {
                 shell.show_looking();
+            }
+            if snapshot.tweaks.approving {
+                shell.show_awaiting_approval("https://app.plex.tv/auth".to_owned());
             }
             let settle = async { tokio::time::sleep(SNAPSHOT_TWEAKS_SETTLE).await };
             let done = Rc::clone(&shell);
