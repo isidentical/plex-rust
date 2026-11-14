@@ -7,6 +7,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -52,7 +53,7 @@ use crate::background::{Background, Task};
 use crate::downloads::{self, Downloads, State};
 use crate::error::{Error, Result, with_causes};
 use crate::images::{self, Images};
-use crate::settings::{Listings, Settings};
+use crate::settings::{Listings, Place, Settings};
 use crate::store::Download;
 use crate::timing;
 
@@ -158,6 +159,12 @@ struct Shell {
     /// Set for a snapshot of a screen that is still waiting: screens are
     /// then built and never loaded.
     holds_loads: Cell<bool>,
+    /// Whether the place on screen is kept for the next launch, and the
+    /// last launch's is started from. Not so for a snapshot, which goes
+    /// where it is told and must leave no trace.
+    keeps_place: Cell<bool>,
+    /// The place on screen, for the writes that keep it.
+    place: Arc<Mutex<Option<Place>>>,
     /// Set for a snapshot, which must leave the server as it found it.
     read_only: Cell<bool>,
     /// What is kept on this Mac, and what is on its way to it.
@@ -418,6 +425,10 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
         }
     }
 
+    // A walk stands in for a viewer, whose place is kept.
+    let walks = matches!(&snapshot, Some(Snapshot { subject: Subject::Walk(_), .. }));
+    shell.keeps_place.set(snapshot.is_none() || walks);
+
     let wants_sign_in = matches!(&snapshot, Some(Snapshot { subject: Subject::SignIn, .. }));
     match account::signed_in() {
         Ok((client, token)) if !wants_sign_in => shell.connect(client, token, snapshot),
@@ -557,6 +568,8 @@ impl Shell {
                 downloads,
                 reach: Cell::new(Reach::Unknown),
                 read_only: Cell::new(false),
+                keeps_place: Cell::new(false),
+                place: Arc::default(),
             }
         })
     }
@@ -581,20 +594,25 @@ impl Shell {
         };
         let subject = snapshot.clone();
         self.reach.set(Reach::Unknown);
+        let place = self.last_place();
 
         // First, what the last launch left: the same server and the
-        // libraries it had then. This puts the sidebar and Home on screen
-        // at once.
+        // libraries it had then. This puts the sidebar and the place the
+        // viewer was at on screen at once.
         if let Some(kept) = saved.clone() {
-            let (shell, subject) = (Rc::clone(self), subject.clone());
+            let (shell, subject, place) = (Rc::clone(self), subject.clone(), place.clone());
             let remembered = kept.server.remembered();
             let ask = async move { remembered.sections().await };
             self.background.run(self.main_thread, ask, move |sections| {
                 if let (Ok(sections), None) = (sections, shell.session()) {
                     shell.connected(kept, sections, subject.as_ref());
                     // The server can fail to answer before the disk has.
+                    // Then what was downloaded comes before the place the
+                    // viewer was at, which cannot be brought up to date.
                     if shell.reach.get() == Reach::Away {
                         shell.fall_back_on_downloads();
+                    } else {
+                        shell.resume(place);
                     }
                 }
             });
@@ -653,9 +671,12 @@ impl Shell {
                             session.server.machine_identifier() == kept.server.machine_identifier()
                         });
                         let was = shell.current(|entry| entry.route.clone()).filter(|_| same);
+                        let first = shell.session().is_none();
                         shell.connected(kept, sections, subject.as_ref());
                         if let Some(route) = was.filter(|route| *route != Route::Home) {
                             shell.go(route);
+                        } else if first {
+                            shell.resume(place);
                         }
                     }
                     shell.downloads_changed();
@@ -722,6 +743,93 @@ impl Shell {
         self.background.run(self.main_thread, send, |sent| {
             if let Err(error) = sent {
                 eprintln!("plex-rust: progress was not sent: {}", with_causes(&error));
+            }
+        });
+    }
+
+    /// Where the viewer was when the app was last used, if this launch is
+    /// to start there.
+    fn last_place(&self) -> Option<Place> {
+        if !self.keeps_place.get() {
+            return None;
+        }
+        // A file that cannot be read costs the place, not the launch.
+        Place::load().unwrap_or_else(|error| {
+            eprintln!("plex-rust: {}", with_causes(&error));
+            None
+        })
+    }
+
+    /// Goes from Home, where every launch starts, on to `place`. Home
+    /// stays one step back.
+    fn resume(self: &Rc<Self>, place: Option<Place>) {
+        let Some(session) = self.session() else {
+            return;
+        };
+        match place {
+            Some(Place::Library { key }) => {
+                // A library that is no longer there leaves the viewer Home.
+                if let Some(section) = session.sections.iter().find(|section| section.key == key) {
+                    self.go_to(&Destination::Section(section.clone()));
+                }
+            }
+            Some(Place::List { title, path }) => self.go(Route::List { title, path }),
+            Some(Place::Downloads) => self.go(Route::Downloads),
+            Some(Place::Item { key }) => {
+                // From what was saved of it, which is there at once. An
+                // item that cannot be had, deleted since or another
+                // account's, leaves the viewer Home with nothing said.
+                let server = session.server.clone();
+                let load = async move {
+                    let key = RatingKey::new(key);
+                    match server.remembered().item(&key).await {
+                        Ok(saved) => Ok(saved),
+                        Err(_) => server.item(&key).await,
+                    }
+                };
+                let (shell, moves) = (Rc::clone(self), self.moves.get());
+                self.background.run(self.main_thread, load, move |item| match item {
+                    Ok(item) if shell.moves.get() == moves => {
+                        shell.go(Route::Item(Box::new(item), Opening::default()));
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("plex-rust: {}", with_causes(&error)),
+                });
+            }
+            Some(Place::Home) | None => {}
+        }
+    }
+
+    /// Keeps `route` as the place to start from next time.
+    fn keep_place(&self, route: &Route) {
+        let place = match route {
+            Route::Home => Place::Home,
+            Route::Library(section, _) => Place::Library { key: section.key.clone() },
+            Route::List { title, path } => Place::List { title: title.clone(), path: path.clone() },
+            Route::Item(item, _) => Place::Item { key: item.rating_key.as_str().to_owned() },
+            Route::Downloads => Place::Downloads,
+            Route::Search(_) => return,
+        };
+        if !self.keeps_place.get() {
+            return;
+        }
+        // The file is written off the main thread, and what is written is
+        // the place at that moment: of two moves in quick succession the
+        // second is then the one kept, whichever write runs last.
+        let latest = Arc::clone(&self.place);
+        if let Ok(mut latest) = latest.lock() {
+            *latest = Some(place);
+        }
+        let save = async move {
+            match latest.lock().as_deref() {
+                Ok(Some(place)) => place.save(),
+                // Nothing to keep, or a write that panicked holding it.
+                Ok(None) | Err(_) => Ok(()),
+            }
+        };
+        self.background.run(self.main_thread, save, |saved| {
+            if let Err(error) = saved {
+                eprintln!("plex-rust: {}", with_causes(&error));
             }
         });
     }
@@ -1079,6 +1187,7 @@ impl Shell {
         *self.notice.borrow_mut() = None;
         self.show_view(screen.view(), fade);
         self.mark_shown("screen in the window");
+        self.keep_place(&route);
         self.window.setTitle(&NSString::from_str(title(&route)));
         let position = self.position.get();
         self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());

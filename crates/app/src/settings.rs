@@ -86,6 +86,40 @@ impl Listings {
     }
 }
 
+/// Where the viewer was when the app was last used, which is where the
+/// next launch starts. A search is not a place to come back to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Place {
+    Home,
+    /// The library with this key on the server.
+    Library {
+        key: String,
+    },
+    /// The whole list at this server path, under this title.
+    List {
+        title: String,
+        path: String,
+    },
+    /// The page of the item with this rating key.
+    Item {
+        key: String,
+    },
+    /// What is kept on this Mac.
+    Downloads,
+}
+
+impl Place {
+    /// Reads the place, or none if none was ever saved.
+    pub fn load() -> Result<Option<Self>> {
+        read("place.json")
+    }
+
+    pub fn save(&self) -> Result<()> {
+        write("place.json", self)
+    }
+}
+
 fn path(name: &str) -> Result<PathBuf> {
     Ok(crate::account::support_directory()?.join(name))
 }
@@ -125,6 +159,23 @@ mod tests {
         let read: Listings = serde_json::from_str(&json).unwrap();
         assert_eq!(read.of("2"), left);
         assert_eq!(read.of("1"), Listing::default());
+    }
+
+    #[test]
+    fn a_place_is_read_back_as_it_was_saved() {
+        let places = [
+            Place::Home,
+            Place::Library { key: "2".to_owned() },
+            Place::List { title: "Recently Added".to_owned(), path: "/hubs/recent".to_owned() },
+            Place::Item { key: "370".to_owned() },
+            Place::Downloads,
+        ];
+        for place in places {
+            let json = serde_json::to_string(&place).unwrap();
+            assert_eq!(serde_json::from_str::<Place>(&json).unwrap(), place);
+        }
+        // A kind of place a later version saved is not one this one knows.
+        assert!(serde_json::from_str::<Place>(r#"{ "kind": "music" }"#).is_err());
     }
 
     #[test]
