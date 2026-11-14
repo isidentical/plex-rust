@@ -9,7 +9,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationOcclusionState, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask,
+    NSApplicationOcclusionState, NSBackingStoreType, NSScreen, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -102,7 +102,7 @@ pub fn run(
         draw_offscreen(player)?;
         None
     } else {
-        Some(video_window(main_thread, player)?)
+        Some(video_window(main_thread, player, check.is_some())?)
     };
     player.set_muted(check.is_some())?;
     // Made before loading, so that it sees the playback start.
@@ -162,6 +162,7 @@ fn draw_offscreen(player: &Player) -> player::Result<()> {
 fn video_window(
     main_thread: MainThreadMarker,
     player: &Player,
+    unattended: bool,
 ) -> player::Result<Retained<NSWindow>> {
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1280.0, 720.0));
     let style = NSWindowStyleMask::Titled
@@ -182,7 +183,11 @@ fn video_window(
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(ns_string!("plex-rust"));
-    window.center();
+    if unattended {
+        park_in_corner(&window, main_thread);
+    } else {
+        window.center();
+    }
 
     let layer = VideoLayer::new(player, main_thread)?;
     let view = NSView::initWithFrame(NSView::alloc(main_thread), frame);
@@ -191,6 +196,17 @@ fn video_window(
     window.setContentView(Some(&view));
     video_layer::fit_to_display(&view, player)?;
     Ok(window)
+}
+
+/// Moves `window` to the bottom right corner of the main screen, out of
+/// the way of whoever is using the Mac.
+fn park_in_corner(window: &NSWindow, main_thread: MainThreadMarker) {
+    let Some(screen) = NSScreen::mainScreen(main_thread) else {
+        return;
+    };
+    let visible = screen.visibleFrame();
+    let x = visible.origin.x + visible.size.width - window.frame().size.width - 16.0;
+    window.setFrameOrigin(NSPoint::new(x, visible.origin.y + 16.0));
 }
 
 fn exit_when_playback_ends(playback: &Playback) {
