@@ -1,0 +1,92 @@
+{
+  "MediaContainer": {
+    "size": 8,
+    "allowSync": true,
+    "art": "/library/metadata/5454/art/1777607856",
+    "identifier": "com.plexapp.plugins.library",
+    "key": "5454",
+    "librarySectionID": 2,
+    "mediaTagPrefix": "Mediatagprefix",
+    "mediaTagVersion": 1786914632,
+    "nocache": true,
+    "parentIndex": 1,
+    "parentYear": 2014,
+    "theme": "Theme",
+    "thumb": "/library/metadata/5454/thumb/1777607856",
+    "viewGroup": "season",
+    "viewMode": 65593,
+    "Directory": [
+      {
+        "leafCount": 100,
+        "thumb": "/library/metadata/5454/thumb/1777607856",
+        "viewedLeafCount": 44,
+        "key": "/library/metadata/5454/allLeaves",
+        "title": "Title"
+      }
+    ],
+    "Metadata": [
+      {
+        "ratingKey": "5455",
+        "key": "/library/metadata/5455/children",
+        "parentRatingKey": "5454",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "parentSlug": "Parentslug",
+        "parentStudio": "Parentstudio",
+        "type": "season",
+        "title": "Title",
+        "parentKey": "/library/metadata/5454",
+        "parentTitle": "Parenttitle",
+        "summary": "Summary",
+        "index": 1,
+        "parentIndex": 1,
+        "parentYear": 2014,
+        "thumb": "/library/metadata/5455/thumb/1792357262",
+        "art": "/library/metadata/5454/art/1777607856",
+        "parentThumb": "/library/metadata/5454/thumb/1777607856",
+        "parentTheme": "Parenttheme",
+        "leafCount": 13,
+        "viewedLeafCount": 13,
+        "addedAt": 1792357231,
+        "updatedAt": 1792357262,
+        "UltraBlurColors": {
+          "topLeft": "03030f",
+          "topRight": "10171b",
+          "bottomRight": "07020e",
+          "bottomLeft": "0f0209"
+        }
+      },
+      {
+        "ratingKey": "5469",
+        "key": "/library/metadata/5469/children",
+        "parentRatingKey": "5454",
+        "guid": "Guid",
+        "parentGuid": "Parentguid",
+        "parentSlug": "Parentslug",
+        "parentStudio": "Parentstudio",
+        "type": "season",
+        "title": "Title",
+        "parentKey": "/library/metadata/5454",
+        "parentTitle": "Parenttitle",
+        "summary": "Summary",
+        "index": 2,
+        "parentIndex": 1,
+        "parentYear": 2014,
+        "thumb": "/library/metadata/5469/thumb/1792357262",
+        "art": "/library/metadata/5454/art/1777607856",
+        "parentThumb": "/library/metadata/5454/thumb/1777607856",
+        "parentTheme": "Parenttheme",
+        "leafCount": 16,
+        "viewedLeafCount": 16,
+        "addedAt": 1792357236,
+        "updatedAt": 1792357262,
+        "UltraBlurColors": {
+          "topLeft": "382c10",
+          "topRight": "32260d",
+          "bottomRight": "322b0f",
+          "bottomLeft": "2d260d"
+        }
+      }
+    ]
+  }
+}

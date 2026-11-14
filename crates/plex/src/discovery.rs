@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::client::{Client, Token, header};
 use crate::error::{Error, Result};
+use crate::server::Envelope;
 
 const RESOURCES: &str = "https://clients.plex.tv/api/v2/resources";
 
@@ -49,12 +50,6 @@ struct Resource {
 #[serde(rename_all = "camelCase")]
 struct Identity {
     machine_identifier: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct Envelope<T> {
-    media_container: T,
 }
 
 /// Lists the servers the account has access to.

@@ -1,0 +1,153 @@
+{
+  "MediaContainer": {
+    "size": 2,
+    "totalSize": 49,
+    "offset": 0,
+    "allowSync": true,
+    "art": "/:/resources/movie-fanart.jpg",
+    "identifier": "com.plexapp.plugins.library",
+    "librarySectionID": 1,
+    "mediaTagPrefix": "Mediatagprefix",
+    "mediaTagVersion": 1786914632,
+    "thumb": "/:/resources/movie.png",
+    "viewGroup": "movie",
+    "viewMode": 65592,
+    "Metadata": [
+      {
+        "ratingKey": "204",
+        "key": "/library/metadata/204",
+        "guid": "Guid",
+        "slug": "Slug",
+        "studio": "Studio",
+        "type": "movie",
+        "title": "Title",
+        "titleSort": "Titlesort",
+        "contentRating": "PG-13",
+        "contentRatingAge": 13,
+        "summary": "Summary",
+        "rating": 7.4,
+        "audienceRating": 9.3,
+        "viewCount": 1,
+        "lastViewedAt": 1745096321,
+        "year": 2001,
+        "tagline": "Tagline",
+        "thumb": "/library/metadata/204/thumb/1792356769",
+        "art": "/library/metadata/204/art/1792356769",
+        "duration": 8119168,
+        "originallyAvailableAt": "2001-12-14",
+        "addedAt": 1792356769,
+        "updatedAt": 1792356769,
+        "audienceRatingImage": "Audienceratingimage",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "primaryExtraKey": "Primaryextrakey",
+        "ratingImage": "Ratingimage",
+        "Media": [
+          {
+            "id": 541,
+            "duration": 8119168,
+            "bitrate": 1100,
+            "width": 1920,
+            "height": 1040,
+            "aspectRatio": 1.85,
+            "audioChannels": 2,
+            "audioCodec": "aac",
+            "videoCodec": "h264",
+            "videoResolution": "1080",
+            "container": "mp4",
+            "videoFrameRate": "24p",
+            "optimizedForStreaming": 1,
+            "has64bitOffsets": false,
+            "videoProfile": "high",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 541,
+                "key": "/library/parts/541/1745080474/file.mkv",
+                "duration": 8119168,
+                "file": "File",
+                "size": 1116272984,
+                "container": "mp4",
+                "has64bitOffsets": false,
+                "optimizedForStreaming": true,
+                "videoProfile": "high"
+              }
+            ]
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "49210f",
+          "topRight": "0d020e",
+          "bottomRight": "414646",
+          "bottomLeft": "914334"
+        }
+      },
+      {
+        "ratingKey": "271",
+        "key": "/library/metadata/271",
+        "guid": "Guid",
+        "slug": "Slug",
+        "studio": "Studio",
+        "type": "movie",
+        "title": "Title",
+        "titleSort": "Titlesort",
+        "contentRating": "R",
+        "contentRatingAge": 16,
+        "summary": "Summary",
+        "rating": 8.9,
+        "audienceRating": 8.8,
+        "viewCount": 1,
+        "lastViewedAt": 1750640106,
+        "year": 2015,
+        "tagline": "Tagline",
+        "thumb": "/library/metadata/271/thumb/1792356780",
+        "art": "/library/metadata/271/art/1792356780",
+        "duration": 7815850,
+        "originallyAvailableAt": "2015-12-23",
+        "addedAt": 1792356773,
+        "updatedAt": 1792356780,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "media",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "primaryExtraKey": "Primaryextrakey",
+        "ratingImage": "Ratingimage",
+        "Media": [
+          {
+            "id": 679,
+            "duration": 7815850,
+            "bitrate": 3607,
+            "width": 1920,
+            "height": 800,
+            "aspectRatio": 2.35,
+            "audioChannels": 6,
+            "audioCodec": "dca",
+            "videoCodec": "h264",
+            "videoResolution": "1080",
+            "container": "mkv",
+            "videoFrameRate": "24p",
+            "audioProfile": "Audioprofile",
+            "videoProfile": "high",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 679,
+                "key": "/library/parts/679/1670159396/file.mkv",
+                "duration": 7815850,
+                "file": "File",
+                "size": 3523669707,
+                "audioProfile": "Audioprofile",
+                "container": "mkv",
+                "videoProfile": "high"
+              }
+            ]
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "4f191d",
+          "topRight": "255470",
+          "bottomRight": "625124",
+          "bottomLeft": "573619"
+        }
+      }
+    ]
+  }
+}

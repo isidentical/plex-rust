@@ -1,0 +1,48 @@
+{
+  "MediaContainer": {
+    "size": 2,
+    "allowSync": false,
+    "Directory": [
+      {
+        "allowSync": true,
+        "filters": true,
+        "refreshing": false,
+        "key": "1",
+        "type": "movie",
+        "title": "Title",
+        "agent": "Agent",
+        "scanner": "Scanner",
+        "language": "Language",
+        "metadataAgentProviderGroupId": 1,
+        "uuid": "Uuid",
+        "updatedAt": 1792356631,
+        "createdAt": 1792356631,
+        "scannedAt": 1794640651,
+        "content": true,
+        "directory": true,
+        "contentChangedAt": 1935,
+        "hidden": 0
+      },
+      {
+        "allowSync": true,
+        "filters": true,
+        "refreshing": false,
+        "key": "2",
+        "type": "show",
+        "title": "Title",
+        "agent": "Agent",
+        "scanner": "Scanner",
+        "language": "Language",
+        "metadataAgentProviderGroupId": 2,
+        "uuid": "Uuid",
+        "updatedAt": 1792356631,
+        "createdAt": 1792356631,
+        "scannedAt": 1794640055,
+        "content": true,
+        "directory": true,
+        "contentChangedAt": 31657,
+        "hidden": 0
+      }
+    ]
+  }
+}

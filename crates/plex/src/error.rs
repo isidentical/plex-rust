@@ -12,4 +12,14 @@ pub enum Error {
 
     #[error("{server} did not answer at any of: {}", tried.join(", "))]
     Unreachable { server: String, tried: Vec<String> },
+
+    /// The server answered, but not with what its API description promises.
+    #[error("unexpected response from {path}: {source}")]
+    Shape {
+        path: &'static str,
+        source: serde_json::Error,
+    },
+
+    #[error("the server has no item {0}")]
+    Missing(crate::model::RatingKey),
 }

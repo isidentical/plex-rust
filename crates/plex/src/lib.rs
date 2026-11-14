@@ -7,6 +7,10 @@ pub mod auth;
 mod client;
 pub mod discovery;
 mod error;
+pub mod library;
+pub mod model;
+mod server;
 
 pub use crate::client::{Client, Identity, Token};
 pub use crate::error::{Error, Result};
+pub use crate::server::MediaServer;
