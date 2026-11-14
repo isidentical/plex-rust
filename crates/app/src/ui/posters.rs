@@ -9,7 +9,8 @@ use block2::RcBlock;
 use objc2::rc::{Allocated, Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+    ClassType, DefinedClass, Encode, Encoding, MainThreadMarker, MainThreadOnly, Message,
+    define_class, msg_send, sel,
 };
 use objc2_app_kit::{
     NSApplication, NSCollectionElementKindSectionHeader,
@@ -20,7 +21,7 @@ use objc2_app_kit::{
     NSCollectionLayoutSpacing, NSCollectionView, NSCollectionViewCompositionalLayout,
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
     NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewSupplementaryElementKind,
-    NSColor, NSDirectionalEdgeInsets, NSEvent, NSEventType, NSFontWeightBold, NSFontWeightRegular,
+    NSColor, NSEvent, NSEventType, NSFontWeightBold, NSFontWeightRegular,
     NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem, NSRectAlignment, NSScrollView,
     NSTextField, NSView,
 };
@@ -733,6 +734,29 @@ fn boundary_item(
     )
 }
 
+/// The space around a shelf's items, as `NSDirectionalEdgeInsets` lays it
+/// out. AppKit's headers call the type that, but the method that takes it
+/// was compiled under the name `CVCDirectionalEdgeInsets`, and a debug
+/// build of objc2 refuses to send a struct under any other name. So this
+/// one carries the name the method expects.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SectionInsets {
+    top: f64,
+    leading: f64,
+    bottom: f64,
+    trailing: f64,
+}
+
+// SAFETY: four doubles in the order of `NSDirectionalEdgeInsets`, under
+// the name `-[NSCollectionLayoutSection setContentInsets:]` reports.
+unsafe impl Encode for SectionInsets {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CVCDirectionalEdgeInsets",
+        &[f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING],
+    );
+}
+
 /// The layout of one shelf in a collection `width` points wide.
 fn section(
     style: Style,
@@ -747,7 +771,7 @@ fn section(
     };
     // Room above and below for a card to grow under the pointer and cast
     // its shadow without being cut off by the shelf's edge.
-    let mut insets = NSDirectionalEdgeInsets {
+    let mut insets = SectionInsets {
         top: theme::SPACE_S,
         leading: theme::PAGE_MARGIN,
         bottom: theme::SHELF_SPACING,
@@ -802,7 +826,9 @@ fn section(
             list
         }
     };
-    section.setContentInsets(insets);
+    // SAFETY: `setContentInsets:` takes one struct of four doubles, which
+    // `SectionInsets` is, under the name the method declares.
+    let () = unsafe { msg_send![&section, setContentInsets: insets] };
     if has_heading {
         // SAFETY: the element kind is a constant that AppKit provides.
         let kind = unsafe { NSCollectionElementKindSectionHeader };
