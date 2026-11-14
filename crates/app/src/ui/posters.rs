@@ -1122,6 +1122,11 @@ define_class!(
             for view in self.subviews() {
                 if let Ok(shelf) = view.downcast::<NSScrollView>() {
                     shelf.setDrawsBackground(false);
+                    // A shelf is exactly as tall as its cards, and would
+                    // cut off the focus ring, the lift and the shadow of
+                    // a card that reaches past its own frame.
+                    shelf.setClipsToBounds(false);
+                    shelf.contentView().setClipsToBounds(false);
                 }
             }
         }
