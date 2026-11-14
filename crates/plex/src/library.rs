@@ -122,6 +122,43 @@ struct RawHub {
     items: Vec<serde_json::Value>,
 }
 
+/// A character that titles of a library start with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstCharacter {
+    /// The character as the server names it: a letter, or `#` for all
+    /// that is not one.
+    pub title: String,
+    /// The index of the first item under it, in the library as listed.
+    pub start: u32,
+}
+
+#[derive(Deserialize)]
+struct FirstCharacters {
+    #[serde(rename = "Directory", default)]
+    characters: Vec<RawFirstCharacter>,
+}
+
+/// A character as the server lists it: with how many items it starts.
+#[derive(Deserialize)]
+struct RawFirstCharacter {
+    title: String,
+    size: u32,
+}
+
+impl FirstCharacters {
+    /// Each character with where its items begin, which is after all
+    /// the items of the characters before it.
+    fn placed(self) -> Vec<FirstCharacter> {
+        let mut start = 0;
+        let place = |character: RawFirstCharacter| {
+            let placed = FirstCharacter { title: character.title, start };
+            start += character.size;
+            placed
+        };
+        self.characters.into_iter().map(place).collect()
+    }
+}
+
 /// The colours of one picture.
 #[derive(Deserialize)]
 struct Tones {
@@ -163,6 +200,20 @@ impl MediaServer {
     ) -> Result<Page> {
         let path = format!("/library/sections/{}/all", section.key);
         self.page(&path, &listing.query(section.kind), start, size).await
+    }
+
+    /// The first characters of the titles in a library that `listing`
+    /// selects, in the order [`Sort::Title`] lists them, each with where
+    /// its items begin in [`section_items`](Self::section_items). They
+    /// make a long library something to jump about in.
+    pub async fn first_characters(
+        &self,
+        section: &Section,
+        listing: Listing,
+    ) -> Result<Vec<FirstCharacter>> {
+        let path = format!("/library/sections/{}/firstCharacter", section.key);
+        let characters: FirstCharacters = self.get(&path, &listing.query(section.kind)).await?;
+        Ok(characters.placed())
     }
 
     /// `size` items of the list at server path `path`, starting at index
@@ -409,6 +460,16 @@ mod tests {
         let hubs = video_hubs(fixture!("related"), "/hubs/metadata/370/related").unwrap();
         assert_eq!(hubs[0].identifier, "movie.similar");
         assert_eq!(hubs[0].more.as_deref(), Some("/library/metadata/370/similar"));
+    }
+
+    #[test]
+    fn a_first_character_starts_after_those_before_it() {
+        let characters = fixture!("first_characters" as FirstCharacters).placed();
+        let placed: Vec<(&str, u32)> = characters
+            .iter()
+            .map(|character| (character.title.as_str(), character.start))
+            .collect();
+        assert_eq!(placed, [("#", 0), ("A", 1), ("B", 3), ("S", 8)]);
     }
 
     #[test]

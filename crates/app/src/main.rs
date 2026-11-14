@@ -53,7 +53,8 @@ usage: plex-rust
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
          tweaks: narrow, wide, collapsed, hover, link, season, download,
                  version=<media-id>,
-                 scroll=<points>, across=<points>, page, unwatched,
+                 scroll=<points>, across=<points>, page, letter=<index>,
+                 unwatched,
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
@@ -169,6 +170,9 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             }
             Some(("version", media)) => {
                 parsed.version = Some(media.parse().map_err(|_| Error::Usage(USAGE))?);
+            }
+            Some(("letter", index)) => {
+                parsed.letter = Some(index.parse().map_err(|_| Error::Usage(USAGE))?);
             }
             Some(("across", points)) => {
                 parsed.across = points.parse().map_err(|_| Error::Usage(USAGE))?;

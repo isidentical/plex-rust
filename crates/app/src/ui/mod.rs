@@ -12,6 +12,7 @@ mod formats;
 mod heading;
 mod hero;
 mod hover;
+mod jump;
 mod label;
 mod layout;
 mod library_bar;

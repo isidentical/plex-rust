@@ -263,6 +263,14 @@ pub const DOWNLOAD_STRIP_HEIGHT: f64 = 44.0;
 /// The bar above a library's grid: its size on the left, order on the right.
 pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
 
+/// The strip of first characters down the far edge of a library listed
+/// by title: how wide it is, and how tall each character where the
+/// window leaves the room.
+pub const JUMP_BAR_WIDTH: f64 = 28.0;
+pub const JUMP_MARK_HEIGHT: f64 = 18.0;
+/// Between the strip and the window's edge, where a scroller comes up.
+pub const JUMP_BAR_INSET: f64 = SPACE_M;
+
 /// A message in the middle of an empty screen.
 pub const NOTICE_SYMBOL_SIZE: f64 = 44.0;
 pub const NOTICE_WIDTH: f64 = 420.0;

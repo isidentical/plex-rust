@@ -22,7 +22,7 @@ use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
 };
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
-use plex::library::{Listing, Page};
+use plex::library::{FirstCharacter, Listing, Page, Sort};
 use plex::model::{Colors, Hub, Item, Kind, RatingKey, Section};
 use plex::{Cache, Client, MediaServer, Token};
 
@@ -347,6 +347,9 @@ pub struct Tweaks {
     pub across: f64,
     /// The first shelf paged on from the arrow in its heading.
     pub page: bool,
+    /// In a library listed by title, the entry of this number in its
+    /// index of first characters pressed, counting from zero.
+    pub letter: Option<usize>,
     /// For a library, which items and in what order.
     pub listing: Listing,
     /// The screen having failed to load in this way.
@@ -1402,9 +1405,43 @@ impl Shell {
         let route = Route::Library(section.clone(), listing);
         let source = Paged::Library(section.clone(), listing);
         // The bar lives as long as this closure, which the entry keeps.
-        self.grid(session, route, source, Some(header), "", nothing, move |total| {
-            bar.set_total(total);
-        })
+        let on_total = move |total| bar.set_total(total);
+        let (screen, reload) =
+            self.grid(session, route.clone(), source.clone(), Some(header), "", nothing, on_total);
+        let (Screen::Posters(grid), Sort::Title) = (&screen, listing.sort) else {
+            return (screen, reload);
+        };
+
+        // Listed by title, a library has an index of first characters.
+        let (shell, beyond) = (Rc::downgrade(self), objc2::rc::Weak::new(&**grid));
+        grid.keep_index(move |card| {
+            if let (Some(shell), Some(grid)) = (shell.upgrade(), beyond.load()) {
+                shell.load_page(&route, &grid, source.clone(), Some(card));
+            }
+        });
+        let (shown, of) = (grid.clone(), section.clone());
+        let index = self.loader(
+            session,
+            Unanswered::GoesWithout,
+            move |server| {
+                let of = of.clone();
+                async move { server.first_characters(&of, listing).await }
+            },
+            move |characters: &Vec<FirstCharacter>| {
+                let entry = |character: &FirstCharacter| {
+                    (
+                        character.title.clone(),
+                        usize::try_from(character.start).unwrap_or(usize::MAX),
+                    )
+                };
+                shown.set_index(characters.iter().map(entry).collect());
+            },
+        );
+        let reload = Rc::new(move || {
+            reload();
+            index();
+        });
+        (screen, reload)
     }
 
     /// Lists a library another way from now on, and shows it that way.
@@ -1450,7 +1487,7 @@ impl Shell {
         let posters = self.posters(session, header, outlines, nothing, move || {
             let grid = asking.get().and_then(objc2::rc::Weak::<Posters>::load);
             if let (Some(shell), Some(grid)) = (more.upgrade(), grid) {
-                shell.load_page(&route, &grid, more_of.clone());
+                shell.load_page(&route, &grid, more_of.clone(), None);
             }
         });
         // Cannot fail: the cell was created empty a few lines up.
@@ -1474,8 +1511,16 @@ impl Shell {
     }
 
     /// Fetches the next page of `source` and adds it to `grid`, which
-    /// asked for it, if `route` is still the place on screen.
-    fn load_page(self: &Rc<Self>, route: &Route, grid: &Posters, source: Paged) {
+    /// asked for it, if `route` is still the place on screen. With
+    /// `upto`, fetches as many pages as it takes to hold the card of that
+    /// number, and then goes to it.
+    fn load_page(
+        self: &Rc<Self>,
+        route: &Route,
+        grid: &Posters,
+        source: Paged,
+        upto: Option<usize>,
+    ) {
         let on_screen = self.current(|entry| entry.route == *route) == Some(true);
         let (Some(session), true) = (self.session(), on_screen) else {
             // The grid waits for what it asked for and asks for nothing
@@ -1486,14 +1531,27 @@ impl Shell {
         let posters = grid.retain();
         let start = posters.len();
         let from = u32::try_from(start).unwrap_or(u32::MAX);
-        let load = source.page(session.server.clone(), from, PAGE_SIZE);
+        let size = whole_pages(upto.map_or(0, |card| (card + 1).saturating_sub(start)));
+        let load = source.clone().page(session.server.clone(), from, size);
         let (shell, moves, asked) = (Rc::clone(self), self.moves.get(), Instant::now());
+        let route = route.clone();
         self.background.run(self.main_thread, load, move |page| {
             shell.heard(asked, &page);
             match page {
                 Ok(page) => {
+                    let came = !page.items.is_empty();
                     posters.append(start, page.items);
                     shell.mark_shown("next page added");
+                    match upto {
+                        Some(card) if card < posters.len() => posters.go_to_card(card),
+                        // The grid took another page while this one was on
+                        // its way, and dropped this one. It is asked for
+                        // again from where the grid now ends.
+                        Some(card) if came => {
+                            shell.load_page(&route, &posters, source, Some(card));
+                        }
+                        _ => {}
+                    }
                 }
                 // The cards that are there stay. Only the sign-in being
                 // over takes the screen, since nothing more can come until
@@ -2465,6 +2523,9 @@ impl Shell {
                 }
                 if let (true, Screen::Posters(posters)) = (snapshot.tweaks.page, screen) {
                     posters.page_first_shelf();
+                }
+                if let (Some(letter), Screen::Posters(posters)) = (snapshot.tweaks.letter, screen) {
+                    posters.jump_to(letter);
                 }
                 if let Screen::Posters(posters) = screen {
                     snapshot.tweaks.presses.iter().for_each(|press| posters.press(*press));

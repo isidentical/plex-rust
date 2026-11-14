@@ -23,7 +23,7 @@ use objc2_app_kit::{
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
     NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewScrollPosition,
     NSCollectionViewSupplementaryElementKind, NSColor, NSDownArrowFunctionKey, NSEvent,
-    NSEventModifierFlags, NSEventType, NSIndexPathNSCollectionViewAdditions,
+    NSEventModifierFlags, NSEventType, NSIndexPathNSCollectionViewAdditions, NSLayoutConstraint,
     NSLeftArrowFunctionKey, NSMenu, NSMenuItem, NSRectAlignment, NSRightArrowFunctionKey,
     NSScrollView, NSUpArrowFunctionKey, NSView, NSViewBoundsDidChangeNotification,
 };
@@ -40,6 +40,7 @@ use plex::model::{Item, Kind, Part, RatingKey, Role};
 use super::episode::EpisodeItem;
 use super::heading::{self, Paging};
 use super::hover::HoverView;
+use super::jump::JumpBar;
 use super::layout;
 use super::notice::Notice;
 use super::poster::{self, Card, PosterItem, Shape};
@@ -338,6 +339,19 @@ pub struct Ivars {
     /// The shelf an arrow of its heading is sliding sideways, and how
     /// far along it the slide ends.
     sliding: RefCell<Option<(Retained<NSScrollView>, f64)>>,
+    /// For a grid with an index: the strip that shows it, which card each
+    /// of its entries starts at, and who is asked for a card not here yet.
+    jump: OnceCell<Jump>,
+    /// Shared with the layout, which keeps a lane clear for the strip.
+    has_jump_lane: Rc<Cell<bool>>,
+}
+
+struct Jump {
+    bar: Retained<JumpBar>,
+    starts: RefCell<Vec<usize>>,
+    /// The entry the viewer last picked, while the page is still there.
+    picked: Cell<Option<usize>>,
+    on_beyond: Box<dyn Fn(usize)>,
 }
 
 define_class!(
@@ -474,10 +488,12 @@ impl Posters {
         on_near_end: impl Fn() + 'static,
     ) -> Retained<Self> {
         let content = Rc::new(RefCell::new(Content::Outlines(outlines)));
+        let has_jump_lane = Rc::new(Cell::new(false));
         let header_height = header.as_ref().map(|header| header.height);
         let collection = ItemsView::new(main_thread);
         collection.setCollectionViewLayout(Some(&layout(
             Rc::clone(&content),
+            Rc::clone(&has_jump_lane),
             header_height,
             main_thread,
         )));
@@ -553,6 +569,8 @@ impl Posters {
             header_reached: Cell::new((0.0, 0.0)),
             in_header: Cell::new(false),
             sliding: RefCell::new(None),
+            jump: OnceCell::new(),
+            has_jump_lane,
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let posters: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -568,6 +586,129 @@ impl Posters {
 
     pub fn view(&self) -> &NSView {
         &self.ivars().root
+    }
+
+    /// Makes room down the far edge of a grid for an index of where its
+    /// cards start, which [`set_index`](Self::set_index) fills. Asked for
+    /// before the first cards are drawn, so that they do not move over
+    /// when the index comes. `on_beyond` hears that the viewer picked an
+    /// entry that starts at a card the grid does not hold yet: it is to
+    /// [`append`](Self::append) the cards up to it and then
+    /// [`go_to_card`](Self::go_to_card).
+    pub fn keep_index(&self, on_beyond: impl Fn(usize) + 'static) {
+        let ivars = self.ivars();
+        let picked = Weak::new(self);
+        let bar = JumpBar::new(self.mtm(), move |entry| {
+            if let Some(posters) = picked.load() {
+                posters.jump_to(entry);
+            }
+        });
+        ivars.root.addSubview(&bar);
+        let (clear, clip) = (ivars.root.safeAreaLayoutGuide(), ivars.scroll.contentView());
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            bar.trailingAnchor()
+                .constraintEqualToAnchor_constant(&clip.trailingAnchor(), -theme::JUMP_BAR_INSET),
+            bar.centerYAnchor().constraintEqualToAnchor(&clear.centerYAnchor()),
+            bar.heightAnchor().constraintLessThanOrEqualToAnchor_constant(
+                &clear.heightAnchor(),
+                -2.0 * theme::SPACE_L,
+            ),
+        ]));
+        let jump = Jump {
+            bar,
+            starts: RefCell::new(Vec::new()),
+            picked: Cell::new(None),
+            on_beyond: Box::new(on_beyond),
+        };
+        if ivars.jump.set(jump).is_ok() {
+            ivars.has_jump_lane.set(true);
+        }
+    }
+
+    /// Shows the index of a grid that [keeps one](Self::keep_index): each
+    /// entry by its name and the number of the card it starts at.
+    pub fn set_index(&self, entries: Vec<(String, usize)>) {
+        let Some(jump) = self.ivars().jump.get() else {
+            return;
+        };
+        let (names, starts): (Vec<String>, Vec<usize>) = entries.into_iter().unzip();
+        jump.bar.show(&names);
+        jump.starts.replace(starts);
+        self.mark_index();
+    }
+
+    /// Goes to where entry number `entry` of the index starts, as a
+    /// press on it does.
+    pub fn jump_to(&self, entry: usize) {
+        let Some(jump) = self.ivars().jump.get() else {
+            return;
+        };
+        let Some(card) = jump.starts.borrow().get(entry).copied() else {
+            return;
+        };
+        jump.picked.set(Some(entry));
+        if card < self.len() {
+            self.go_to_card(card);
+        } else {
+            // What the owner does may replace this collection.
+            let _alive = self.retain();
+            (jump.on_beyond)(card);
+        }
+    }
+
+    /// Scrolls a grid until the row of card number `card` is at the top
+    /// of what can be seen.
+    pub fn go_to_card(&self, card: usize) {
+        self.lay_out();
+        let collection = &self.ivars().collection;
+        let last_shelf = collection.numberOfSections() - 1;
+        let at = NSIndexPath::indexPathForItem_inSection(card.cast_signed(), last_shelf);
+        if let Some(place) = collection.layoutAttributesForItemAtIndexPath(&at) {
+            self.scroll_to(place.frame().origin.y - theme::CELL_SPACING);
+        }
+    }
+
+    /// Marks the entry of the index that the top row in view is under:
+    /// the one its first card belongs to, or the one the viewer picked
+    /// for as long as the page is where that pick took it. Worked out
+    /// from where the layout puts the cards, not from the cards on
+    /// screen, which are still the old ones while a scroll is being heard
+    /// of.
+    fn mark_index(&self) {
+        let ivars = self.ivars();
+        let Some(jump) = ivars.jump.get() else {
+            return;
+        };
+        let (count, grid) = (self.len(), ivars.collection.numberOfSections() - 1);
+        let frame = |card: usize| {
+            let at = NSIndexPath::indexPathForItem_inSection(card.cast_signed(), grid);
+            ivars.collection.layoutAttributesForItemAtIndexPath(&at).map(|place| place.frame())
+        };
+        let seen = ivars.scroll.contentView().bounds();
+        let top_row = frame(0).map_or(0..1, |first| {
+            let in_first_row =
+                |card: &usize| frame(*card).is_some_and(|other| other.origin.y == first.origin.y);
+            let across = (1..count).take_while(in_first_row).count() + 1;
+            let top = seen.origin.y + ivars.scroll.contentInsets().top;
+            // A row whose top is within a row's spacing of the top of the
+            // page is the top row, as it is after a jump to it.
+            let down = top + theme::CELL_SPACING + 1.0 - first.origin.y;
+            let row = (down / (first.size.height + theme::CELL_SPACING)).floor().max(0.0);
+            let start = row as usize * across;
+            start..start + across
+        });
+        // An entry near the end starts in a row the page cannot bring to
+        // the top. A pick of it has the page at its very end.
+        let at_end = seen.origin.y + seen.size.height >= ivars.collection.frame().size.height;
+        let starts = jump.starts.borrow();
+        let picked = jump.picked.get().filter(|picked| {
+            starts
+                .get(*picked)
+                .is_some_and(|start| top_row.contains(start) || (at_end && *start >= top_row.end))
+        });
+        jump.picked.set(picked);
+        let current = picked.or_else(|| starts.iter().rposition(|start| *start <= top_row.start));
+        jump.bar.set_current(current);
     }
 
     /// Makes the header follow the size of the page from now on, in place
@@ -1272,6 +1413,13 @@ fn index_range(range: &Range<usize>) -> Retained<NSIndexSet> {
     NSIndexSet::indexSetWithIndexesInRange(NSRange::new(range.start, range.len()))
 }
 
+/// How much of a grid's far edge is kept clear for its index: the strip,
+/// with room between it and the cards on one side and the window's edge
+/// on the other.
+fn jump_lane() -> f64 {
+    theme::CELL_SPACING + theme::JUMP_BAR_WIDTH + theme::JUMP_BAR_INSET
+}
+
 /// How long the row of cards in `scroller` is, margins included.
 fn shelf_length(scroller: &NSScrollView) -> f64 {
     scroller.documentView().map_or(0.0, |cards| cards.frame().size.width)
@@ -1441,6 +1589,7 @@ define_class!(
             };
             if let Some(posters) = self.ivars().get().and_then(Weak::load) {
                 posters.update_paging();
+                posters.mark_index();
             }
             let pointer = window.mouseLocationOutsideOfEventStream();
             for cell in self.visibleItems() {
@@ -1474,6 +1623,7 @@ impl ItemsView {
 
 fn layout(
     content: Rc<RefCell<Content>>,
+    has_jump_lane: Rc<Cell<bool>>,
     header_height: Option<f64>,
     main_thread: MainThreadMarker,
 ) -> Retained<NSCollectionViewCompositionalLayout> {
@@ -1489,7 +1639,9 @@ fn layout(
             // SAFETY: AppKit passes a valid environment for the call.
             let width = unsafe { environment.as_ref() }.container().effectiveContentSize().width;
             let has_heading = !content.title(shelf).is_empty();
-            Retained::autorelease_return(section(style, has_heading, width, main_thread))
+            let trailing = if has_jump_lane.get() { jump_lane() } else { theme::PAGE_MARGIN };
+            let section = section(style, has_heading, width, trailing, main_thread);
+            Retained::autorelease_return(section)
         },
     );
 
@@ -1551,11 +1703,13 @@ unsafe impl Encode for SectionInsets {
     );
 }
 
-/// The layout of one shelf in a collection `width` points wide.
+/// The layout of one shelf in a collection `width` points wide, which
+/// keeps `trailing` points clear at its far edge.
 fn section(
     style: Style,
     has_heading: bool,
     width: f64,
+    trailing: f64,
     main_thread: MainThreadMarker,
 ) -> Retained<NSCollectionLayoutSection> {
     let absolute = |points| NSCollectionLayoutDimension::absoluteDimension(points, main_thread);
@@ -1569,7 +1723,7 @@ fn section(
         top: theme::SPACE_S,
         leading: theme::PAGE_MARGIN,
         bottom: theme::SHELF_SPACING,
-        trailing: theme::PAGE_MARGIN,
+        trailing,
     };
 
     let section = match style {
@@ -1588,7 +1742,7 @@ fn section(
             shelf
         }
         Style::Grid(shape) => {
-            let available = width - 2.0 * theme::PAGE_MARGIN;
+            let available = width - theme::PAGE_MARGIN - trailing;
             let (_, card_width) = columns(available, shape.least_width(), theme::CELL_SPACING);
             let height = shape.height(card_width);
             let item =
