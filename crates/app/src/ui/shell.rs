@@ -381,6 +381,13 @@ impl Shell {
                     })
                 },
             };
+            // Until a screen is up there is nowhere to go back to and
+            // nothing to play.
+            for command in
+                [&commands.back, &commands.forward, &commands.play, &commands.toggle_watched]
+            {
+                command.set_enabled(false);
+            }
             menus::install(main_thread, &commands, &[], settings.low_power);
 
             Self {
@@ -756,7 +763,14 @@ impl Shell {
         self.show_view(screen.view(), fade);
         self.window.setTitle(&NSString::from_str(title(&route)));
         let position = self.position.get();
-        self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
+        let (back, forward) = (position > 0, position + 1 < self.history.borrow().len());
+        self.toolbar.set_history(back, forward);
+        self.commands.back.set_enabled(back);
+        self.commands.forward.set_enabled(forward);
+        // Only an item's page has something to play or to mark.
+        let on_item = matches!(screen, Screen::Detail(_));
+        self.commands.play.set_enabled(on_item);
+        self.commands.toggle_watched.set_enabled(on_item);
         self.sidebar.select(destination_of(&route).as_ref());
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.
