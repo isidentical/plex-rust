@@ -84,8 +84,16 @@ fn stored_token() -> Result<Option<Token>> {
     }
 }
 
-/// Keeps the account's token for the next launch.
+/// Keeps the account's token for the next launch. The server kept from
+/// the last one is forgotten: it was found with the token this one
+/// replaces, which may have been another account's.
 pub fn store_token(token: &Token) -> Result<()> {
+    let server = server_path()?;
+    match fs::remove_file(&server) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(source) => return Err(Error::File { path: server, source }),
+    }
     write_private(token_path()?, token.secret().as_bytes())
 }
 
@@ -103,12 +111,21 @@ pub fn open_in_browser(url: &str) {
 struct SavedServer {
     address: String,
     token: String,
+    /// Missing from files written before the caches were kept by server
+    /// and account. Such a file is as good as none.
+    machine_identifier: Option<String>,
+    account: Option<String>,
 }
 
-/// The server used the last time the app ran, if there was one. Nothing
-/// checks here that it still answers at that address.
-pub fn saved_server(client: &Client) -> Result<Option<MediaServer>> {
-    let path = support_directory()?.join("server.json");
+fn server_path() -> Result<PathBuf> {
+    Ok(support_directory()?.join("server.json"))
+}
+
+/// The server used the last time the app ran and the identifier of the
+/// account it was used by, if there was one. Nothing checks here that it
+/// still answers at that address.
+pub fn saved_server(client: &Client) -> Result<Option<(MediaServer, String)>> {
+    let path = server_path()?;
     let json = match fs::read_to_string(&path) {
         Ok(json) => json,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -116,16 +133,23 @@ pub fn saved_server(client: &Client) -> Result<Option<MediaServer>> {
     };
     let saved: SavedServer =
         serde_json::from_str(&json).map_err(|source| Error::Settings { path, source })?;
-    Ok(Some(MediaServer::at(client, saved.address, Token::new(saved.token))))
+    let (Some(machine_identifier), Some(account)) = (saved.machine_identifier, saved.account)
+    else {
+        return Ok(None);
+    };
+    let token = Token::new(saved.token);
+    Ok(Some((MediaServer::at(client, saved.address, machine_identifier, token), account)))
 }
 
-/// Keeps `server` for the next launch. Its token goes into a file only the
-/// owner can read, like the account token.
-pub fn save_server(server: &MediaServer) -> Result<()> {
-    let path = support_directory()?.join("server.json");
+/// Keeps `server`, as used by `account`, for the next launch. Its token
+/// goes into a file only the owner can read, like the account token.
+pub fn save_server(server: &MediaServer, account: &str) -> Result<()> {
+    let path = server_path()?;
     let saved = SavedServer {
         address: server.address().to_owned(),
         token: server.token().secret().to_owned(),
+        machine_identifier: Some(server.machine_identifier().to_owned()),
+        account: Some(account.to_owned()),
     };
     let json = serde_json::to_string(&saved)
         .map_err(|source| Error::Settings { path: path.clone(), source })?;

@@ -140,8 +140,8 @@ mod tests {
         let identity =
             Identity { client_identifier: "identifier".to_owned(), device_name: "Mac".to_owned() };
         let client = Client::new(identity).unwrap();
-        let server =
-            MediaServer::at(&client, "http://192.168.1.10:32400".to_owned(), Token::new("s3cret"));
+        let address = "http://192.168.1.10:32400".to_owned();
+        let server = MediaServer::at(&client, address, "machine".to_owned(), Token::new("s3cret"));
         let part: Part = serde_json::from_value(serde_json::json!({
             "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 1,
         }))

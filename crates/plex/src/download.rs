@@ -295,7 +295,7 @@ mod tests {
         });
         let identity = Identity { client_identifier: "test".into(), device_name: "test".into() };
         let client = Client::new(identity).unwrap();
-        (MediaServer::at(&client, address, Token::new("token")), seen)
+        (MediaServer::at(&client, address, "machine".to_owned(), Token::new("token")), seen)
     }
 
     fn part(size: usize) -> Part {

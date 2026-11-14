@@ -12,10 +12,11 @@ use std::time::Duration;
 use serde::Deserialize;
 use url::form_urlencoded;
 
-use crate::client::{Client, PRODUCT, Token};
+use crate::client::{Client, PRODUCT, Token, header};
 use crate::error::{Error, Result};
 
 const PINS: &str = "https://plex.tv/api/v2/pins";
+const USER: &str = "https://plex.tv/api/v2/user";
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A pending sign-in.
@@ -32,6 +33,11 @@ struct PinStatus {
     auth_token: Option<String>,
     /// Seconds until plex.tv forgets the PIN.
     expires_in: u64,
+}
+
+#[derive(Deserialize)]
+struct User {
+    uuid: String,
 }
 
 impl Pin {
@@ -74,4 +80,13 @@ pub async fn wait_for_token(client: &Client, pin: &Pin) -> Result<Token> {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// The identifier plex.tv has for the account that `token` signs in to. It
+/// stays the same when the token is replaced, so it can tell what belongs
+/// to one account from what belongs to another.
+pub async fn account(client: &Client, token: &Token) -> Result<String> {
+    let request = client.http.get(USER).header(header("x-plex-token"), token.secret());
+    let user: User = request.send().await?.error_for_status()?.json().await?;
+    Ok(user.uuid)
 }

@@ -1,7 +1,6 @@
 //! Artwork, fetched once and kept.
 
 use std::cell::Cell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
@@ -30,7 +29,7 @@ const MEMORY_LIMIT: usize = 384 * 1024 * 1024;
 
 /// How many bytes of artwork are kept on disk: a few thousand posters at
 /// about 40 kilobytes each, or a few hundred backdrops.
-const DISK_LIMIT: u64 = 512 * 1024 * 1024;
+pub const DISK_LIMIT: u64 = 512 * 1024 * 1024;
 
 /// A picture that is already decoded, so that showing it costs the main
 /// thread nothing but handing it to a layer.
@@ -66,22 +65,19 @@ pub struct Images {
 }
 
 impl Images {
+    /// Artwork from `server`, kept between launches in `disk`.
     pub fn new(
         main_thread: MainThreadMarker,
         background: Rc<Background>,
         server: MediaServer,
-    ) -> Result<Self> {
-        let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
-        let directory = PathBuf::from(home).join("Library/Caches/plex-rust/images");
-        std::fs::create_dir_all(&directory)
-            .map_err(|source| Error::File { path: directory.clone(), source })?;
+        disk: Cache,
+    ) -> Self {
         // SAFETY: the cache is created empty and only ever used with the key
         // and value types in its declaration.
         let memory = unsafe { NSCache::new() };
         // SAFETY: the limit is a plain number of bytes.
         unsafe { memory.setTotalCostLimit(MEMORY_LIMIT) };
-        let disk = Cache::new(directory, "", DISK_LIMIT);
-        Ok(Self { main_thread, background, server, disk, memory, loading: Cell::new(0) })
+        Self { main_thread, background, server, disk, memory, loading: Cell::new(0) }
     }
 
     /// The artwork at server path `path` for a box of `width` by `height`

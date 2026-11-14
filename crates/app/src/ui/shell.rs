@@ -50,7 +50,7 @@ use crate::account;
 use crate::background::Background;
 use crate::downloads::{self, Downloads, State};
 use crate::error::{Error, Result, with_causes};
-use crate::images::Images;
+use crate::images::{self, Images};
 use crate::settings::{Listings, Settings};
 use crate::store::Download;
 use crate::timing;
@@ -158,6 +158,18 @@ struct Session {
     server: MediaServer,
     images: Rc<Images>,
     sections: Vec<Section>,
+}
+
+/// A server with the places its answers and its artwork are kept between
+/// launches: apart from those of any other server, and from those of any
+/// other account on this one.
+#[derive(Clone)]
+struct Kept {
+    /// Keeps its answers itself.
+    server: MediaServer,
+    /// The identifier plex.tv has for the account in use.
+    account: String,
+    artwork: Cache,
 }
 
 /// Somewhere the viewer can be.
@@ -518,7 +530,7 @@ impl Shell {
 
     /// Finds the server and shows what is on it.
     fn connect(self: &Rc<Self>, client: Client, token: Token, snapshot: Option<Snapshot>) {
-        let (responses, saved) = match saved_server(&client) {
+        let saved = match saved_server(&client) {
             Ok(saved) => saved,
             Err(error) => return self.show_failure(UNREACHABLE, &error, Self::restart),
         };
@@ -528,13 +540,13 @@ impl Shell {
         // First, what the last launch left: the same server and the
         // libraries it had then. This puts the sidebar and Home on screen
         // at once.
-        if let Some(server) = saved.clone() {
+        if let Some(kept) = saved.clone() {
             let (shell, subject) = (Rc::clone(self), subject.clone());
-            let remembered = server.remembered();
+            let remembered = kept.server.remembered();
             let ask = async move { remembered.sections().await };
             self.background.run(self.main_thread, ask, move |sections| {
                 if let (Ok(sections), None) = (sections, shell.session()) {
-                    shell.connected(server, sections, subject.as_ref());
+                    shell.connected(kept, sections, subject.as_ref());
                     // The server can fail to answer before the disk has.
                     if shell.reach.get() == Reach::Away {
                         shell.fall_back_on_downloads();
@@ -554,25 +566,25 @@ impl Shell {
                 let (server, tried) = ("The server".to_owned(), Vec::new());
                 return Err(plex::Error::Unreachable { server, tried }.into());
             }
-            if let Some(server) = saved
+            if let Some(kept) = saved
                 && let Ok(Ok(sections)) =
-                    tokio::time::timeout(SAVED_SERVER_PATIENCE, server.sections()).await
+                    tokio::time::timeout(SAVED_SERVER_PATIENCE, kept.server.sections()).await
             {
-                return Ok((server, sections));
+                return Ok((kept, sections));
             }
             let servers = plex::discovery::servers(&client, &token).await?;
             let server = servers.first().ok_or(Error::NoServer)?;
-            let server = MediaServer::connect(&client, server, None).await?;
-            let server = remembering(server, &responses);
-            let sections = server.sections().await?;
-            Ok::<_, Error>((server, sections))
+            let account = plex::auth::account(&client, &token).await?;
+            let kept = keeping(MediaServer::connect(&client, server, None).await?, account)?;
+            let sections = kept.server.sections().await?;
+            Ok::<_, Error>((kept, sections))
         };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, find, move |found| {
             match found {
-                Ok((server, sections)) => {
+                Ok((kept, sections)) => {
                     shell.reach.set(Reach::Answering);
-                    if let Err(error) = account::save_server(&server) {
+                    if let Err(error) = account::save_server(&kept.server, &kept.account) {
                         eprintln!("plex-rust: {}", with_causes(&error));
                     }
                     // Showing the same server and libraries again would
@@ -580,11 +592,11 @@ impl Shell {
                     // Unless that is a notice, as after signing in again.
                     let known = shell.notice.borrow().is_none()
                         && shell.session().is_some_and(|session| {
-                            session.server.address() == server.address()
+                            session.server.address() == kept.server.address()
                                 && session.sections == sections
                         });
                     if !known {
-                        shell.connected(server, sections, subject.as_ref());
+                        shell.connected(kept, sections, subject.as_ref());
                     }
                     shell.downloads_changed();
                     shell.send_unsent();
@@ -672,17 +684,10 @@ impl Shell {
         }
     }
 
-    fn connected(
-        self: &Rc<Self>,
-        server: MediaServer,
-        sections: Vec<Section>,
-        snapshot: Option<&Snapshot>,
-    ) {
-        let images =
-            match Images::new(self.main_thread, Rc::clone(&self.background), server.clone()) {
-                Ok(images) => Rc::new(images),
-                Err(error) => return self.show_failure(UNREACHABLE, &error, Self::restart),
-            };
+    fn connected(self: &Rc<Self>, kept: Kept, sections: Vec<Section>, snapshot: Option<&Snapshot>) {
+        let Kept { server, artwork, .. } = kept;
+        let background = Rc::clone(&self.background);
+        let images = Rc::new(Images::new(self.main_thread, background, server.clone(), artwork));
         let session = Session { server, images, sections: sections.clone() };
         *self.session.borrow_mut() = Some(session);
         self.history.borrow_mut().clear();
@@ -2064,21 +2069,28 @@ fn search_shelves(hubs: &[Hub]) -> Vec<Shelf> {
         .collect()
 }
 
-/// Where the server's answers are kept between launches, and the server
-/// used the last time the app ran, if there was one.
-fn saved_server(client: &Client) -> Result<(PathBuf, Option<MediaServer>)> {
-    let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
-    let responses = PathBuf::from(home).join("Library/Caches/plex-rust/responses");
-    std::fs::create_dir_all(&responses)
-        .map_err(|source| Error::File { path: responses.clone(), source })?;
-    let saved = account::saved_server(client)?.map(|server| remembering(server, &responses));
-    Ok((responses, saved))
+/// The server used the last time the app ran, if there was one.
+fn saved_server(client: &Client) -> Result<Option<Kept>> {
+    let saved = account::saved_server(client)?;
+    saved.map(|(server, account)| keeping(server, account)).transpose()
 }
 
-/// `server`, keeping its answers in the folder `responses`.
-fn remembering(server: MediaServer, responses: &Path) -> MediaServer {
-    let cache = Cache::new(responses.to_owned(), server.address(), RESPONSES_LIMIT);
-    server.with_cache(cache)
+/// `server` as `account` uses it, with a place for its answers and one
+/// for its artwork. What is kept there is found again at whatever address
+/// the server is reached, and by no other account.
+fn keeping(server: MediaServer, account: String) -> Result<Kept> {
+    let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
+    let caches = PathBuf::from(home).join("Library/Caches/plex-rust");
+    let scope = format!("{account}\n{}", server.machine_identifier());
+    let folder = |name: &str, limit| {
+        let path = caches.join(name);
+        std::fs::create_dir_all(&path)
+            .map_err(|source| Error::File { path: path.clone(), source })?;
+        Ok::<_, Error>(Cache::new(path, &scope, limit))
+    };
+    let (responses, artwork) =
+        (folder("responses", RESPONSES_LIMIT)?, folder("images", images::DISK_LIMIT)?);
+    Ok(Kept { server: server.with_cache(responses), account, artwork })
 }
 
 /// The main window. `staged` makes it one a snapshot can keep off every

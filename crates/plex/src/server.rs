@@ -11,6 +11,8 @@ use crate::error::{Error, Result};
 pub struct MediaServer {
     client: Client,
     address: String,
+    /// What the server calls itself, at whatever address it is reached.
+    machine_identifier: String,
     token: Token,
     /// Where answers are kept between launches, if anywhere.
     cache: Option<Cache>,
@@ -42,17 +44,23 @@ impl MediaServer {
         manual: Option<&str>,
     ) -> Result<Self> {
         let address = discovery::connect(client, server, manual).await?;
-        Ok(Self::at(client, address, server.access_token.clone()))
+        let machine_identifier = server.client_identifier.clone();
+        Ok(Self::at(client, address, machine_identifier, server.access_token.clone()))
     }
 
-    /// The server at `address`, without checking that it answers there.
-    /// For an address that worked the last time the app ran.
-    pub fn at(client: &Client, address: String, token: Token) -> Self {
-        Self { client: client.clone(), address, token, cache: None, answers: Answers::Server }
+    /// The server that calls itself `machine_identifier`, at `address`,
+    /// without checking that it answers there. For an address that worked
+    /// the last time the app ran.
+    pub fn at(client: &Client, address: String, machine_identifier: String, token: Token) -> Self {
+        let client = client.clone();
+        Self { client, address, machine_identifier, token, cache: None, answers: Answers::Server }
     }
 
     /// Keeps the answers to library requests in `cache`, so that
-    /// [`remembered`](Self::remembered) can give them back later.
+    /// [`remembered`](Self::remembered) can give them back later. An
+    /// answer is kept under the question alone, not the address it was
+    /// asked at: the cache's own scope says which server it is for, and
+    /// one server is the same on the LAN and over a VPN.
     pub fn with_cache(mut self, cache: Cache) -> Self {
         self.cache = Some(cache);
         self
@@ -76,6 +84,12 @@ impl MediaServer {
     /// The token for this server, for storing alongside its address.
     pub fn token(&self) -> &Token {
         &self.token
+    }
+
+    /// The identifier the server keeps wherever it is reached, for telling
+    /// it from other servers.
+    pub fn machine_identifier(&self) -> &str {
+        &self.machine_identifier
     }
 
     /// The address in use, such as `https://192-168-1-10.abc.plex.direct:32400`.
@@ -134,5 +148,37 @@ impl MediaServer {
 
     pub(crate) fn client(&self) -> &Client {
         &self.client
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::Identity;
+
+    #[test]
+    fn an_answer_is_remembered_at_every_address_of_the_server() {
+        let identity =
+            Identity { client_identifier: "identifier".to_owned(), device_name: "Mac".to_owned() };
+        let client = Client::new(identity).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let cache = Cache::new(folder.path().to_owned(), "account\nmachine", 1 << 20);
+        let at = |address: &str| {
+            MediaServer::at(&client, address.to_owned(), "machine".to_owned(), Token::new("secret"))
+                .with_cache(cache.clone())
+                .remembered()
+        };
+        let sections = include_bytes!("../tests/fixtures/sections.json");
+
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            assert!(matches!(
+                at("http://192.168.1.10:32400").sections().await,
+                Err(Error::NotRemembered)
+            ));
+            cache.write("/library/sections/all?[]", sections.to_vec()).await.unwrap();
+            assert_eq!(at("http://192.168.1.10:32400").sections().await.unwrap().len(), 2);
+            assert_eq!(at("http://100.64.0.5:32400").sections().await.unwrap().len(), 2);
+        });
     }
 }
