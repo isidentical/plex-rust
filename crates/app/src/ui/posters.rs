@@ -897,11 +897,16 @@ define_class!(
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let owner = self.ivars().get().and_then(Weak::load);
-            if owner.is_some_and(|posters| posters.key_pressed(event)) {
+            if owner.as_ref().is_some_and(|posters| posters.key_pressed(event)) {
                 return;
             }
             // SAFETY: forwards the event unchanged.
             let () = unsafe { msg_send![super(self), keyDown: event] };
+            // An arrow key may have scrolled a shelf sideways to follow
+            // the keyboard.
+            if let Some(posters) = owner {
+                posters.fill_scrolled_shelves();
+            }
         }
 
         /// Each shelf that scrolls sideways sits in a scroll view that the
