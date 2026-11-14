@@ -224,6 +224,9 @@ pub struct Media {
     pub video_resolution: Option<String>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    /// What sets the sound apart within its codec, such as `ma` for the
+    /// lossless kind of DTS.
+    pub audio_profile: Option<String>,
     /// 2 for stereo, 6 for 5.1 and so on.
     pub audio_channels: Option<u32>,
     /// Almost always exactly one. More when a film is split across files.
@@ -276,6 +279,23 @@ pub struct Stream {
     pub selected: bool,
     /// Set for subtitles that live in their own file next to the video.
     pub key: Option<String>,
+    /// How the track is encoded: `hevc`, `eac3`, `srt` and so on.
+    pub codec: Option<String>,
+    /// What sets the track apart within its codec, such as `ma` for the
+    /// lossless kind of DTS.
+    pub profile: Option<String>,
+    /// For sound, 2 for stereo, 6 for 5.1 and so on.
+    pub channels: Option<u32>,
+    /// For a picture, its transfer curve: `smpte2084` for HDR10,
+    /// `arib-std-b67` for HLG, `bt709` or nothing for standard range.
+    pub color_trc: Option<String>,
+    /// Whether a picture carries Dolby Vision.
+    #[serde(rename = "DOVIPresent", default)]
+    pub dolby_vision: bool,
+    /// The Dolby Vision profile. Profile 5 has no picture a player
+    /// without Dolby Vision can show in the right colours.
+    #[serde(rename = "DOVIProfile")]
+    pub dolby_vision_profile: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

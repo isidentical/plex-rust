@@ -19,11 +19,12 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
 use plex::library::{appearances, next_up};
-use plex::model::{Hub, Item, Kind, Media, RatingKey, Role, StreamKind};
+use plex::model::{Hub, Item, Kind, RatingKey, Role};
 
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
 use super::callback::Callback;
+use super::formats;
 use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
@@ -762,12 +763,12 @@ impl Hero {
         let main_thread = self.view.mtm();
         let media = item.media.first();
         let mut badges: Vec<Retained<NSView>> = media
-            .map(badges)
+            .map(formats::badges)
             .unwrap_or_default()
             .iter()
             .map(|words| badge(words, main_thread))
             .collect();
-        let file = media.map(file_facts).unwrap_or_default();
+        let file = media.map(formats::file_facts).unwrap_or_default();
         if !file.is_empty() {
             let secondary = NSColor::secondaryLabelColor();
             let plain = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
@@ -1057,65 +1058,6 @@ fn names(tags: &[plex::model::Tag], limit: usize) -> Vec<&str> {
     tags.iter().take(limit).map(|tag| tag.tag.as_str()).collect()
 }
 
-/// What the file is, in the words printed on a disc case: "4K", "HDR10",
-/// "Dolby Digital 5.1".
-fn badges(media: &Media) -> Vec<String> {
-    let mut badges: Vec<String> = Vec::new();
-    badges.extend(media.video_resolution.as_deref().map(|resolution| match resolution {
-        "4k" => "4K".to_owned(),
-        "sd" => "SD".to_owned(),
-        lines => format!("{lines}p"),
-    }));
-    // The server titles a video track by its resolution and then, if it has
-    // one, its dynamic range: "4K HDR10", "1080p".
-    let video = media.parts.first().and_then(|part| part.embedded(StreamKind::Video).next());
-    let title = video.and_then(|video| video.display_title.as_deref()).unwrap_or_default();
-    let range: Vec<&str> = title.split_whitespace().skip(1).collect();
-    if !range.is_empty() {
-        badges.push(range.join(" "));
-    }
-    let layout = media.audio_channels.map(|channels| match channels {
-        1 => "Mono".to_owned(),
-        2 => "Stereo".to_owned(),
-        6 => "5.1".to_owned(),
-        8 => "7.1".to_owned(),
-        other => format!("{other} ch"),
-    });
-    let format = media.audio_codec.as_deref().map(|codec| match codec {
-        "ac3" => "Dolby Digital".to_owned(),
-        "eac3" => "Dolby Digital Plus".to_owned(),
-        "truehd" => "Dolby TrueHD".to_owned(),
-        "dca" => "DTS".to_owned(),
-        "dca-ma" => "DTS-HD MA".to_owned(),
-        "opus" => "Opus".to_owned(),
-        other => other.to_uppercase(),
-    });
-    let sound: Vec<String> = format.into_iter().chain(layout).collect();
-    if !sound.is_empty() {
-        badges.push(sound.join(" "));
-    }
-    badges
-}
-
-/// What a badge has no word for: how the picture is encoded and how big
-/// the file is, as in "HEVC · 6.8 GB".
-fn file_facts(media: &Media) -> String {
-    let mut facts: Vec<String> = Vec::new();
-    facts.extend(media.video_codec.as_deref().map(|codec| match codec {
-        "h264" => "H.264".to_owned(),
-        "mpeg2video" => "MPEG-2".to_owned(),
-        "mpeg4" => "MPEG-4".to_owned(),
-        "vc1" => "VC-1".to_owned(),
-        other => other.to_uppercase(),
-    }));
-    // A film split across files is as big as all of them.
-    let sizes: Vec<u64> = media.parts.iter().filter_map(|part| part.size).collect();
-    if !sizes.is_empty() {
-        facts.push(text::size(sizes.iter().sum()));
-    }
-    facts.join(" · ")
-}
-
 /// A few words in an outlined box.
 fn badge(words: &str, main_thread: MainThreadMarker) -> Retained<NSView> {
     let frame = artwork::layered(main_thread);
@@ -1172,23 +1114,6 @@ mod tests {
             "duration": 8_286_624, "contentRating": "PG-13",
         }));
         assert_eq!(facts(&film), "2015 · 2 h 18 min · PG-13");
-    }
-
-    #[test]
-    fn the_file_is_named_by_picture_sound_encoding_and_size() {
-        let film = item(serde_json::json!({
-            "ratingKey": "1", "type": "movie", "title": "Title",
-            "Media": [{
-                "id": 1, "videoResolution": "4k", "audioChannels": 6,
-                "videoCodec": "hevc", "audioCodec": "eac3",
-                "Part": [{
-                    "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 6_828_818_931_u64,
-                    "Stream": [{ "id": 1, "streamType": 1, "displayTitle": "4K HDR10" }],
-                }],
-            }],
-        }));
-        assert_eq!(badges(&film.media[0]), ["4K", "HDR10", "Dolby Digital Plus 5.1"]);
-        assert_eq!(file_facts(&film.media[0]), "HEVC · 6.8 GB");
     }
 
     #[test]

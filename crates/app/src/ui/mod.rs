@@ -7,6 +7,7 @@ mod detail;
 mod downloads;
 mod episode;
 mod failure;
+mod formats;
 mod heading;
 mod hero;
 mod hover;
