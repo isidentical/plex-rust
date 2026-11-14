@@ -68,6 +68,12 @@ const SNAPSHOT_TWEAKS_SETTLE: Duration = Duration::from_secs(1);
 /// that the file is open and the keys have something to act on.
 const SNAPSHOT_KEYS_AFTER: Duration = Duration::from_millis(1500);
 
+/// How long the server of the last launch gets to answer at its old
+/// address before plex.tv is asked where it is now. On another network
+/// that address can take the request and never answer, and a request
+/// gives up by itself only after half a minute.
+const SAVED_SERVER_PATIENCE: Duration = Duration::from_secs(3);
+
 const UNREACHABLE: &str = "Could not reach your server";
 const NOT_LOADED: &str = "This could not be loaded";
 
@@ -425,7 +431,8 @@ impl Shell {
         // plex.tv asked where the server is now.
         let find = async move {
             if let Some(server) = saved
-                && let Ok(sections) = server.sections().await
+                && let Ok(Ok(sections)) =
+                    tokio::time::timeout(SAVED_SERVER_PATIENCE, server.sections()).await
             {
                 return Ok((server, sections));
             }
