@@ -129,7 +129,7 @@ crates/
     src/main.rs        NSApplication, delegate, menu
     src/runtime.rs     tokio runtime + the one bridge back to the main thread
     src/store.rs       SQLite: response cache, downloads
-    src/keychain.rs    token storage
+    src/account.rs     sign-in, token and client identifier storage
     src/images.rs      disk + memory image cache, ImageIO decode
     src/downloads.rs   resumable original-file downloads
     src/ui/            window, sidebar, home, library, detail, search,
@@ -141,7 +141,7 @@ Crates used, all current versions confirmed on crates.io [V]: objc2 0.6.5,
 objc2-foundation / app-kit / quartz-core / image-io / io-kit 0.3.2, block2
 0.6.2, dispatch2 0.3.1, libmpv2 7.0.1 (LGPL-2.1, exposes the OpenGL render
 API), reqwest 0.13.5, tokio 1.54.1, serde 1.0.229, serde_json 1.0.154,
-rusqlite 0.42.0, security-framework 3.7.0, thiserror.
+rusqlite 0.42.0, thiserror.
 
 Threading has one rule: AppKit and the mpv render call live on the main
 thread. Network and disk run on a tokio runtime. `runtime::spawn(future,
@@ -161,8 +161,10 @@ once), `X-Plex-Token`, `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`,
 - `POST https://plex.tv/api/v2/pins?strong=true`, open
   `https://app.plex.tv/auth#?clientID=..&code=..` in the browser, poll
   `GET /api/v2/pins/{id}` once per second until `authToken` is set.
-- Token goes into the Keychain. `GET https://plex.tv/api/v2/user` returning
-  401 means log in again.
+- The token is stored in `~/Library/Application Support/Reel/token`, readable
+  only by its owner. Not the Keychain: it ties access to the exact binary, so
+  every rebuild of an ad hoc signed app asks for the login password again.
+  `GET https://plex.tv/api/v2/user` returning 401 means log in again.
 - The newer JWT flow is not used: Plex's doc recommends it, but developers on
   Plex's forum report that the media server only accepts legacy tokens. The
   PIN flow is the one both sources agree works.
@@ -336,8 +338,8 @@ Two actions need you, both before work starts. After them nothing does.
 1. **`gh auth login`.** GitHub CLI is not logged in on this Mac [V], and your
    rule is that every change is pushed to a branch before merging.
 2. **One Plex approval.** Kickoff runs the PIN login and prints one link. You
-   approve it in the browser once. The token goes to the Keychain and is
-   never printed or committed. No Plex server runs on this Mac [V], so the
+   approve it in the browser once. The token is stored outside the repo and
+   is never printed or committed. No Plex server runs on this Mac [V], so the
    real server on your LAN or tailnet is the test target.
 
 One thing may need a click later: the macOS Local Network prompt the first
@@ -348,7 +350,7 @@ How each step is checked without a person:
 
 | Need | Mechanism |
 | --- | --- |
-| Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when the Keychain token exists |
+| Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when signed in |
 | Video plays right | `reel play <url> --for 20s --report` prints JSON: `hwdec-current`, dropped frames, cache seconds, HDR state. Asserted by a script |
 | UI looks right | `reel snapshot <screen> <out.png>` renders a screen to a PNG from inside the app, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
 | Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs Reel. `sudo powermetrics` needs a password [V] and stays optional |

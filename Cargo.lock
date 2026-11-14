@@ -878,7 +878,6 @@ dependencies = [
  "objc2-quartz-core",
  "player",
  "plex",
- "security-framework",
  "serde_json",
  "thiserror",
  "tokio",

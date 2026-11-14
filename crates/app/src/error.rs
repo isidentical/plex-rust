@@ -11,9 +11,6 @@ pub enum Error {
     #[error(transparent)]
     Plex(#[from] plex::Error),
 
-    #[error("the Keychain refused: {0}")]
-    Keychain(#[from] security_framework::base::Error),
-
     #[error("{path}: {source}")]
     File {
         path: std::path::PathBuf,

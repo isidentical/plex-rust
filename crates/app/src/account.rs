@@ -1,22 +1,17 @@
 //! The signed-in Plex account and this installation's identity.
 
 use std::fs;
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSProcessInfo, NSString, NSURL, NSUUID};
 use plex::{Client, Identity, Token, auth};
-use security_framework::passwords::{get_generic_password, set_generic_password};
 
 use crate::error::{Error, Result};
 
-const KEYCHAIN_SERVICE: &str = "Reel";
-const KEYCHAIN_ACCOUNT: &str = "plex.tv";
-
-/// `errSecItemNotFound`: the Keychain has no such entry.
-const ITEM_NOT_FOUND: i32 = -25300;
-
-/// Signs in through the browser and stores the token in the Keychain.
+/// Signs in through the browser and stores the token.
 pub fn login() -> Result<()> {
     let client = Client::new(identity()?)?;
     let token = crate::runtime()?.block_on(async {
@@ -28,7 +23,7 @@ pub fn login() -> Result<()> {
     })?;
 
     store_token(&token)?;
-    println!("Signed in. The token is in your Keychain.");
+    println!("Signed in.");
     Ok(())
 }
 
@@ -48,7 +43,7 @@ fn identity() -> Result<Identity> {
 
     let client_identifier = match fs::read_to_string(&path) {
         Ok(identifier) => identifier.trim().to_owned(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             let identifier = NSUUID::UUID().UUIDString().to_string();
             fs::write(&path, &identifier).map_err(file_error)?;
             identifier
@@ -72,21 +67,32 @@ fn support_directory() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The token lives in a file only its owner can read. It was in the
+/// Keychain at first, but the Keychain ties access to the exact binary, so
+/// every rebuild of an ad hoc signed app asked for the login password again.
+fn token_path() -> Result<PathBuf> {
+    Ok(support_directory()?.join("token"))
+}
+
 fn stored_token() -> Result<Option<Token>> {
-    match get_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
-        Ok(secret) => Ok(Some(Token::new(String::from_utf8_lossy(&secret)))),
-        Err(error) if error.code() == ITEM_NOT_FOUND => Ok(None),
-        Err(error) => Err(error.into()),
+    let path = token_path()?;
+    match fs::read_to_string(&path) {
+        Ok(secret) => Ok(Some(Token::new(secret.trim()))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::File { path, source }),
     }
 }
 
 fn store_token(token: &Token) -> Result<()> {
-    set_generic_password(
-        KEYCHAIN_SERVICE,
-        KEYCHAIN_ACCOUNT,
-        token.secret().as_bytes(),
-    )?;
-    Ok(())
+    let path = token_path()?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(token.secret().as_bytes()))
+        .map_err(|source| Error::File { path, source })
 }
 
 fn open_in_browser(url: &str) {

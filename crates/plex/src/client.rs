@@ -27,7 +27,7 @@ impl Token {
         Self(secret.into())
     }
 
-    /// The secret itself, for sending to Plex or storing in the Keychain.
+    /// The secret itself, for sending to Plex or storing.
     pub fn secret(&self) -> &str {
         &self.0
     }
