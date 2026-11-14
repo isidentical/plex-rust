@@ -1408,6 +1408,7 @@ impl Shell {
             };
             match action {
                 Action::Open(item) => shell.open(&item),
+                Action::Back => shell.back(),
                 Action::Play(item) => shell.play(&item, Purpose::Watching, Playback::default()),
                 Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),

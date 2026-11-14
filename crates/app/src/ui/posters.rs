@@ -88,6 +88,8 @@ pub struct Outline {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Open(Item),
+    /// Go back to where the viewer came from.
+    Back,
     Play(Item),
     /// Play it otherwise than it was left.
     PlayAs(Item, Playback),

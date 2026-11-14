@@ -7,6 +7,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
 use objc2::rc::{Allocated, Retained};
+use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityLinkRole,
@@ -74,6 +75,8 @@ enum Event {
 }
 
 pub struct Detail {
+    /// Holds everything, and hears the keys the list has no use for.
+    view: Retained<PageView>,
     backdrop: Retained<Backdrop>,
     /// The header and, under it, the shelves.
     list: Retained<Posters>,
@@ -231,8 +234,16 @@ impl Detail {
             );
             let backdrop = Backdrop::new(main_thread);
             layout::fill(&backdrop, list.view());
+            let keyed = Weak::clone(page);
+            let view = PageView::new(main_thread, move |key| {
+                if let Some(page) = keyed.upgrade() {
+                    page.key_pressed(key);
+                }
+            });
+            layout::fill(&view, &backdrop);
 
             Self {
+                view,
                 backdrop,
                 list,
                 hero,
@@ -251,7 +262,17 @@ impl Detail {
     }
 
     pub fn view(&self) -> &NSView {
-        &self.backdrop
+        &self.view
+    }
+
+    /// Does what a key means on the page as a whole, when no card had the
+    /// keyboard to take it: Space plays, as it does in the player, and
+    /// Escape goes back.
+    fn key_pressed(&self, key: Key) {
+        match key {
+            Key::Space => self.press_play(),
+            Key::Escape => (self.on_action)(Action::Back),
+        }
     }
 
     pub fn focus(&self) {
@@ -974,6 +995,67 @@ impl Hero {
             let poster = item.grandparent_thumb.as_deref();
             self.show_poster.show(poster, theme::HERO_SHOW_POSTER_REQUEST, images);
         }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView is designed to be subclassed, and `PageView` does not
+    // implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PlexRustDetailPage"]
+    #[ivars = OnceCell<Box<dyn Fn(Key)>>]
+    struct PageView;
+
+    impl PageView {
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Retained<Self> {
+            let this = this.set_ivars(OnceCell::new());
+            // SAFETY: forwards the designated initializer unchanged.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        /// The list of cards hands a key it has no use for to the text
+        /// system, which turns Escape into this command and sends it up
+        /// from the list to whatever holds it.
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            if let Some(on_key) = self.ivars().get() {
+                on_key(Key::Escape);
+            }
+        }
+
+        /// And a key that types a character into this one, with the
+        /// character.
+        #[unsafe(method(insertText:))]
+        fn insert_text(&self, text: &AnyObject) {
+            let typed = text.downcast_ref::<NSString>().map(ToString::to_string);
+            match (typed.as_deref(), self.ivars().get()) {
+                (Some(" "), Some(on_key)) => on_key(Key::Space),
+                // SAFETY: forwards the text unchanged.
+                _ => unsafe { msg_send![super(self), insertText: text] },
+            }
+        }
+    }
+);
+
+/// A key that means something on the page as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Space,
+    Escape,
+}
+
+impl PageView {
+    /// A view that calls `on_key` when one of the page's keys is pressed
+    /// and nothing inside the view took it.
+    fn new(main_thread: MainThreadMarker, on_key: impl Fn(Key) + 'static) -> Retained<Self> {
+        let view: Retained<Self> =
+            // SAFETY: `initWithFrame:` is NSView's designated initializer.
+            unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
+        // Cannot fail: the cell was created empty by the initializer.
+        let _ = view.ivars().set(Box::new(on_key));
+        view
     }
 }
 
