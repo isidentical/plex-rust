@@ -759,7 +759,12 @@ impl Shell {
             Outline { title: "Continue Watching", style: Style::Shelf(Shape::Landscape), count: 6 },
             Outline { title: "Recently Added", style: Style::Shelf(Shape::Poster), count: 10 },
         ];
-        let posters = self.posters(session, None, outlines, "Nothing to watch yet", || {});
+        let nothing = self.nothing(
+            "play.rectangle.on.rectangle",
+            "Nothing to watch yet",
+            "What you are in the middle of and what your server has just added will be here.",
+        );
+        let posters = self.posters(session, None, outlines, nothing, || {});
         let shown = posters.clone();
         let reload = self.loader(
             session,
@@ -784,7 +789,19 @@ impl Shell {
             }
         });
         let header = Header { view: bar.view().retain(), height: theme::LIBRARY_BAR_HEIGHT };
-        let nothing = if listing.unwatched_only { "Nothing left to watch" } else { "Nothing here" };
+        let nothing = if listing.unwatched_only {
+            self.nothing(
+                "checkmark.circle",
+                "Nothing left to watch",
+                &format!("You have watched every {noun} in this library."),
+            )
+        } else {
+            self.nothing(
+                "square.stack",
+                "This library is empty",
+                &format!("Once your server has a {noun} in it, it will be here."),
+            )
+        };
         let route = Route::Library(section.clone(), listing);
         let source = Paged::Library(section.clone(), listing);
         // The bar lives as long as this closure, which the entry keeps.
@@ -810,7 +827,8 @@ impl Shell {
         path: &str,
     ) -> (Screen, Rc<dyn Fn()>) {
         let source = Paged::Path(path.to_owned());
-        self.grid(session, route.clone(), source, None, title, "Nothing here", |_| {})
+        let nothing = self.nothing("square.stack", "Nothing here", "This list is empty.");
+        self.grid(session, route.clone(), source, None, title, nothing, |_| {})
     }
 
     /// A grid of posters under the heading `title` that shows `source` a
@@ -824,7 +842,7 @@ impl Shell {
         source: Paged,
         header: Option<Header>,
         title: &str,
-        nothing: &str,
+        nothing: Notice,
         on_total: impl Fn(u32) + 'static,
     ) -> (Screen, Rc<dyn Fn()>) {
         let outlines = vec![Outline { title: "", style: Style::Grid(Shape::Poster), count: 24 }];
@@ -939,7 +957,12 @@ impl Shell {
     }
 
     fn search_results(self: &Rc<Self>, session: &Session, query: &str) -> (Screen, Rc<dyn Fn()>) {
-        let posters = self.posters(session, None, Vec::new(), "Nothing found", || {});
+        let nothing = self.nothing(
+            "magnifyingglass",
+            "No results",
+            "Check the spelling, or try fewer words.",
+        );
+        let posters = self.posters(session, None, Vec::new(), nothing, || {});
         let reload = self.search_loader(session, &posters, query);
         (Screen::Posters(posters), reload)
     }
@@ -1002,7 +1025,7 @@ impl Shell {
         session: &Session,
         header: Option<Header>,
         outlines: Vec<Outline>,
-        nothing: &str,
+        nothing: Notice,
         on_near_end: impl Fn() + 'static,
     ) -> Retained<Posters> {
         Posters::new(
@@ -1010,7 +1033,7 @@ impl Shell {
             Rc::clone(&session.images),
             header,
             outlines,
-            nothing,
+            Some(nothing),
             self.actions(),
             on_near_end,
         )
@@ -1391,8 +1414,13 @@ impl Shell {
 
     // Messages in place of a screen.
 
+    /// What a list says in its middle when it turns out to hold nothing.
+    fn nothing(&self, symbol: &str, title: &str, detail: &str) -> Notice {
+        Notice::new(self.main_thread, Mark::Symbol(symbol), title, detail, None)
+    }
+
     fn show_notice(&self, notice: Notice) {
-        self.show_view(notice.view(), false);
+        layout::centre(&self.content, notice.view());
         *self.notice.borrow_mut() = Some(notice);
     }
 

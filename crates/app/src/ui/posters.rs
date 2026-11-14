@@ -24,7 +24,7 @@ use objc2_app_kit::{
     NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewScrollPosition,
     NSCollectionViewSupplementaryElementKind, NSColor, NSEvent, NSEventType,
     NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem, NSRectAlignment, NSScrollView,
-    NSTextField, NSView, NSViewBoundsDidChangeNotification,
+    NSView, NSViewBoundsDidChangeNotification,
 };
 use objc2_foundation::{
     NSArray, NSIndexPath, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
@@ -36,8 +36,8 @@ use plex::model::{Item, Kind, RatingKey, Role};
 use super::episode::EpisodeItem;
 use super::heading;
 use super::hover::HoverView;
-use super::label::{self, Weight};
 use super::layout;
+use super::notice::Notice;
 use super::poster::{self, Card, PosterItem, Shape};
 use super::theme;
 use crate::images::Images;
@@ -189,7 +189,7 @@ pub struct Ivars {
     content: Rc<RefCell<Content>>,
     header: Option<Header>,
     /// Shown in the middle when there turned out to be nothing to list.
-    nothing: Retained<NSTextField>,
+    nothing: Option<Notice>,
     images: Rc<Images>,
     on_action: Box<OnAction>,
     on_near_end: Box<dyn Fn()>,
@@ -317,7 +317,7 @@ impl Posters {
         images: Rc<Images>,
         header: Option<Header>,
         outlines: Vec<Outline>,
-        nothing: &str,
+        nothing: Option<Notice>,
         on_action: impl Fn(Action) + 'static,
         on_near_end: impl Fn() + 'static,
     ) -> Retained<Self> {
@@ -373,24 +373,14 @@ impl Posters {
             );
         }
 
-        let secondary = NSColor::secondaryLabelColor();
-        let nothing_label =
-            label::line(theme::FONT_HEADLINE, Weight::Regular, &secondary, main_thread);
-        label::set(&nothing_label, nothing);
-        nothing_label.setHidden(true);
         // Beside the scroll view, not inside it: a scroll view places its
         // own subviews and leaves any other where it was made, at no size.
         let root = NSView::new(main_thread);
         layout::fill(&root, &scroll);
-        root.addSubview(&nothing_label);
-        nothing_label
-            .centerXAnchor()
-            .constraintEqualToAnchor(&root.centerXAnchor())
-            .setActive(true);
-        nothing_label
-            .centerYAnchor()
-            .constraintEqualToAnchor(&root.centerYAnchor())
-            .setActive(true);
+        if let Some(nothing) = &nothing {
+            nothing.view().setHidden(true);
+            layout::float(&root, nothing.view());
+        }
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
@@ -398,7 +388,7 @@ impl Posters {
             collection,
             content,
             header,
-            nothing: nothing_label,
+            nothing,
             images,
             on_action: Box::new(on_action),
             on_near_end: Box::new(on_near_end),
@@ -436,7 +426,9 @@ impl Posters {
     pub fn show(&self, shelves: Vec<Shelf>) {
         let ivars = self.ivars();
         ivars.awaiting_more.set(false);
-        ivars.nothing.setHidden(shelves.iter().any(|shelf| !shelf.cards.is_empty()));
+        if let Some(nothing) = &ivars.nothing {
+            nothing.view().setHidden(shelves.iter().any(|shelf| !shelf.cards.is_empty()));
+        }
         let changes = changes(&ivars.content.borrow(), &shelves);
         let Some(changes) = changes else {
             *ivars.content.borrow_mut() = Content::Shelves(shelves);

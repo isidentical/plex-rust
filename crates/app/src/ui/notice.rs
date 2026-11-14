@@ -5,8 +5,8 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAccessibility, NSButton, NSColor, NSControlSize, NSImageView, NSLayoutAttribute,
-    NSLayoutConstraint, NSProgressIndicator, NSProgressIndicatorStyle, NSStackView,
-    NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextAlignment, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString, ns_string};
 
@@ -34,7 +34,6 @@ pub enum Mark<'a> {
 }
 
 pub struct Notice {
-    view: Retained<NSView>,
     stack: Retained<NSStackView>,
     button: Option<Retained<NSButton>>,
     /// Kept because a button does not retain its target.
@@ -42,8 +41,9 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// A mark, a title and a sentence under it, centred. `button` is the
-    /// title of a button under those and what pressing it does.
+    /// A mark, a title and a sentence under it, each centred on the one
+    /// above. `button` is the title of a button under those and what
+    /// pressing it does.
     pub fn new(
         main_thread: MainThreadMarker,
         mark: Mark,
@@ -93,19 +93,17 @@ impl Notice {
         stack.setCustomSpacing_afterView(theme::SPACE_L, &mark);
         stack.setCustomSpacing_afterView(theme::SPACE_XL, &body);
         stack.setTranslatesAutoresizingMaskIntoConstraints(false);
-
-        let view = NSView::new(main_thread);
-        view.addSubview(&stack);
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            stack.centerXAnchor().constraintEqualToAnchor(&view.centerXAnchor()),
-            stack.centerYAnchor().constraintEqualToAnchor(&view.centerYAnchor()),
-            stack.widthAnchor().constraintLessThanOrEqualToConstant(theme::NOTICE_WIDTH),
-        ]));
-        Self { view, stack, button, _pressed: pressed }
+        stack
+            .widthAnchor()
+            .constraintLessThanOrEqualToConstant(theme::NOTICE_WIDTH)
+            .setActive(true);
+        Self { stack, button, _pressed: pressed }
     }
 
+    /// The message, as large as its words. It goes in the middle of
+    /// whatever it stands in for.
     pub fn view(&self) -> &NSView {
-        &self.view
+        &self.stack
     }
 
     /// Adds the error itself in small print at the bottom, for whoever

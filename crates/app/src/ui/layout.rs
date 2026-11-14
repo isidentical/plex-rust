@@ -20,6 +20,29 @@ pub fn cover(parent: &NSView, child: &NSView) {
     pin(parent, child);
 }
 
+/// Makes `child` the only content of `parent`, at its own size in the
+/// middle.
+pub fn centre(parent: &NSView, child: &NSView) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.setSubviews(&NSArray::from_slice(&[child]));
+    place_in_middle(parent, child);
+}
+
+/// Adds `child` on top of whatever `parent` holds, at its own size in the
+/// middle.
+pub fn float(parent: &NSView, child: &NSView) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.addSubview(child);
+    place_in_middle(parent, child);
+}
+
+fn place_in_middle(parent: &NSView, child: &NSView) {
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        child.centerXAnchor().constraintEqualToAnchor(&parent.centerXAnchor()),
+        child.centerYAnchor().constraintEqualToAnchor(&parent.centerYAnchor()),
+    ]));
+}
+
 fn pin(parent: &NSView, child: &NSView) {
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
         child.leadingAnchor().constraintEqualToAnchor(&parent.leadingAnchor()),

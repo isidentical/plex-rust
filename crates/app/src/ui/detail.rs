@@ -167,7 +167,7 @@ impl Detail {
                 // The header belongs to the first shelf's place, so there
                 // is always a shelf, if only an empty one.
                 vec![Outline { title: "", style: Style::List, count: 0 }],
-                "",
+                None,
                 move |action| match (action, listed.upgrade()) {
                     // Only the page knows which library the person is to
                     // be looked up in.
