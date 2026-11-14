@@ -5,6 +5,7 @@ mod chrome;
 mod controls;
 pub mod input;
 mod layout;
+mod menu;
 mod pane;
 mod remote;
 mod season;
@@ -26,8 +27,7 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSControlStateValueOn, NSCursor, NSMenu, NSMenuItem, NSView,
-    NSWindowStyleMask,
+    NSAnimatablePropertyContainer, NSCursor, NSMenuItem, NSView, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
@@ -42,6 +42,7 @@ use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
+use self::menu::Choice;
 use self::remote::{Command, Playing, Remote};
 use self::season::Neighbours;
 use self::slider::{Grip, Pointed};
@@ -982,7 +983,7 @@ impl PlayerScreen {
             (_, track) => player.select_subtitles(track.map(|track| track.id))?,
         }
         let chosen = next.or(tracks.first().filter(|_| kind == TrackKind::Audio));
-        let name = chosen.map(|track| tracks::name(track, self.part()));
+        let name = chosen.map(|track| tracks::described(track, self.part()));
         self.remember_track(kind);
         let label = if kind == TrackKind::Audio { "Audio" } else { "Subtitles" };
         self.notify(&format!("{label}: {}", name.as_deref().unwrap_or("Off")));
@@ -1037,18 +1038,22 @@ impl PlayerScreen {
         if kind == TrackKind::Subtitles {
             choices.push(Choice {
                 title: "Off".to_owned(),
+                detail: None,
                 tag: 0,
                 chosen: tracks.iter().all(|track| !track.selected),
+                stands_apart: !tracks.is_empty(),
             });
         }
         choices.extend(tracks.iter().map(|track| Choice {
             title: tracks::name(track, self.part()),
+            detail: tracks::detail(track, self.part()),
             tag: track.id as isize,
             chosen: track.selected,
+            stands_apart: false,
         }));
         match kind {
-            TrackKind::Audio => self.offer(&choices, sel!(audioChosen:), &controls.audio),
-            _ => self.offer(&choices, sel!(subtitlesChosen:), &controls.subtitles),
+            TrackKind::Audio => self.offer("Audio", &choices, sel!(audioChosen:), &controls.audio),
+            _ => self.offer("Subtitles", &choices, sel!(subtitlesChosen:), &controls.subtitles),
         }
         Ok(())
     }
@@ -1061,40 +1066,25 @@ impl PlayerScreen {
             .into_iter()
             .map(|speed| Choice {
                 title: speed.to_string(),
+                detail: None,
                 tag: speed.percent() as isize,
                 chosen: speed == current,
+                stands_apart: false,
             })
             .collect();
-        self.offer(&choices, sel!(speedChosen:), &self.ivars().controls.speed);
+        self.offer("Playback Speed", &choices, sel!(speedChosen:), &self.ivars().controls.speed);
     }
 
-    /// Pops up a menu of `choices` just above `chip`. Picking one sends
-    /// `action`, a method of this class, with the menu item.
-    fn offer(&self, choices: &[Choice], action: Sel, chip: &Chip) {
+    /// Pops up a menu of `choices` under `heading` just above `chip`.
+    /// Picking one sends `action`, a method of this class, with the menu
+    /// item.
+    fn offer(&self, heading: &str, choices: &[Choice], action: Sel, chip: &Chip) {
         // The menu runs its own event loop. The file can end inside it,
         // which closes the screen and would otherwise free it under us.
         let _alive = self.retain();
-        let main_thread = self.mtm();
-        let menu = NSMenu::new(main_thread);
-        for choice in choices {
-            // SAFETY: the caller passes a selector this class defines.
-            let entry = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(main_thread),
-                    &NSString::from_str(&choice.title),
-                    Some(action),
-                    ns_string!(""),
-                )
-            };
-            // SAFETY: a menu item does not retain its target, and the
-            // screen is kept alive above for as long as the menu is up.
-            unsafe { entry.setTarget(Some(self)) };
-            entry.setTag(choice.tag);
-            if choice.chosen {
-                entry.setState(NSControlStateValueOn);
-            }
-            menu.addItem(&entry);
-        }
+        // SAFETY: the caller passes a selector this class defines, and the
+        // screen is kept alive above for as long as the menu is up.
+        let menu = unsafe { menu::build(self.mtm(), heading, choices, action, self) };
 
         // A menu hangs down from the point it is given, so to sit on top
         // of the chip it starts its own height above it.
@@ -1444,15 +1434,6 @@ impl PlayerScreen {
             eprintln!("plex-rust: {error}");
         }
     }
-}
-
-/// One line of a pop-up menu.
-struct Choice {
-    title: String,
-    /// What the menu item carries to the method that handles it.
-    tag: isize,
-    /// Whether it is the one in effect, which gets the check mark.
-    chosen: bool,
 }
 
 /// One progress report, owning what it needs so it can cross threads.
