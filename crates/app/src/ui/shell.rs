@@ -23,7 +23,7 @@ use objc2_foundation::{
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{Listing, Page};
 use plex::model::{Hub, Item, Kind, RatingKey, Section};
-use plex::{Client, MediaServer, Token};
+use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
 use super::callback::Callback;
@@ -87,6 +87,10 @@ const SNAPSHOT_KEY_WAIT: Duration = Duration::from_secs(1);
 /// that address can take the request and never answer, and a request
 /// gives up by itself only after half a minute.
 const SAVED_SERVER_PATIENCE: Duration = Duration::from_secs(3);
+
+/// How many bytes of the server's answers are kept between launches. A
+/// screen's worth is some tens of kilobytes.
+const RESPONSES_LIMIT: u64 = 64 * 1024 * 1024;
 
 const UNREACHABLE: &str = "Could not reach your server";
 const NOT_LOADED: &str = "This could not be loaded";
@@ -558,7 +562,8 @@ impl Shell {
             }
             let servers = plex::discovery::servers(&client, &token).await?;
             let server = servers.first().ok_or(Error::NoServer)?;
-            let server = MediaServer::connect(&client, server, None).await?.with_cache(responses);
+            let server = MediaServer::connect(&client, server, None).await?;
+            let server = remembering(server, &responses);
             let sections = server.sections().await?;
             Ok::<_, Error>((server, sections))
         };
@@ -2066,8 +2071,14 @@ fn saved_server(client: &Client) -> Result<(PathBuf, Option<MediaServer>)> {
     let responses = PathBuf::from(home).join("Library/Caches/plex-rust/responses");
     std::fs::create_dir_all(&responses)
         .map_err(|source| Error::File { path: responses.clone(), source })?;
-    let saved = account::saved_server(client)?.map(|server| server.with_cache(responses.clone()));
+    let saved = account::saved_server(client)?.map(|server| remembering(server, &responses));
     Ok((responses, saved))
+}
+
+/// `server`, keeping its answers in the folder `responses`.
+fn remembering(server: MediaServer, responses: &Path) -> MediaServer {
+    let cache = Cache::new(responses.to_owned(), server.address(), RESPONSES_LIMIT);
+    server.with_cache(cache)
 }
 
 /// The main window. `staged` makes it one a snapshot can keep off every

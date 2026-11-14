@@ -18,7 +18,7 @@ use objc2_image_io::{
     kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceShouldCacheImmediately,
     kCGImageSourceThumbnailMaxPixelSize,
 };
-use plex::MediaServer;
+use plex::{Cache, MediaServer};
 
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
@@ -27,6 +27,10 @@ use crate::timing;
 /// How many bytes of decoded artwork are kept in memory. A poster at twice
 /// its point size is about half a megabyte, so this holds several hundred.
 const MEMORY_LIMIT: usize = 384 * 1024 * 1024;
+
+/// How many bytes of artwork are kept on disk: a few thousand posters at
+/// about 40 kilobytes each, or a few hundred backdrops.
+const DISK_LIMIT: u64 = 512 * 1024 * 1024;
 
 /// A picture that is already decoded, so that showing it costs the main
 /// thread nothing but handing it to a layer.
@@ -54,7 +58,7 @@ pub struct Images {
     main_thread: MainThreadMarker,
     background: Rc<Background>,
     server: MediaServer,
-    directory: PathBuf,
+    disk: Cache,
     /// Decoded `CGImage`s. Evicted by the system under memory pressure.
     memory: Retained<NSCache<NSString, AnyObject>>,
     /// How many pictures are on their way, for timing the last to arrive.
@@ -76,7 +80,8 @@ impl Images {
         let memory = unsafe { NSCache::new() };
         // SAFETY: the limit is a plain number of bytes.
         unsafe { memory.setTotalCostLimit(MEMORY_LIMIT) };
-        Ok(Self { main_thread, background, server, directory, memory, loading: Cell::new(0) })
+        let disk = Cache::new(directory, "", DISK_LIMIT);
+        Ok(Self { main_thread, background, server, disk, memory, loading: Cell::new(0) })
     }
 
     /// The artwork at server path `path` for a box of `width` by `height`
@@ -102,15 +107,14 @@ impl Images {
     ) {
         let name = name(path, width, height);
         let key = NSString::from_str(&name);
-        let file = self.directory.join(name);
-        let (server, path) = (self.server.clone(), path.to_owned());
+        let (server, disk, path) = (self.server.clone(), self.disk.clone(), path.to_owned());
         let fetch = async move {
-            let jpeg = match tokio::fs::read(&file).await {
-                Ok(jpeg) => jpeg,
-                Err(_) => {
+            let jpeg = match disk.read(&name).await {
+                Some(jpeg) => jpeg,
+                None => {
                     let jpeg = server.image(&path, width, height).await?;
                     // A failed write only costs a download next time.
-                    let _ = tokio::fs::write(&file, &jpeg).await;
+                    let _ = disk.write(&name, jpeg.clone()).await;
                     jpeg
                 }
             };
@@ -144,7 +148,7 @@ impl Images {
 
 /// The name of a picture in both caches.
 fn name(path: &str, width: u32, height: u32) -> String {
-    format!("{:016x}-{width}x{height}.jpg", plex::stable_hash(path))
+    format!("{path} {width}x{height}")
 }
 
 /// Turns a JPEG into pixels, no larger than `longest_side` on its longer

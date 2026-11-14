@@ -1,9 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 
+use crate::cache::Cache;
 use crate::client::{Client, Token, header};
 use crate::discovery;
 use crate::error::{Error, Result};
@@ -15,7 +13,7 @@ pub struct MediaServer {
     address: String,
     token: Token,
     /// Where answers are kept between launches, if anywhere.
-    cache: Option<Arc<Path>>,
+    cache: Option<Cache>,
     answers: Answers,
 }
 
@@ -53,10 +51,10 @@ impl MediaServer {
         Self { client: client.clone(), address, token, cache: None, answers: Answers::Server }
     }
 
-    /// Keeps the answers to library requests in `directory`, so that
+    /// Keeps the answers to library requests in `cache`, so that
     /// [`remembered`](Self::remembered) can give them back later.
-    pub fn with_cache(mut self, directory: PathBuf) -> Self {
-        self.cache = Some(directory.into());
+    pub fn with_cache(mut self, cache: Cache) -> Self {
+        self.cache = Some(cache);
         self
     }
 
@@ -99,29 +97,31 @@ impl MediaServer {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<T> {
-        let file = self.cache.as_deref().map(|directory| {
-            let question = format!("{}{path}?{query:?}", self.address);
-            directory.join(format!("{:016x}.json", stable_hash(&question)))
-        });
+        let question = format!("{path}?{query:?}");
+        let decode = |body: &[u8]| {
+            let envelope: Envelope<T> = serde_json::from_slice(body)
+                .map_err(|source| Error::Shape { path: path.to_owned(), source })?;
+            Ok(envelope.media_container)
+        };
 
-        let body = match (self.answers, &file) {
-            (Answers::Cache, Some(file)) => {
-                tokio::fs::read_to_string(file).await.map_err(|_| Error::NotRemembered)?
+        let cache = match (self.answers, &self.cache) {
+            (Answers::Cache, Some(cache)) => {
+                let kept = cache.read(&question).await.ok_or(Error::NotRemembered)?;
+                return decode(&kept);
             }
             (Answers::Cache, None) => return Err(Error::NotRemembered),
-            (Answers::Server, _) => {
-                let request = self.request(Method::GET, path).query(query);
-                let body = request.send().await?.error_for_status()?.text().await?;
-                if let Some(file) = &file {
-                    // A failed write only means a slower start next time.
-                    let _ = tokio::fs::write(file, &body).await;
-                }
-                body
-            }
+            (Answers::Server, cache) => cache,
         };
-        let envelope: Envelope<T> = serde_json::from_str(&body)
-            .map_err(|source| Error::Shape { path: path.to_owned(), source })?;
-        Ok(envelope.media_container)
+        let request = self.request(Method::GET, path).query(query);
+        let body = request.send().await?.error_for_status()?.bytes().await?;
+        let answer = decode(&body)?;
+        if let Some(cache) = cache.clone() {
+            // Kept only now that it has decoded, and without holding the
+            // answer up for the disk. A failed write only means a slower
+            // start next time.
+            tokio::spawn(async move { cache.write(&question, body.into()).await });
+        }
+        Ok(answer)
     }
 
     /// A request to this server that carries its token.
@@ -135,12 +135,4 @@ impl MediaServer {
     pub(crate) fn client(&self) -> &Client {
         &self.client
     }
-}
-
-/// FNV-1a. Unlike the standard library's hasher it gives the same value in
-/// every build, which a name for a file on disk needs.
-pub fn stable_hash(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }

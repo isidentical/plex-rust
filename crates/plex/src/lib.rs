@@ -4,6 +4,7 @@
 //! <https://developer.plex.tv/pms/>.
 
 pub mod auth;
+mod cache;
 mod client;
 pub mod discovery;
 mod download;
@@ -14,8 +15,9 @@ pub mod model;
 pub mod playback;
 mod server;
 
+pub use crate::cache::Cache;
 pub use crate::client::{Client, Identity, Token};
 pub use crate::download::Transfer;
 pub use crate::error::{Error, Result};
-pub use crate::server::{MediaServer, stable_hash};
+pub use crate::server::MediaServer;
 pub use reqwest::Method;
