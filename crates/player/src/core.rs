@@ -1,0 +1,255 @@
+use std::ffi::{CStr, CString};
+use std::ptr::{self, NonNull};
+use std::sync::Arc;
+use std::time::Duration;
+
+use libmpv2_sys as sys;
+
+use crate::error::{Error, Result, check, message};
+
+/// Options applied before mpv starts. See SPEC.md section 7 for the reasons.
+const OPTIONS: &[(&str, &str)] = &[
+    // Frames are drawn by `Renderer`, mpv opens no window of its own.
+    ("vo", "libmpv"),
+    ("hwdec", "videotoolbox"),
+    ("cache", "yes"),
+    ("demuxer-max-bytes", "2GiB"),
+    ("demuxer-max-back-bytes", "512MiB"),
+    // Refill the buffer in bursts so the network can idle in between.
+    ("demuxer-hysteresis-secs", "10"),
+];
+
+/// mpv's status for a property that has no value right now, such as the
+/// position while nothing is loaded.
+const UNAVAILABLE: libc::c_int = sys::mpv_error_MPV_ERROR_PROPERTY_UNAVAILABLE;
+
+/// The mpv core. Cloning is cheap and every clone drives the same playback.
+///
+/// mpv shuts down when the last clone is dropped.
+#[derive(Clone)]
+pub struct Player {
+    handle: Arc<Handle>,
+}
+
+struct Handle(NonNull<sys::mpv_handle>);
+
+// SAFETY: the mpv client API is thread-safe: any function may be called on a
+// handle from any thread (mpv/client.h, "Threads").
+unsafe impl Send for Handle {}
+// SAFETY: as above.
+unsafe impl Sync for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle is valid and, this being the last reference, no
+        // other call on it can be in progress.
+        unsafe { sys::mpv_terminate_destroy(self.0.as_ptr()) }
+    }
+}
+
+/// What happened in the player, as returned by [`Player::wait_event`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The file is open and playback is starting.
+    Loaded,
+    Ended(EndReason),
+    /// mpv is shutting down. No further events will arrive.
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndReason {
+    /// Played to the end.
+    Finished,
+    /// Stopped or replaced on request.
+    Stopped,
+    /// Playback failed. Holds mpv's description of the error.
+    Failed(String),
+}
+
+impl Player {
+    pub fn new() -> Result<Self> {
+        // SAFETY: mpv_create has no preconditions.
+        let handle = NonNull::new(unsafe { sys::mpv_create() }).ok_or(Error::Create)?;
+        let player = Self {
+            handle: Arc::new(Handle(handle)),
+        };
+
+        for (name, value) in OPTIONS {
+            let (c_name, c_value) = (c_string(name)?, c_string(value)?);
+            // SAFETY: the handle is valid and both strings are NUL-terminated.
+            let status = unsafe {
+                sys::mpv_set_option_string(player.raw(), c_name.as_ptr(), c_value.as_ptr())
+            };
+            check(status, || format!("set option {name}={value}"))?;
+        }
+
+        // SAFETY: the handle is valid and has not been initialized yet.
+        check(unsafe { sys::mpv_initialize(player.raw()) }, || {
+            "initialize mpv".into()
+        })?;
+        Ok(player)
+    }
+
+    /// Starts playing `source`, a file path or URL, replacing what is playing.
+    pub fn load(&self, source: &str) -> Result<()> {
+        self.command(&["loadfile", source])
+    }
+
+    /// Asks mpv to shut down. [`Event::Shutdown`] follows.
+    pub fn quit(&self) -> Result<()> {
+        self.command(&["quit"])
+    }
+
+    pub fn seek(&self, position: Duration) -> Result<()> {
+        self.command(&["seek", &position.as_secs_f64().to_string(), "absolute"])
+    }
+
+    pub fn set_paused(&self, paused: bool) -> Result<()> {
+        self.set_string("pause", if paused { "yes" } else { "no" })
+    }
+
+    /// Sets the playback rate, where 1.0 is normal speed.
+    pub fn set_speed(&self, speed: f64) -> Result<()> {
+        self.set_string("speed", &speed.to_string())
+    }
+
+    /// The playback position, or `None` while nothing is loaded.
+    pub fn position(&self) -> Result<Option<Duration>> {
+        self.seconds("time-pos")
+    }
+
+    /// The length of the loaded file, or `None` if it is not known.
+    pub fn duration(&self) -> Result<Option<Duration>> {
+        self.seconds("duration")
+    }
+
+    /// How much playback time is buffered ahead of the position.
+    pub fn buffered(&self) -> Result<Option<Duration>> {
+        self.seconds("demuxer-cache-duration")
+    }
+
+    /// The hardware decoder in use, or `None` when decoding in software.
+    pub fn hardware_decoder(&self) -> Result<Option<String>> {
+        let decoder = self.string("hwdec-current")?;
+        Ok(decoder.filter(|name| name != "no"))
+    }
+
+    /// Frames dropped since the file was loaded because they came too late.
+    pub fn dropped_frames(&self) -> Result<u64> {
+        let count = self
+            .string("frame-drop-count")?
+            .unwrap_or_else(|| "0".into());
+        count.parse().map_err(|_| Error::Mpv {
+            action: "read frame-drop-count".into(),
+            message: format!("not a number: {count}"),
+        })
+    }
+
+    /// Blocks until something happens that the caller needs to know about.
+    pub fn wait_event(&self) -> Event {
+        loop {
+            // SAFETY: the handle is valid. A negative timeout waits forever,
+            // and the returned event is valid until the next wait_event call
+            // on this handle, which only this loop makes.
+            let event = unsafe { &*sys::mpv_wait_event(self.raw(), -1.0) };
+            match event.event_id {
+                sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return Event::Shutdown,
+                sys::mpv_event_id_MPV_EVENT_FILE_LOADED => return Event::Loaded,
+                sys::mpv_event_id_MPV_EVENT_END_FILE => {
+                    // SAFETY: for END_FILE, mpv sets `data` to a valid
+                    // mpv_event_end_file.
+                    let end = unsafe { &*event.data.cast::<sys::mpv_event_end_file>() };
+                    return Event::Ended(end_reason(end));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn raw(&self) -> *mut sys::mpv_handle {
+        self.handle.0.as_ptr()
+    }
+
+    fn command(&self, args: &[&str]) -> Result<()> {
+        let owned = args
+            .iter()
+            .map(|arg| c_string(arg))
+            .collect::<Result<Vec<_>>>()?;
+        let mut pointers: Vec<_> = owned.iter().map(|arg| arg.as_ptr()).collect();
+        pointers.push(ptr::null());
+        // SAFETY: the handle is valid and `pointers` is a NULL-terminated
+        // array of NUL-terminated strings that outlive the call.
+        let status = unsafe { sys::mpv_command(self.raw(), pointers.as_mut_ptr()) };
+        check(status, || format!("run command {args:?}"))
+    }
+
+    fn set_string(&self, name: &str, value: &str) -> Result<()> {
+        let (c_name, c_value) = (c_string(name)?, c_string(value)?);
+        // SAFETY: the handle is valid and both strings are NUL-terminated.
+        let status =
+            unsafe { sys::mpv_set_property_string(self.raw(), c_name.as_ptr(), c_value.as_ptr()) };
+        check(status, || format!("set {name}={value}"))
+    }
+
+    /// Reads a property as text. `None` means it has no value right now.
+    fn string(&self, name: &str) -> Result<Option<String>> {
+        let c_name = c_string(name)?;
+        let mut value: *mut libc::c_char = ptr::null_mut();
+        // SAFETY: the handle is valid, the name is NUL-terminated, and for
+        // MPV_FORMAT_STRING mpv writes a `char *` through the data pointer.
+        let status = unsafe {
+            sys::mpv_get_property(
+                self.raw(),
+                c_name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_STRING,
+                ptr::from_mut(&mut value).cast(),
+            )
+        };
+        if status == UNAVAILABLE {
+            return Ok(None);
+        }
+        check(status, || format!("read {name}"))?;
+
+        // SAFETY: on success mpv stored a NUL-terminated string that we own.
+        let text = unsafe { CStr::from_ptr(value) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: `value` was allocated by mpv and is not used again.
+        unsafe { sys::mpv_free(value.cast()) };
+        Ok(Some(text))
+    }
+
+    fn seconds(&self, name: &str) -> Result<Option<Duration>> {
+        let c_name = c_string(name)?;
+        let mut seconds = 0.0_f64;
+        // SAFETY: the handle is valid, the name is NUL-terminated, and for
+        // MPV_FORMAT_DOUBLE mpv writes a `double` through the data pointer.
+        let status = unsafe {
+            sys::mpv_get_property(
+                self.raw(),
+                c_name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_DOUBLE,
+                ptr::from_mut(&mut seconds).cast(),
+            )
+        };
+        if status == UNAVAILABLE {
+            return Ok(None);
+        }
+        check(status, || format!("read {name}"))?;
+        // Streams can report a slightly negative position right after a seek.
+        Ok(Some(Duration::from_secs_f64(seconds.max(0.0))))
+    }
+}
+
+fn end_reason(end: &sys::mpv_event_end_file) -> EndReason {
+    match end.reason {
+        sys::mpv_end_file_reason_MPV_END_FILE_REASON_EOF => EndReason::Finished,
+        sys::mpv_end_file_reason_MPV_END_FILE_REASON_ERROR => EndReason::Failed(message(end.error)),
+        _ => EndReason::Stopped,
+    }
+}
+
+fn c_string(text: &str) -> Result<CString> {
+    CString::new(text).map_err(|_| Error::Nul(text.to_owned()))
+}
