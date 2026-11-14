@@ -26,10 +26,11 @@ use plex::{Client, MediaServer, Token};
 use super::callback::Callback;
 pub use super::detail::Link;
 use super::detail::{Detail, Opening};
+pub use super::failure::Failure;
 use super::layout;
 use super::library_bar::LibraryBar;
 use super::menus::{self, Commands};
-use super::notice::Notice;
+use super::notice::{Mark, Notice};
 use super::player::input::Key;
 use super::player::{Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
@@ -238,6 +239,8 @@ pub struct Tweaks {
     pub across: f64,
     /// For a library, which items and in what order.
     pub listing: Listing,
+    /// The screen having failed to load in this way.
+    pub fault: Option<Failure>,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -428,7 +431,7 @@ impl Shell {
         } else {
             self.show_notice(Notice::new(
                 self.main_thread,
-                "server.rack",
+                Mark::Spinner,
                 "Looking for your server",
                 "Asking plex.tv where it is.",
                 None,
@@ -564,7 +567,7 @@ impl Shell {
         let pressed = Self::command(&Rc::downgrade(self), Self::sign_in);
         self.show_notice(Notice::new(
             self.main_thread,
-            "person.crop.circle",
+            Mark::Symbol("person.crop.circle"),
             "Sign in to Plex",
             "plex-rust opens plex.tv in your browser. Approve the sign-in there and come back.",
             Some(("Sign In", Box::new(pressed))),
@@ -1264,7 +1267,7 @@ impl Shell {
                 let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
                 self.show_notice(Notice::new(
                     self.main_thread,
-                    "exclamationmark.triangle",
+                    Mark::Symbol("exclamationmark.triangle"),
                     &format!("{} could not be played", screen.item().title),
                     &reason,
                     Some(("Go Back", Box::new(dismiss))),
@@ -1393,32 +1396,46 @@ impl Shell {
         *self.notice.borrow_mut() = Some(notice);
     }
 
-    /// Shows `error` in place of the screen under `title`, with a button
-    /// that runs `retry`.
+    /// Shows `error` in place of the screen, in words for the viewer, with
+    /// a button for what to do about it: sign in again when that is what
+    /// it takes, else `retry`. `title` says what failed when the error is
+    /// of no kind that says it better.
     fn show_failure(
         self: &Rc<Self>,
         title: &str,
-        error: &dyn std::error::Error,
+        error: &(dyn std::error::Error + 'static),
         retry: fn(&Rc<Self>),
     ) {
-        let retry = Self::command(&Rc::downgrade(self), retry);
-        let symbol = match title {
-            UNREACHABLE => "wifi.exclamationmark",
-            _ => "exclamationmark.triangle",
+        self.show_failure_of(Failure::of(error), title, &with_causes(error), retry);
+    }
+
+    fn show_failure_of(
+        self: &Rc<Self>,
+        failure: Failure,
+        title: &str,
+        small_print: &str,
+        retry: fn(&Rc<Self>),
+    ) {
+        let (label, act) = match failure {
+            Failure::SignedOut => ("Sign In", Self::sign_in as fn(&Rc<Self>)),
+            _ => ("Try Again", retry),
         };
-        self.show_notice(Notice::new(
+        let act = Self::command(&Rc::downgrade(self), act);
+        let notice = Notice::new(
             self.main_thread,
-            symbol,
-            title,
-            &with_causes(error),
-            Some(("Try Again", Box::new(retry))),
-        ));
+            Mark::Symbol(failure.symbol()),
+            failure.title().unwrap_or(title),
+            failure.advice(),
+            Some((label, Box::new(act))),
+        );
+        notice.add_small_print(small_print, self.main_thread);
+        self.show_notice(notice);
     }
 
     /// Shows a failure to load the current place, unless the viewer has
     /// moved on since move number `moves`, when it is only logged: an
     /// error about a screen they left would replace the one they are on.
-    fn fail(self: &Rc<Self>, moves: u64, error: &dyn std::error::Error) {
+    fn fail(self: &Rc<Self>, moves: u64, error: &(dyn std::error::Error + 'static)) {
         if moves == self.moves.get() {
             self.show_failure(NOT_LOADED, error, Self::reload);
         } else {
@@ -1449,6 +1466,10 @@ impl Shell {
                 if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
                     detail.follow_link(link);
                 }
+            }
+            if let Some(failure) = snapshot.tweaks.fault {
+                let small_print = "error sending request for url (https://192.168.0.2:32400/hubs)";
+                shell.show_failure_of(failure, NOT_LOADED, small_print, Self::reload);
             }
             let settle = async { tokio::time::sleep(SNAPSHOT_TWEAKS_SETTLE).await };
             let done = Rc::clone(&shell);

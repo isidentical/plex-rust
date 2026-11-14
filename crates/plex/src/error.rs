@@ -27,8 +27,29 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether Plex turned the token down. Only signing in again helps.
+    /// Whether nothing answered: no connection, or no reply in time.
+    pub fn is_unanswered(&self) -> bool {
+        match self {
+            Self::Unreachable { .. } => true,
+            Self::Http(error) => error.is_connect() || error.is_timeout(),
+            _ => false,
+        }
+    }
+
+    /// Whether the answer was that the token is not accepted.
     pub fn is_unauthorized(&self) -> bool {
-        matches!(self, Self::Http(error) if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
+        self.status() == Some(reqwest::StatusCode::UNAUTHORIZED)
+    }
+
+    /// Whether the answer was that what was asked for is not there.
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing(_)) || self.status() == Some(reqwest::StatusCode::NOT_FOUND)
+    }
+
+    fn status(&self) -> Option<reqwest::StatusCode> {
+        match self {
+            Self::Http(error) => error.status(),
+            _ => None,
+        }
     }
 }

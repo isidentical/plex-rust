@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
 use crate::ui::player::input::Key;
-use crate::ui::shell::{Link, Snapshot, Subject, Tweaks};
+use crate::ui::shell::{Failure, Link, Snapshot, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
@@ -39,7 +39,8 @@ usage: plex-rust
                small, wide, marker
          tweaks: narrow, hover, link, season, scroll=<points>,
                  across=<points>, unwatched,
-                 sort=title|added|released|rating|watched
+                 sort=title|added|released|rating|watched,
+                 fault=unanswered|signed-out|missing|no-server|other
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
@@ -129,6 +130,11 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             Some(("sort", "released")) => parsed.listing.sort = Sort::ReleaseDate,
             Some(("sort", "rating")) => parsed.listing.sort = Sort::Rating,
             Some(("sort", "watched")) => parsed.listing.sort = Sort::LastWatched,
+            Some(("fault", "unanswered")) => parsed.fault = Some(Failure::Unanswered),
+            Some(("fault", "signed-out")) => parsed.fault = Some(Failure::SignedOut),
+            Some(("fault", "missing")) => parsed.fault = Some(Failure::Missing),
+            Some(("fault", "no-server")) => parsed.fault = Some(Failure::NoServer),
+            Some(("fault", "other")) => parsed.fault = Some(Failure::Other),
             _ => return Err(Error::Usage(USAGE)),
         }
     }
