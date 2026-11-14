@@ -124,6 +124,9 @@ pub struct Views {
     /// their initials on it.
     monogram: Retained<NSView>,
     initials: Retained<NSTextField>,
+    /// Two grey bars where the captions will be, drawn until the card is
+    /// first given something to show.
+    outline: [Retained<NSView>; 2],
     /// What the card shows, to tell a new look at the same thing from
     /// another thing taking the card over.
     shown: RefCell<Option<Card>>,
@@ -212,6 +215,9 @@ impl PosterItem {
         views.art.set_current(is_current);
         let faceless = matches!(card, Card::Person(person) if person.thumb.is_none());
         views.monogram.setHidden(!faceless);
+        for bar in &views.outline {
+            bar.setHidden(true);
+        }
         let (title, subtitle) = match card {
             Card::Item(item) => {
                 views.art.set_playable(is_playable(item));
@@ -373,7 +379,16 @@ impl Views {
         // The name is right under it.
         initials.setAccessibilityElement(false);
         layout::float(&monogram, &initials);
+        let bar = || {
+            let bar = artwork::layered(main_thread);
+            artwork::fill_with(&bar, &theme::white(theme::ARTWORK_PLACEHOLDER_OPACITY));
+            if let Some(layer) = bar.layer() {
+                layer.setCornerRadius(theme::OUTLINE_BAR_HEIGHT / 2.0);
+            }
+            bar
+        };
         let views = Self {
+            outline: [bar(), bar()],
             monogram,
             initials,
             art: ArtView::new(main_thread, theme::RADIUS_M),
@@ -401,6 +416,17 @@ impl Views {
         layout::cover(art, &self.monogram);
         card.addSubview(title);
         card.addSubview(subtitle);
+        let lines =
+            [(title, theme::OUTLINE_TITLE_WIDTH), (subtitle, theme::OUTLINE_SUBTITLE_WIDTH)];
+        for (bar, (line, width)) in self.outline.iter().zip(lines) {
+            card.addSubview(bar);
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                bar.leadingAnchor().constraintEqualToAnchor(&card.leadingAnchor()),
+                bar.centerYAnchor().constraintEqualToAnchor(&line.centerYAnchor()),
+                bar.widthAnchor().constraintEqualToAnchor_multiplier(&card.widthAnchor(), width),
+                bar.heightAnchor().constraintEqualToConstant(theme::OUTLINE_BAR_HEIGHT),
+            ]));
+        }
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             art.topAnchor().constraintEqualToAnchor(&card.topAnchor()),
             art.leadingAnchor().constraintEqualToAnchor(&card.leadingAnchor()),

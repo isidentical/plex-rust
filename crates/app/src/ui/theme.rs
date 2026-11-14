@@ -134,6 +134,11 @@ pub const ARTWORK_OUTLINE_WIDTH: f64 = 1.0;
 pub const ARTWORK_OUTLINE_OPACITY: f64 = 0.10;
 pub const ARTWORK_HOVER_OUTLINE_OPACITY: f64 = 0.35;
 pub const ARTWORK_PLACEHOLDER_OPACITY: f64 = 0.06;
+/// The bars that stand for the captions of a card not loaded yet, and how
+/// much of the card's width each takes.
+pub const OUTLINE_BAR_HEIGHT: f64 = 8.0;
+pub const OUTLINE_TITLE_WIDTH: f64 = 0.7;
+pub const OUTLINE_SUBTITLE_WIDTH: f64 = 0.35;
 pub const FOCUS_RING_WIDTH: f64 = 3.0;
 /// How far outside the artwork the outer edge of the focus ring is, which
 /// leaves a gap between the two.
