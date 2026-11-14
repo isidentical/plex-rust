@@ -287,7 +287,6 @@ impl Controls {
     /// Places the pieces that come and go by themselves, whether or not
     /// the panes are showing.
     fn place_loose(&self, root: &NSView) {
-        let below_title_bar = root.safeAreaLayoutGuide().topAnchor();
         let (leading, trailing) = (root.leadingAnchor(), root.trailingAnchor());
         self.skip.setHidden(true);
         self.bubble.setHidden(true);
@@ -313,13 +312,14 @@ impl Controls {
                 .trailingAnchor()
                 .constraintEqualToAnchor(&self.skip.trailingAnchor()),
             self.up_next.view().bottomAnchor().constraintEqualToAnchor(&self.skip.bottomAnchor()),
-            // In the middle, where the eyes are, and at the top, where it
-            // covers the least of the picture.
+            // In the middle, where the eyes are, and near the top, where
+            // it covers the least of the picture: under the row of the
+            // title, which in a small window reaches the middle itself.
             self.badge.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
             self.badge
                 .view()
                 .topAnchor()
-                .constraintEqualToAnchor_constant(&below_title_bar, theme::TOP_GAP),
+                .constraintEqualToAnchor_constant(&self.top.bottomAnchor(), theme::TOP_GAP),
             self.bubble_x.clone(),
             self.bubble
                 .bottomAnchor()

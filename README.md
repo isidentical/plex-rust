@@ -65,11 +65,26 @@ last given.
 | R | Normal speed |
 | A | Next audio track |
 | C | Next subtitle track, then off |
-| Return | Skip the intro or credits, or play the next episode once it is offered |
+| Return | Skip the intro or credits, play the next episode once it is offered, or try again after a failure |
 | N | Next episode |
 | P | Start of the episode. Pressed again there, the previous episode |
+| T | Time left, or the full length |
+| Tab, Shift-Tab | Move from button to button. Space or Return presses the one the keyboard is on |
+| Z | Fill the window with the picture, cropping what does not fit, and back |
+| Command-plus, Command-minus | Picture larger and smaller |
+| Command-0 | The whole picture again |
 | F, double click | Full screen |
-| Escape | Leave full screen, then the player |
+| Escape | Turn down the next episode, leave full screen, then the player |
+
+## Fingers in the player
+
+| Gesture | Action |
+| --- | --- |
+| Pinch, on a trackpad or a touch screen | Picture larger and smaller, around the fingers, up to 8 times |
+| Drag on an enlarged picture, or two fingers on a trackpad | Move the picture |
+| Two fingers tapping twice on a trackpad | Fill the window, and back |
+| One finger tapping twice on a touch screen | Fill the window, and back |
+| Tap, click | Pause and resume |
 | Play/Pause media key | Pause and resume |
 | Next and Previous media keys | Next episode, and the start of this one or the one before. In a film they do nothing |
 

@@ -18,6 +18,7 @@ mod theme;
 mod tracks;
 mod upnext;
 mod waiting;
+mod zoom;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -44,12 +45,13 @@ use self::badge::Notice;
 use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
-use self::input::{Clicks, InputView, Key, Press, Scene};
+use self::input::{Clicks, Gesture, InputView, Key, Press, Scene};
 use self::menu::Choice;
 use self::remote::{Command, Playing, Remote};
 use self::slider::{Grip, Pointed};
 use self::speed::Speed;
 use self::surface::Material;
+use self::zoom::Zoom;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::images::Images;
@@ -197,6 +199,10 @@ pub struct Ivars {
     ticks: Cell<u32>,
     /// The file's length, kept for when mpv no longer knows it.
     duration: Cell<Option<Duration>>,
+    /// How far the picture is enlarged and which part of it is in view.
+    /// It is the viewer's for one file, across pauses, jumps and changes
+    /// of the window's size, and starts whole with the next.
+    zoom: Cell<Zoom>,
     /// Where the player last said it was in the file.
     last_position: Cell<Option<Duration>>,
     background: Rc<Background>,
@@ -313,6 +319,7 @@ impl PlayerScreen {
             resting: Cell::new(false),
             ticks: Cell::new(0),
             duration: Cell::new(None),
+            zoom: Cell::new(Zoom::FIT),
             last_position: Cell::new(None),
             background,
             images: Rc::clone(images),
@@ -382,6 +389,7 @@ impl PlayerScreen {
         }
         ivars.player.load(&source)?;
         ivars.phase.set(Phase::Opening);
+        self.set_zoom(Zoom::FIT)?;
         // An episode that takes over from a paused one plays.
         self.set_paused(false)?;
         Ok(())
@@ -552,6 +560,80 @@ impl PlayerScreen {
         if let Some(window) = root.window() {
             window.makeFirstResponder(Some(root));
         }
+    }
+
+    /// Does to the picture what fingers asked for, and says how large it
+    /// now is.
+    fn handle_gesture(&self, gesture: Gesture) -> player::Result<()> {
+        let point = |place: NSPoint| zoom::Point { x: place.x, y: place.y };
+        self.zoom_by(|zoom, view, picture| match gesture {
+            Gesture::Pinch { factor, from, to } => {
+                zoom.pinched(factor, point(from), point(to), view, picture)
+            }
+            Gesture::Pan(by) => {
+                zoom.panned(zoom::Point { x: by.width, y: by.height }, view, picture)
+            }
+            Gesture::Toggle if zoom.is_fit() => Zoom::fill(view, picture),
+            Gesture::Toggle => Zoom::FIT,
+        })?;
+        // A drag changes where, not how large, which is all the badge
+        // has to say.
+        if !matches!(gesture, Gesture::Pan(_)) {
+            self.notify_of_zoom();
+        }
+        Ok(())
+    }
+
+    /// Makes the picture `factor` times the size it is, about the middle
+    /// of the view.
+    fn step_zoom(&self, factor: f64) -> player::Result<()> {
+        let size = self.ivars().root.bounds().size;
+        let middle = NSPoint::new(size.width / 2.0, size.height / 2.0);
+        self.handle_gesture(Gesture::Pinch { factor, from: middle, to: middle })
+    }
+
+    /// Changes the zoom to what `change` makes of it, given the sizes of
+    /// the view and of the picture. Without a picture there is nothing to
+    /// change.
+    fn zoom_by(
+        &self,
+        change: impl FnOnce(Zoom, zoom::Size, zoom::Size) -> Zoom,
+    ) -> player::Result<()> {
+        let ivars = self.ivars();
+        let Some((width, height)) = ivars.player.picture_size()? else {
+            return Ok(());
+        };
+        if ivars.phase.get() != Phase::Playing {
+            return Ok(());
+        }
+        let bounds = ivars.root.bounds().size;
+        let view = zoom::Size { width: bounds.width, height: bounds.height };
+        let zoom = change(ivars.zoom.get(), view, zoom::Size { width, height });
+        if zoom == ivars.zoom.get() {
+            return Ok(());
+        }
+        self.set_zoom(zoom)
+    }
+
+    fn set_zoom(&self, zoom: Zoom) -> player::Result<()> {
+        let ivars = self.ivars();
+        ivars.zoom.set(zoom);
+        ivars.root.set_pannable(!zoom.is_fit());
+        let (doublings, pan) = zoom.for_player();
+        ivars.player.place_picture(doublings, pan, !zoom.is_fit())
+    }
+
+    /// Says how large the picture is.
+    fn notify_of_zoom(&self) {
+        let zoom = self.ivars().zoom.get();
+        let (symbol, text) = if zoom.is_fit() {
+            ("minus.magnifyingglass", "Fit".to_owned())
+        } else {
+            // Two digits: filling a 16 to 9 window with a 1.85 to 1 film
+            // is 1.04 times, which one digit would call no change.
+            ("plus.magnifyingglass", format!("{:.2}\u{d7}", zoom.scale()))
+        };
+        self.notify(&Notice { symbol, text: &text, level: Some(zoom.level()) });
     }
 
     /// Switches the time right of the scrubber between what is left and
@@ -765,8 +847,8 @@ impl PlayerScreen {
 
     /// Connects the keyboard and the mouse to the screen.
     fn listen(&self) {
-        let (keys, pointer, clicks, display) =
-            (Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self));
+        let (keys, pointer, clicks, gestures, fit) =
+            (Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self));
         self.ivars().root.listen(
             move |key, press| keys.load().is_some_and(|screen| screen.act_on(key, press)),
             move |place| {
@@ -786,11 +868,27 @@ impl PlayerScreen {
                         screen.or_log(screen.toggle_pause());
                         screen.toggle_full_screen();
                     }
+                    // A finger has no second pair to tap with, as a
+                    // trackpad has for this, and a screen is where a
+                    // picture gets pinched: there two taps fill the view.
+                    Clicks::DoubleTap => {
+                        screen.or_log(screen.toggle_pause());
+                        screen.or_log(screen.handle_gesture(Gesture::Toggle));
+                    }
+                }
+            },
+            move |gesture| {
+                if let Some(screen) = gestures.load() {
+                    screen.or_log(screen.handle_gesture(gesture));
                 }
             },
             move || {
-                if let Some(screen) = display.load() {
+                if let Some(screen) = fit.load() {
                     screen.fit_to_display();
+                    // In a view of another size the same zoom can leave
+                    // an edge of the picture inside it.
+                    screen
+                        .or_log(screen.zoom_by(|zoom, view, picture| zoom.kept_in(view, picture)));
                 }
             },
         );
@@ -850,7 +948,12 @@ impl PlayerScreen {
         // the picture each time the viewer nudges the speed.
         let reveals = !matches!(
             key,
-            Key::Up | Key::Down | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f')
+            Key::Up
+                | Key::Down
+                | Key::ZoomIn
+                | Key::ZoomOut
+                | Key::ZoomFit
+                | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z')
         );
         let is_episode = self.item().kind == Kind::Episode;
         let result = match key {
@@ -869,6 +972,15 @@ impl PlayerScreen {
             Key::Character('c') => self.next_track(TrackKind::Subtitles),
             Key::Return => self.skip_marker(),
             Key::Character('t') => self.switch_time_shown(),
+            Key::Character('z') => self.handle_gesture(Gesture::Toggle),
+            Key::ZoomIn => self.step_zoom(theme::ZOOM_STEP),
+            Key::ZoomOut => self.step_zoom(1.0 / theme::ZOOM_STEP),
+            Key::ZoomFit => self.set_zoom(Zoom::FIT).map(|()| self.notify_of_zoom()),
+            Key::Scene(Scene::Pinch) => {
+                let size = self.ivars().root.bounds().size;
+                let at = NSPoint::new(size.width * 0.75, size.height * 0.75);
+                self.handle_gesture(Gesture::Pinch { factor: 2.0, from: at, to: at })
+            }
             Key::Tab | Key::BackTab => {
                 self.move_focus(key == Key::Tab);
                 return true;

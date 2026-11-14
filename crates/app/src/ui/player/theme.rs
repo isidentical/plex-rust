@@ -124,6 +124,9 @@ pub const FAILURE_TITLE_FONT_SIZE: f64 = 17.0;
 pub const FAILURE_TEXT_WIDTH: f64 = 380.0;
 pub const FAILURE_REASON_LINES: isize = 3;
 
+/// How much larger one press of Command-plus makes the picture.
+pub const ZOOM_STEP: f64 = 1.25;
+
 /// Seconds the controls take to appear. Short, so that they feel instant.
 pub const FADE_IN: f64 = 0.12;
 /// Seconds they take to go away.

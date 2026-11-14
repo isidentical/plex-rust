@@ -420,6 +420,45 @@ impl Player {
         self.set_string("target-trc", transfer)
     }
 
+    /// The width and height the picture is meant to be shown at, in its
+    /// own pixels, with their shape and the way the picture is turned
+    /// taken into account. `None` before the first frame is decoded.
+    pub fn picture_size(&self) -> Result<Option<(f64, f64)>> {
+        let width: Option<f64> = self.number("video-params/dw")?;
+        let height: Option<f64> = self.number("video-params/dh")?;
+        // A film shot with a phone on its side is stored lying down.
+        let quarter_turns: u32 = self.number("video-params/rotate")?.unwrap_or(0) / 90;
+        Ok(width.zip(height).map(|(width, height)| {
+            if quarter_turns % 2 == 1 { (height, width) } else { (width, height) }
+        }))
+    }
+
+    /// Enlarges the picture and moves it in the window, from the next
+    /// frame drawn.
+    ///
+    /// `doublings` is how often the size that fits the window is doubled:
+    /// 0 fits, 1 is twice as large. `right` and `down` move the picture
+    /// from the middle of the window, as fractions of its enlarged width
+    /// and height (`src_dst_split_scaling` in mpv's video/out/aspect.c).
+    ///
+    /// Text subtitles are laid out in the window whatever the picture
+    /// does, as long as they may use its margins, which is mpv's default
+    /// for plain text. `subtitles_in_window` asks the same of subtitles
+    /// that carry their own styling. Subtitles that are images belong to
+    /// the picture and are enlarged with it.
+    pub fn place_picture(
+        &self,
+        doublings: f64,
+        (right, down): (f64, f64),
+        subtitles_in_window: bool,
+    ) -> Result<()> {
+        self.set_string("video-zoom", &doublings.to_string())?;
+        self.set_string("video-pan-x", &right.to_string())?;
+        self.set_string("video-pan-y", &down.to_string())?;
+        let margins = if subtitles_in_window { "yes" } else { "no" };
+        self.set_string("sub-ass-force-margins", margins)
+    }
+
     /// The volume, where 100 is the file's own level.
     pub fn volume(&self) -> Result<f64> {
         Ok(self.number("volume")?.unwrap_or(100.0))
