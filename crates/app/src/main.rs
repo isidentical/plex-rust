@@ -46,7 +46,8 @@ usage: plex-rust
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
-                 unanswered, looking, away
+                 unanswered, looking, away,
+                 contrast, opaque, still (Accessibility settings as if on)
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
@@ -126,6 +127,9 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "narrow" => parsed.narrow = true,
             None if *tweak == "wide" => parsed.wide = true,
             None if *tweak == "collapsed" => parsed.collapsed = true,
+            None if *tweak == "contrast" => parsed.asked.more_contrast = true,
+            None if *tweak == "opaque" => parsed.asked.less_transparency = true,
+            None if *tweak == "still" => parsed.asked.less_motion = true,
             None if *tweak == "hover" => parsed.hover = true,
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),

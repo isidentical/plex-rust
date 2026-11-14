@@ -267,6 +267,8 @@ pub struct Tweaks {
     pub wide: bool,
     /// The sidebar put away.
     pub collapsed: bool,
+    /// Accessibility settings to take the picture under.
+    pub asked: snapshot::Asked,
     /// These keys pressed among the cards, in order.
     pub presses: Vec<Press>,
     /// The pointer over the first item.
@@ -311,6 +313,9 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
     let background = Rc::new(Background::new()?);
 
+    if let Some(snapshot) = &snapshot {
+        snapshot::pretend(snapshot.tweaks.asked);
+    }
     let app = NSApplication::sharedApplication(main_thread);
     // A snapshot is not an app to switch to: it gets no Dock icon.
     app.setActivationPolicy(match snapshot {

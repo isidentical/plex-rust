@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSBitmapImageFileType, NSBitmapImageRep, NSScreen, NSWindow,
@@ -18,12 +19,46 @@ use objc2_app_kit::{
 #[allow(deprecated)]
 use objc2_core_graphics::CGWindowListCreateImage;
 use objc2_core_graphics::{CGRectNull, CGWindowID, CGWindowImageOption, CGWindowListOption};
-use objc2_foundation::{NSDictionary, NSPoint, NSRect};
+use objc2_foundation::{
+    NSArgumentDomain, NSDictionary, NSNumber, NSPoint, NSRect, NSString, NSUserDefaults, ns_string,
+};
 
 use crate::error::{Error, Result};
 
 /// How far past the last display the window is put.
 const CLEARANCE: f64 = 1000.0;
+
+/// What the viewer can ask of the display in the system's Accessibility
+/// settings, for a snapshot to be taken as if they had.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Asked {
+    pub more_contrast: bool,
+    pub less_transparency: bool,
+    pub less_motion: bool,
+}
+
+/// Has this process, and nothing else on the Mac, find the settings in
+/// `asked` switched on. They are read from the user's defaults, where what
+/// a process was launched with ranks above what the user has set. Must run
+/// before anything reads them, which is before there is an application.
+pub fn pretend(asked: Asked) {
+    let settings = [
+        (ns_string!("increaseContrast"), asked.more_contrast),
+        (ns_string!("reduceTransparency"), asked.less_transparency),
+        (ns_string!("reduceMotion"), asked.less_motion),
+    ];
+    let on: Vec<&NSString> =
+        settings.iter().filter(|(_, wanted)| *wanted).map(|(key, _)| *key).collect();
+    let yes = NSNumber::new_bool(true);
+    let values: Vec<&AnyObject> = on.iter().map(|_| -> &AnyObject { &yes }).collect();
+    let arguments = NSDictionary::from_slices(&on, &values);
+    // SAFETY: a domain holds property list values, which a number is, and
+    // the name is a constant that Foundation provides.
+    unsafe {
+        NSUserDefaults::standardUserDefaults()
+            .setVolatileDomain_forName(&arguments, NSArgumentDomain);
+    }
+}
 
 define_class!(
     // SAFETY: NSWindow is designed to be subclassed, and `Staged` does not
