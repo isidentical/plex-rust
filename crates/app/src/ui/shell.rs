@@ -23,7 +23,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{Listing, Page};
-use plex::model::{Hub, Item, Kind, RatingKey, Section};
+use plex::model::{Colors, Hub, Item, Kind, RatingKey, Section};
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
@@ -1329,7 +1329,24 @@ impl Shell {
             "Nothing to watch yet",
             "What you are in the middle of and what your server has just added will be here.",
         );
-        let hero = Hero::new(self.main_thread, Rc::clone(&session.images), self.actions());
+        let (background, server, main_thread) =
+            (Rc::clone(&self.background), session.server.clone(), self.main_thread);
+        let colours = move |picture: String, then: Box<dyn FnOnce(Colors)>| {
+            let server = server.clone();
+            // The colours of a picture never change, so those kept from
+            // last time are as good as the server's.
+            let ask = async move {
+                match server.remembered().colors_of(&picture).await {
+                    Ok(colours) => Ok(colours),
+                    Err(_) => server.colors_of(&picture).await,
+                }
+            };
+            background.run(main_thread, ask, move |colours| match colours {
+                Ok(colours) => then(colours),
+                Err(error) => eprintln!("plex-rust: {}", with_causes(&error)),
+            });
+        };
+        let hero = Hero::new(self.main_thread, Rc::clone(&session.images), colours, self.actions());
         let header = Header { view: hero.view().retain(), height: theme::HOME_HERO_HEIGHT };
         let posters = self.posters(session, Some(header), outlines, nothing, || {});
         posters.fit_header_to_page(theme::HOME_HERO_HEIGHT_PER_WIDTH, theme::HOME_HERO_MOST);

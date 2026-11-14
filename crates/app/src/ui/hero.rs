@@ -20,7 +20,7 @@ use objc2_quartz_core::{
     CAAutoresizingMask, CAGradientLayer, CAMediaTiming, CATransaction, CATransition,
     kCACornerCurveContinuous, kCATransitionFade,
 };
-use plex::model::{Item, Kind, Rgb};
+use plex::model::{Colors, Item, Kind, Rgb};
 
 use super::artwork::{self, ArtView};
 use super::backdrop;
@@ -47,6 +47,10 @@ pub fn features(shelves: &[Shelf]) -> Vec<Item> {
     };
     first.cards.iter().take(PAGES).map_while(|card| card.item().cloned()).collect()
 }
+
+/// Asks the server for the colours of the picture at a path, and calls
+/// back with them on the main thread if it answers.
+pub type AskColours = dyn Fn(String, Box<dyn FnOnce(Colors)>);
 
 pub struct Hero(Rc<Views>);
 
@@ -84,6 +88,10 @@ struct Views {
     items: RefCell<Vec<Item>>,
     /// Which of the items is shown.
     at: Cell<usize>,
+    /// The colours of pictures shown with items they do not belong to,
+    /// by the path of the picture, as far as the server has said.
+    tones: RefCell<Vec<(String, Rgb)>>,
+    ask_colours: Box<AskColours>,
     images: Rc<Images>,
     on_action: Box<dyn Fn(Action)>,
     /// Kept because a button does not retain its target.
@@ -97,6 +105,7 @@ impl Hero {
     pub fn new(
         main_thread: MainThreadMarker,
         images: Rc<Images>,
+        ask_colours: impl Fn(String, Box<dyn FnOnce(Colors)>) + 'static,
         on_action: impl Fn(Action) + 'static,
     ) -> Self {
         let views = Rc::new_cyclic(|this: &Weak<Views>| {
@@ -110,7 +119,7 @@ impl Hero {
                     }
                 }
             };
-            Views::new(main_thread, images, Box::new(on_action), this, with)
+            Views::new(main_thread, images, Box::new(ask_colours), Box::new(on_action), this, with)
         });
         views.place();
         views.show_item(false);
@@ -174,6 +183,7 @@ impl Hero {
         let at = was.and_then(|was| items.iter().position(|item| item.rating_key == was));
         views.at.set(at.unwrap_or(0));
         views.items.replace(items);
+        views.ask_tones();
         views.show_item(false);
     }
 }
@@ -182,6 +192,7 @@ impl Views {
     fn new<H: Fn() + 'static>(
         main_thread: MainThreadMarker,
         images: Rc<Images>,
+        ask_colours: Box<AskColours>,
         on_action: Box<dyn Fn(Action)>,
         this: &Weak<Self>,
         with: impl Fn(fn(&Self)) -> H,
@@ -281,6 +292,8 @@ impl Views {
             dots,
             items: RefCell::new(Vec::new()),
             at: Cell::new(0),
+            tones: RefCell::new(Vec::new()),
+            ask_colours,
             images,
             on_action,
             _pressed: pressed,
@@ -463,18 +476,11 @@ impl Views {
         self.card.set_live(item.is_some());
         self.card.setHidden(item.is_none());
         self.art.view().setHidden(item.is_none());
-        self.paint(item.and_then(|item| item.colors).map(|colors| colors.bottom_left));
+        self.paint(item.and_then(|item| self.colour_of(item)));
         let Some(item) = item else {
             return;
         };
-
-        // An episode's own picture is a frame of it, which may give the
-        // episode away. Its show's backdrop does not.
-        let art = match item.kind {
-            Kind::Episode => item.grandparent_art.as_deref().or(item.art.as_deref()),
-            _ => item.art.as_deref(),
-        };
-        self.art.show(art.or(item.thumb.as_deref()), theme::HOME_HERO_REQUEST, &self.images);
+        self.art.show(art_of(item), theme::HOME_HERO_REQUEST, &self.images);
 
         let title = match item.kind {
             Kind::Episode => item.grandparent_title.as_deref().unwrap_or(&item.title),
@@ -504,6 +510,60 @@ impl Views {
                 artwork::fill_with(&mark, &theme::white(opacity));
             }
         }
+    }
+
+    /// The colour the banner has for `item`. The colours an episode
+    /// carries are those of its own frame, which is not the picture
+    /// shown: beside its show's backdrop the banner takes the colour of
+    /// that backdrop, once the server has said what it is.
+    fn colour_of(&self, item: &Item) -> Option<Rgb> {
+        let Some(picture) = borrowed_art(item) else {
+            return item.colors.map(|colors| colors.bottom_left);
+        };
+        let tones = self.tones.borrow();
+        tones.iter().find(|(path, _)| path == picture).map(|(_, tone)| *tone)
+    }
+
+    /// Asks for the colours of every borrowed picture among the items
+    /// that the server has not given yet, so that each is there by the
+    /// time the viewer turns to its item.
+    fn ask_tones(self: &Rc<Self>) {
+        let mut pictures: Vec<String> =
+            self.items.borrow().iter().filter_map(borrowed_art).map(str::to_owned).collect();
+        pictures.dedup();
+        pictures.retain(|picture| !self.tones.borrow().iter().any(|(path, _)| path == picture));
+        for picture in pictures {
+            let (views, path) = (Rc::downgrade(self), picture.clone());
+            (self.ask_colours)(
+                picture,
+                Box::new(move |colours| {
+                    if let Some(views) = views.upgrade() {
+                        views.take_tone(path, colours.bottom_left);
+                    }
+                }),
+            );
+        }
+    }
+
+    /// Hears the colour of the picture at `path`, and repaints the banner
+    /// if that is the picture on screen.
+    fn take_tone(&self, path: String, tone: Rgb) {
+        let on_screen = {
+            let items = self.items.borrow();
+            items.get(self.at.get()).and_then(borrowed_art) == Some(path.as_str())
+        };
+        self.tones.borrow_mut().push((path, tone));
+        if !on_screen {
+            return;
+        }
+        if let (false, Some(layer)) = (theme::reduces_motion(), self.banner.layer()) {
+            let fade = CATransition::new();
+            // SAFETY: the type is a constant that Core Animation provides.
+            fade.setType(unsafe { kCATransitionFade });
+            fade.setDuration(theme::MOTION_ARRIVE);
+            layer.addAnimation_forKey(&fade, Some(ns_string!("tone")));
+        }
+        self.paint(Some(tone));
     }
 
     /// Paints the banner in `colour`, darkened until white text reads on it,
@@ -546,6 +606,23 @@ impl Views {
         width.setActive(true);
         self.fill_width.replace(Some(width));
     }
+}
+
+/// The picture the hero shows for `item`. An episode's own picture is a
+/// frame of it, which may give the episode away. Its show's backdrop does
+/// not.
+fn art_of(item: &Item) -> Option<&str> {
+    let art = match item.kind {
+        Kind::Episode => item.grandparent_art.as_deref().or(item.art.as_deref()),
+        _ => item.art.as_deref(),
+    };
+    art.or(item.thumb.as_deref())
+}
+
+/// The picture shown for `item` when it is another's, which the item's
+/// own colours do not go with.
+fn borrowed_art(item: &Item) -> Option<&str> {
+    item.grandparent_art.as_deref().filter(|_| item.kind == Kind::Episode)
 }
 
 /// The line under the title: which episode it is, or for a film its year,

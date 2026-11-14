@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Hub, Item, Kind, RatingKey, Role, Section, Tag};
+use crate::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section, Tag};
 use crate::server::MediaServer;
 
 /// One page of a longer list.
@@ -122,6 +122,13 @@ struct RawHub {
     items: Vec<serde_json::Value>,
 }
 
+/// The colours of one picture.
+#[derive(Deserialize)]
+struct Tones {
+    #[serde(rename = "UltraBlurColors")]
+    colors: [Colors; 1],
+}
+
 impl MediaServer {
     /// The movie and TV libraries, in the server's order.
     pub async fn sections(&self) -> Result<Vec<Section>> {
@@ -202,6 +209,16 @@ impl MediaServer {
         let path = format!("/hubs/metadata/{key}/related");
         let hubs: Hubs = self.get(&path, &[("count", &count.to_string())]).await?;
         video_hubs(hubs, &path)
+    }
+
+    /// The four corner colours of the picture at server path `picture`,
+    /// as an item carries them for its own artwork. For a picture shown
+    /// with an item it does not belong to, such as a show's backdrop
+    /// behind one of its episodes.
+    pub async fn colors_of(&self, picture: &str) -> Result<Colors> {
+        let Tones { colors: [colors] } =
+            self.get("/services/ultrablur/colors", &[("url", picture)]).await?;
+        Ok(colors)
     }
 
     /// The seasons of a show, or the episodes of a season.
@@ -392,6 +409,12 @@ mod tests {
         let hubs = video_hubs(fixture!("related"), "/hubs/metadata/370/related").unwrap();
         assert_eq!(hubs[0].identifier, "movie.similar");
         assert_eq!(hubs[0].more.as_deref(), Some("/library/metadata/370/similar"));
+    }
+
+    #[test]
+    fn the_colours_of_a_picture_decode() {
+        let Tones { colors: [colors] } = fixture!("colors");
+        assert_eq!(colors.bottom_left, Rgb { red: 0x23, green: 0x52, blue: 0xb8 });
     }
 
     #[test]
