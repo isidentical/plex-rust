@@ -29,7 +29,7 @@ use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
 use super::poster;
-use super::posters::{Action, Shelf};
+use super::posters::{Action, HeaderKeys, Press, Shelf};
 use super::text;
 use super::theme;
 use crate::images::Images;
@@ -57,6 +57,8 @@ pub struct Hero(Rc<Views>);
 
 struct Views {
     view: Retained<NSView>,
+    /// Drawn around the card while the keyboard is on it.
+    ring: Retained<NSView>,
     /// Clipped to rounded corners, and painted in the colour of the item.
     card: Retained<HoverView>,
     art: ArtView,
@@ -117,6 +119,37 @@ impl Hero {
 
     pub fn view(&self) -> &NSView {
         &self.0.view
+    }
+
+    /// What the hero does with the keyboard once the arrow keys reach it:
+    /// Left and Right go from item to item, and Return plays the one
+    /// shown, or opens it when it is not something to play.
+    pub fn keys(&self) -> HeaderKeys {
+        let (focused, pressed) = (Rc::downgrade(&self.0), Rc::downgrade(&self.0));
+        HeaderKeys {
+            focus: Box::new(move |focused_now| {
+                let views = focused.upgrade();
+                let takes = views.as_ref().is_some_and(|views| !views.items.borrow().is_empty());
+                if let Some(views) = views {
+                    views.ring.setHidden(!(focused_now && takes));
+                }
+                takes
+            }),
+            press: Box::new(move |press| {
+                let Some(views) = pressed.upgrade() else {
+                    return;
+                };
+                match press {
+                    Press::Left => views.turn(-1),
+                    Press::Right => views.turn(1),
+                    Press::Return => views.act(|item| match poster::is_playable(&item) {
+                        true => Action::Play(item),
+                        false => Action::Open(item),
+                    }),
+                    Press::Up | Press::Down => {}
+                }
+            }),
+        }
     }
 
     /// Shows the first of `items`, or the one that was on screen if it is
@@ -207,8 +240,19 @@ impl Views {
         stops.push(&on);
         let pager = pager(&stops, main_thread);
 
+        let ring = artwork::layered(main_thread);
+        ring.setHidden(true);
+        if let Some(layer) = ring.layer() {
+            layer.setBorderWidth(theme::FOCUS_RING_WIDTH);
+            layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
+            layer.setCornerRadius(theme::RADIUS_L + theme::FOCUS_RING_OUTSET);
+            // SAFETY: the curve is a constant that Core Animation provides.
+            unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
+        }
+
         Self {
             view: NSView::new(main_thread),
+            ring,
             card,
             art,
             shade: artwork::layered(main_thread),
@@ -236,8 +280,14 @@ impl Views {
     fn place(&self) {
         let (view, card, art, overlay) = (&self.view, &self.card, self.art.view(), &self.overlay);
         view.addSubview(card);
+        view.addSubview(&self.ring);
+        let (ring, outset) = (&self.ring, theme::FOCUS_RING_OUTSET);
         let margin = theme::PAGE_MARGIN;
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            ring.leadingAnchor().constraintEqualToAnchor_constant(&card.leadingAnchor(), -outset),
+            ring.trailingAnchor().constraintEqualToAnchor_constant(&card.trailingAnchor(), outset),
+            ring.topAnchor().constraintEqualToAnchor_constant(&card.topAnchor(), -outset),
+            ring.bottomAnchor().constraintEqualToAnchor_constant(&card.bottomAnchor(), outset),
             card.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
             card.trailingAnchor().constraintEqualToAnchor_constant(&view.trailingAnchor(), -margin),
             card.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),

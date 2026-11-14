@@ -126,6 +126,18 @@ impl Press {
         }
     }
 
+    /// The key an event with this code is. Space does what Return does.
+    fn coded(code: u16) -> Option<Self> {
+        match code {
+            KEY_LEFT => Some(Self::Left),
+            KEY_RIGHT => Some(Self::Right),
+            KEY_UP => Some(Self::Up),
+            KEY_DOWN => Some(Self::Down),
+            KEY_RETURN | KEY_SPACE => Some(Self::Return),
+            _ => None,
+        }
+    }
+
     /// The key as an event carries it: its code and the character it types.
     fn code_and_character(self) -> (u16, u32) {
         match self {
@@ -145,6 +157,17 @@ pub type OnAction = dyn Fn(Action);
 pub struct Header {
     pub view: Retained<NSView>,
     pub height: f64,
+}
+
+/// What a header does with the keyboard, for one that the arrow keys can
+/// reach from the cards under it.
+pub struct HeaderKeys {
+    /// Told that the keyboard came onto the header or left it. Answers
+    /// whether the header took it: one with nothing to show does not.
+    pub focus: Box<dyn Fn(bool) -> bool>,
+    /// Hears each key pressed while the keyboard is on the header, but
+    /// for Down, which leaves it.
+    pub press: Box<dyn Fn(Press)>,
 }
 
 /// How the height of a header follows the page.
@@ -252,6 +275,9 @@ pub struct Ivars {
     /// was last given.
     header_fit: Cell<Option<HeaderFit>>,
     header_height: Cell<f64>,
+    header_keys: OnceCell<HeaderKeys>,
+    /// Whether the keyboard is on the header, not on a card.
+    in_header: Cell<bool>,
 }
 
 define_class!(
@@ -330,6 +356,7 @@ define_class!(
             let (Some(click), Some(index_path)) = (click, index_paths.anyObject()) else {
                 return;
             };
+            self.leave_header();
             // SAFETY: the sender is optional.
             unsafe { collection.deselectAll(None) };
             let on_play = collection
@@ -451,6 +478,8 @@ impl Posters {
             menu_item: RefCell::new(None),
             header_fit: Cell::new(None),
             header_height: Cell::new(0.0),
+            header_keys: OnceCell::new(),
+            in_header: Cell::new(false),
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let posters: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -475,6 +504,13 @@ impl Posters {
     /// its proportions as the window grows without taking the page over.
     pub fn fit_header_to_page(&self, per_width: f64, most: f64) {
         self.ivars().header_fit.set(Some(HeaderFit { per_width, most }));
+    }
+
+    /// Lets the arrow keys reach the header: Up from the first shelf puts
+    /// the keyboard on it, and Down brings it back to the cards.
+    pub fn set_header_keys(&self, keys: HeaderKeys) {
+        // Cannot matter if it fails: the first answer stands.
+        let _ = self.ivars().header_keys.set(keys);
     }
 
     /// Gives a header that follows the page the height the page now calls
@@ -808,23 +844,72 @@ impl Posters {
     /// Return and Space open the card the keyboard is on. An arrow key
     /// pressed while it is on none puts it on the first card in view:
     /// the collection view only ever moves a selection it already has.
+    /// Up from the first shelf, or from nowhere, goes to a header that
+    /// takes keys, which then hears them until Down comes back.
     fn key_pressed(&self, event: &NSEvent) -> bool {
+        let Some(press) = Press::coded(event.keyCode()) else {
+            return false;
+        };
         let collection = &self.ivars().collection;
         let selected = collection.selectionIndexPaths().anyObject();
-        match (event.keyCode(), selected) {
-            (KEY_RETURN | KEY_SPACE, Some(index_path)) => self.open(&index_path, false),
-            (KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN, None) => {
-                let Some(first) = first_visible(collection) else {
-                    return false;
-                };
-                collection.selectItemsAtIndexPaths_scrollPosition(
-                    &NSSet::from_retained_slice(&[first]),
-                    NSCollectionViewScrollPosition::NearestVerticalEdge,
-                );
+        if self.ivars().in_header.get() {
+            match (press, self.ivars().header_keys.get()) {
+                (Press::Down, _) | (_, None) => {
+                    self.leave_header();
+                    self.select_first_visible();
+                }
+                (press, Some(keys)) => (keys.press)(press),
             }
-            _ => return false,
+            return true;
+        }
+        match (press, selected) {
+            (Press::Return, Some(index_path)) => self.open(&index_path, false),
+            (Press::Up, selected)
+                if selected.as_deref().is_none_or(|at| self.is_under_header(at))
+                    && self.enter_header() => {}
+            (Press::Return, None) | (_, Some(_)) => return false,
+            (_, None) => self.select_first_visible(),
         }
         true
+    }
+
+    /// Whether nothing but the header is above the card at `index_path`.
+    fn is_under_header(&self, index_path: &NSIndexPath) -> bool {
+        let (shelf, _) = position(index_path);
+        let style = self.ivars().content.borrow().style(shelf);
+        shelf == 0 && matches!(style, Some(Style::Shelf(_)))
+    }
+
+    /// Puts the keyboard on the header, if it takes keys and has
+    /// something to show. Says whether it did.
+    fn enter_header(&self) -> bool {
+        let ivars = self.ivars();
+        if !ivars.header_keys.get().is_some_and(|keys| (keys.focus)(true)) {
+            return false;
+        }
+        ivars.in_header.set(true);
+        // SAFETY: the sender is optional.
+        unsafe { ivars.collection.deselectAll(None) };
+        self.scroll_to_top();
+        true
+    }
+
+    fn leave_header(&self) {
+        if let (true, Some(keys)) =
+            (self.ivars().in_header.replace(false), self.ivars().header_keys.get())
+        {
+            (keys.focus)(false);
+        }
+    }
+
+    fn select_first_visible(&self) {
+        let collection = &self.ivars().collection;
+        if let Some(first) = first_visible(collection) {
+            collection.selectItemsAtIndexPaths_scrollPosition(
+                &NSSet::from_retained_slice(&[first]),
+                NSCollectionViewScrollPosition::NearestVerticalEdge,
+            );
+        }
     }
 
     /// The menu for a secondary click at the place of `event`.

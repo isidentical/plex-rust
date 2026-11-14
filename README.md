@@ -36,6 +36,9 @@ open target/plex-rust.app
 | --- | --- |
 | Arrows | Move from item to item |
 | Return, Space | Open the item the keyboard is on |
+| Up, from Home's first shelf | Onto the large item at the top |
+| Left, Right, on that item | The item before and after it |
+| Return, on that item | Play or resume it |
 | Return on an item's page | Play or resume it |
 | Command-[ and Command-] | Back and forward |
 | Command-1, Command-2, ... | Home and the libraries |
