@@ -17,10 +17,13 @@ use plex::model::RatingKey;
 
 use crate::error::{Error, Result};
 use crate::progress::Progress;
+use crate::ui::shell::Subject;
 
 const USAGE: &str = "\
 usage: reel
-       reel snapshot <png-path>
+       reel snapshot home <png-path>
+       reel snapshot library <index> <png-path>
+       reel snapshot item <rating-key> <png-path>
        reel login
        reel servers [<address>]
        reel api <path>
@@ -43,7 +46,14 @@ fn main() -> ExitCode {
 fn run(args: &[&str]) -> Result<()> {
     match args {
         [] => ui::shell::run(None),
-        ["snapshot", path] => ui::shell::run(Some(path.into())),
+        ["snapshot", "home", path] => ui::shell::run(Some((Subject::Home, path.into()))),
+        ["snapshot", "library", index, path] => {
+            let index = index.parse().map_err(|_| Error::Usage(USAGE))?;
+            ui::shell::run(Some((Subject::Library(index), path.into())))
+        }
+        ["snapshot", "item", key, path] => {
+            ui::shell::run(Some((Subject::Item((*key).to_owned()), path.into())))
+        }
         ["login"] => account::login(),
         ["servers"] => servers(None),
         ["servers", address] => servers(Some(address)),

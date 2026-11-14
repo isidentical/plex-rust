@@ -151,12 +151,13 @@ impl Sidebar {
         &self.ivars().scroll
     }
 
-    /// Replaces the list and selects its first entry.
-    pub fn show(&self, destinations: Vec<Destination>) {
+    /// Replaces the list and selects the entry at `selected`.
+    pub fn show(&self, destinations: Vec<Destination>, selected: usize) {
         *self.ivars().destinations.borrow_mut() = destinations;
         let table = &self.ivars().table;
         table.reloadData();
-        table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(0), false);
+        let selected = NSIndexSet::indexSetWithIndex(selected);
+        table.selectRowIndexes_byExtendingSelection(&selected, false);
     }
 }
 

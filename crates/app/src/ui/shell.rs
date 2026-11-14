@@ -1,6 +1,6 @@
 //! The main window: sidebar on the left, the chosen place on the right.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -14,10 +14,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSString, ns_string};
 use plex::MediaServer;
-use plex::model::Section;
+use plex::model::{Item, Kind, RatingKey, Section};
 
-use super::home::Home;
+use super::detail::Detail;
 use super::layout;
+use super::poster::Shape;
+use super::posters::{Arrangement, Posters, Shelf};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::theme;
@@ -28,6 +30,13 @@ use crate::images::Images;
 
 /// How many items each shelf of the home screen starts with.
 const SHELF_LENGTH: u32 = 20;
+
+/// How many items of a library are fetched at a time.
+const PAGE_SIZE: u32 = 100;
+
+/// How long a snapshot waits after the window has its content, so that
+/// work started by showing it, such as loading artwork, can finish.
+const SNAPSHOT_SETTLE: Duration = Duration::from_secs(3);
 
 struct Shell {
     main_thread: MainThreadMarker,
@@ -40,23 +49,45 @@ struct Shell {
     sidebar: OnceCell<Retained<Sidebar>>,
     /// Set once the server has answered.
     session: OnceCell<Session>,
+    /// What the content area shows. Held here because views do not keep
+    /// their data sources and button targets alive.
+    place: RefCell<Place>,
+    /// Where Back on a detail page returns to.
+    destination: RefCell<Destination>,
 }
 
 /// What exists only while connected to a server.
 struct Session {
     server: MediaServer,
-    home: Retained<Home>,
+    images: Rc<Images>,
 }
 
-/// How long a snapshot waits after the window has its content, so that
-/// work started by showing it, such as loading artwork, can finish.
-const SNAPSHOT_SETTLE: Duration = Duration::from_secs(3);
+enum Place {
+    Message,
+    Posters(Retained<Posters>),
+    Detail(
+        #[expect(
+            dead_code,
+            reason = "held only to keep the page and its button target alive"
+        )]
+        Retained<Detail>,
+    ),
+}
+
+/// What a snapshot shows.
+pub enum Subject {
+    Home,
+    /// The library at this position in the sidebar, counting from zero.
+    Library(usize),
+    /// The detail page of the item with this rating key.
+    Item(String),
+}
 
 /// Opens the main window and runs the app until it quits.
 ///
-/// With `snapshot`, the window stays off screen: once it has loaded, its
-/// content is saved to that path as a PNG and the app exits.
-pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
+/// With `snapshot`, the window stays off screen: once the subject has
+/// loaded, the window is saved to the path as a PNG and the app exits.
+pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
     let (client, token) = account::signed_in()?;
@@ -67,9 +98,8 @@ pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
     app.setMainMenu(Some(&main_menu(main_thread)));
     // A film library looks right on dark, whatever the system is set to.
     // SAFETY: the name is a constant that AppKit provides.
-    app.setAppearance(
-        NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).as_deref(),
-    );
+    let dark = unsafe { NSAppearanceNameDarkAqua };
+    app.setAppearance(NSAppearance::appearanceNamed(dark).as_deref());
 
     let shell = Shell::new(main_thread, Rc::clone(&background));
     if snapshot.is_none() {
@@ -86,20 +116,21 @@ pub fn run(snapshot: Option<PathBuf>) -> Result<()> {
         Ok::<_, Error>((server, sections))
     };
     let loaded = Rc::clone(&shell);
-    let settle = Rc::clone(&background);
     background.run(main_thread, connect, move |result| {
-        match result {
-            Ok((server, sections)) => {
-                if let Err(error) = loaded.connected(server, sections) {
-                    loaded.show_message(&with_causes(&error));
-                }
-            }
-            Err(error) => loaded.show_message(&with_causes(&error)),
+        let connected = result.and_then(|(server, sections)| {
+            let subject = snapshot.as_ref().map(|(subject, _)| subject);
+            loaded.connected(server, sections, subject)
+        });
+        if let Err(error) = connected {
+            loaded.show_message(&with_causes(&error));
         }
-        if let Some(path) = snapshot {
+        if let Some((_, path)) = snapshot {
             // A timer can only be created on the runtime's own threads.
             let wait = async { tokio::time::sleep(SNAPSHOT_SETTLE).await };
-            settle.run(main_thread, wait, move |()| loaded.snapshot_and_exit(&path));
+            let shell = Rc::clone(&loaded);
+            loaded
+                .background
+                .run(main_thread, wait, move |()| shell.snapshot_and_exit(&path));
         }
     });
 
@@ -119,6 +150,8 @@ impl Shell {
             content,
             sidebar: OnceCell::new(),
             session: OnceCell::new(),
+            place: RefCell::new(Place::Message),
+            destination: RefCell::new(Destination::Home),
         });
 
         let selected = Rc::downgrade(&shell);
@@ -148,48 +181,177 @@ impl Shell {
         shell
     }
 
-    fn connected(self: &Rc<Self>, server: MediaServer, sections: Vec<Section>) -> Result<()> {
+    fn connected(
+        self: &Rc<Self>,
+        server: MediaServer,
+        sections: Vec<Section>,
+        subject: Option<&Subject>,
+    ) -> Result<()> {
         let images = Images::new(
             self.main_thread,
             Rc::clone(&self.background),
             server.clone(),
         )?;
-        let home = Home::new(self.main_thread, Rc::new(images));
         // Cannot fail: the server is connected to once per launch.
-        let _ = self.session.set(Session { server, home });
-        self.show_destinations(sections);
+        let _ = self.session.set(Session {
+            server,
+            images: Rc::new(images),
+        });
+
+        let mut destinations = vec![Destination::Home];
+        destinations.extend(sections.into_iter().map(Destination::Section));
+        destinations.push(Destination::Downloads);
+        let first = match subject {
+            // Libraries follow Home in the sidebar.
+            Some(Subject::Library(index)) => index + 1,
+            _ => 0,
+        };
+        if let Some(sidebar) = self.sidebar.get() {
+            // Selecting a row is what shows its place.
+            sidebar.show(destinations, first);
+        }
+        if let Some(Subject::Item(key)) = subject {
+            self.open_key(RatingKey::new(key.as_str()));
+        }
         Ok(())
     }
 
+    /// Shows a place from the sidebar.
     fn go_to(self: &Rc<Self>, destination: &Destination) {
-        match (destination, self.session.get()) {
-            (Destination::Home, Some(session)) => self.show_home(session),
-            _ => self.show_message(destination.title()),
+        *self.destination.borrow_mut() = destination.clone();
+        let Some(session) = self.session.get() else {
+            return;
+        };
+        match destination {
+            Destination::Home => self.show_home(session),
+            Destination::Section(section) => self.show_library(session, section),
+            Destination::Downloads => self.show_message("Downloads are not built yet"),
         }
     }
 
     fn show_home(self: &Rc<Self>, session: &Session) {
-        layout::fill(&self.content, session.home.view());
-
+        let posters = self.posters(session, Arrangement::Shelves, || {});
         let server = session.server.clone();
-        let shell = Rc::clone(self);
         let load = async move { server.home(SHELF_LENGTH).await };
-        self.background.run(self.main_thread, load, move |hubs| {
-            match (hubs, shell.session.get()) {
-                (Ok(hubs), Some(session)) => session.home.show(hubs),
-                (Err(error), _) => shell.show_message(&with_causes(&error)),
-                (Ok(_), None) => {}
-            }
-        });
+        let shell = Rc::clone(self);
+        self.background
+            .run(self.main_thread, load, move |hubs| match hubs {
+                Ok(hubs) => posters.show(
+                    hubs.into_iter()
+                        .map(|hub| Shelf {
+                            title: hub.title,
+                            items: hub.items,
+                        })
+                        .collect(),
+                ),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            });
     }
 
-    fn show_destinations(&self, sections: Vec<Section>) {
-        let mut destinations = vec![Destination::Home];
-        destinations.extend(sections.into_iter().map(Destination::Section));
-        destinations.push(Destination::Downloads);
-        if let Some(sidebar) = self.sidebar.get() {
-            sidebar.show(destinations);
+    fn show_library(self: &Rc<Self>, session: &Session, section: &Section) {
+        let more = Rc::downgrade(self);
+        let more_of = section.clone();
+        let posters = self.posters(session, Arrangement::Grid(Shape::Poster), move || {
+            if let Some(shell) = more.upgrade() {
+                shell.load_page(&more_of);
+            }
+        });
+        posters.show(vec![Shelf {
+            title: String::new(),
+            items: Vec::new(),
+        }]);
+        self.load_page(section);
+    }
+
+    /// Fetches the next page of `section` into the grid on screen.
+    fn load_page(self: &Rc<Self>, section: &Section) {
+        let (Some(session), Place::Posters(posters)) = (self.session.get(), &*self.place.borrow())
+        else {
+            return;
+        };
+        let posters = posters.clone();
+        let start = u32::try_from(posters.len()).unwrap_or(u32::MAX);
+        let (server, section) = (session.server.clone(), section.clone());
+        let load = async move { server.section_items(&section, start, PAGE_SIZE).await };
+        let shell = Rc::clone(self);
+        self.background
+            .run(self.main_thread, load, move |page| match page {
+                Ok(page) => posters.append(page.items),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            });
+    }
+
+    /// Puts a new, empty collection in the content area.
+    fn posters(
+        self: &Rc<Self>,
+        session: &Session,
+        arrangement: Arrangement,
+        on_near_end: impl Fn() + 'static,
+    ) -> Retained<Posters> {
+        let opened = Rc::downgrade(self);
+        let on_open = move |item: &Item| {
+            if let Some(shell) = opened.upgrade() {
+                shell.open(item);
+            }
+        };
+        let images = Rc::clone(&session.images);
+        let posters = Posters::new(self.main_thread, images, arrangement, on_open, on_near_end);
+        layout::fill(&self.content, posters.view());
+        *self.place.borrow_mut() = Place::Posters(posters.clone());
+        posters
+    }
+
+    /// Shows the detail page of `item`.
+    fn open(self: &Rc<Self>, item: &Item) {
+        let Some(session) = self.session.get() else {
+            return;
+        };
+        let (opened, back) = (Rc::downgrade(self), Rc::downgrade(self));
+        let detail = Detail::new(
+            self.main_thread,
+            item,
+            &session.images,
+            move |child| {
+                if let Some(shell) = opened.upgrade() {
+                    shell.open(child);
+                }
+            },
+            move || {
+                if let Some(shell) = back.upgrade() {
+                    let destination = shell.destination.borrow().clone();
+                    shell.go_to(&destination);
+                }
+            },
+        );
+        layout::fill(&self.content, detail.view());
+        *self.place.borrow_mut() = Place::Detail(detail.clone());
+
+        if !matches!(item.kind, Kind::Show | Kind::Season) {
+            return;
         }
+        let (server, key) = (session.server.clone(), item.rating_key.clone());
+        let load = async move { server.children(&key).await };
+        let shell = Rc::clone(self);
+        self.background
+            .run(self.main_thread, load, move |children| match children {
+                Ok(children) => detail.show_children(children),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            });
+    }
+
+    /// Fetches the item with `key` and shows its detail page.
+    fn open_key(self: &Rc<Self>, key: RatingKey) {
+        let Some(session) = self.session.get() else {
+            return;
+        };
+        let server = session.server.clone();
+        let load = async move { server.item(&key).await };
+        let shell = Rc::clone(self);
+        self.background
+            .run(self.main_thread, load, move |item| match item {
+                Ok(item) => shell.open(&item),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            });
     }
 
     fn snapshot_and_exit(&self, path: &Path) {
@@ -219,6 +381,7 @@ impl Shell {
     fn show_message(&self, message: &str) {
         let label = NSTextField::labelWithString(&NSString::from_str(message), self.main_thread);
         layout::center(&self.content, &label);
+        *self.place.borrow_mut() = Place::Message;
     }
 }
 

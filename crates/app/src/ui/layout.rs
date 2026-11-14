@@ -3,7 +3,8 @@
 use objc2_app_kit::{NSLayoutConstraint, NSView};
 use objc2_foundation::NSArray;
 
-/// Makes `child` the only content of `parent`, filling it edge to edge.
+/// Makes `child` the only content of `parent`, filling it up to the title
+/// bar.
 pub fn fill(parent: &NSView, child: &NSView) {
     replace_content(parent, child);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
@@ -15,7 +16,7 @@ pub fn fill(parent: &NSView, child: &NSView) {
             .constraintEqualToAnchor(&parent.trailingAnchor()),
         child
             .topAnchor()
-            .constraintEqualToAnchor(&parent.topAnchor()),
+            .constraintEqualToAnchor(&parent.safeAreaLayoutGuide().topAnchor()),
         child
             .bottomAnchor()
             .constraintEqualToAnchor(&parent.bottomAnchor()),

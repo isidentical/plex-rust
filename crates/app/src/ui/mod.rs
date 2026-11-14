@@ -1,8 +1,9 @@
 //! The windows and views.
 
-mod home;
+mod detail;
 mod layout;
 mod poster;
+mod posters;
 pub mod shell;
 mod sidebar;
 mod snapshot;
