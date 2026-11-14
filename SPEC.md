@@ -437,8 +437,22 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
   to it so Downloads works with no server. Those files are the only record
   of a download.
 - Offline playback hands mpv the local path. Position is stored next to the
-  file and sent as one timeline call with `offline=1` when the server is
-  next reached.
+  file, when there is no server and whenever the server does not take a
+  report, and sent as one timeline call with `state=stopped` and
+  `offline=1` when the server is next reached.
+  - `offline` is in Plex's OpenAPI spec 1.2.3 for `POST /:/timeline`, as an
+    integer that is 0 or 1: "Also used by sync clients, used to indicate
+    that a timeline is being synced from being offline, as opposed to being
+    \"live\"" [V]. What the server does differently on seeing it is not
+    written there, and was not tried: it would have meant a write to the
+    real server [U].
+  - The same spec has `updated` next to it, an integer: "Used when a sync
+    client comes online and is syncing media timelines, holds the time at
+    which the playback state was last updated" [V]. It gives no unit, and
+    its example, 14200000, reads as neither seconds nor milliseconds since
+    1970. It is not sent, so the server takes the viewing to have ended
+    when it hears of it. python-plexapi's `updateTimeline` sends neither
+    parameter [V].
 
 ## 10. Packaging: one self-contained app
 
