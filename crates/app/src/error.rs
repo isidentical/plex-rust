@@ -23,6 +23,9 @@ pub enum Error {
     #[error("the async runtime did not start: {0}")]
     Runtime(std::io::Error),
 
+    #[error("this account has no Plex Media Server")]
+    NoServer,
+
     #[error("not signed in, run `reel login` first")]
     SignedOut,
 

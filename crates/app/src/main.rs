@@ -13,6 +13,7 @@ use crate::error::Result;
 const USAGE: &str = "\
 usage: reel login
        reel servers [<address>]
+       reel api <path>
        reel play <file-or-url> [--report-after <seconds>]";
 
 fn main() -> ExitCode {
@@ -33,6 +34,7 @@ fn run(args: &[&str]) -> Result<()> {
         ["login"] => account::login(),
         ["servers"] => servers(None),
         ["servers", address] => servers(Some(address)),
+        ["api", path] => api(path),
         ["play", source] => Ok(play::run(source, None)?),
         ["play", source, "--report-after", seconds] => {
             let seconds = seconds.parse().map_err(|_| error::Error::Usage(USAGE))?;
@@ -53,6 +55,18 @@ fn servers(manual: Option<&str>) -> Result<()> {
                 Err(error) => println!("{error}"),
             }
         }
+        Ok(())
+    })
+}
+
+/// Prints the first server's raw response for `path`, such as `/hubs`.
+fn api(path: &str) -> Result<()> {
+    let (client, token) = account::signed_in()?;
+    runtime()?.block_on(async {
+        let servers = plex::discovery::servers(&client, &token).await?;
+        let server = servers.first().ok_or(error::Error::NoServer)?;
+        let server = plex::MediaServer::connect(&client, server, None).await?;
+        println!("{}", server.get_text(path).await?);
         Ok(())
     })
 }
