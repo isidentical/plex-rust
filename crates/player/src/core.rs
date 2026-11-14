@@ -467,6 +467,18 @@ impl Player {
     ///
     /// SDR output is sRGB. HDR output keeps the picture's own gamut and
     /// uses the PQ curve, into which HLG pictures are converted.
+    ///
+    /// `target-peak` stays at `auto`, which for PQ is the curve's own
+    /// 10000 nits (`pass_colormanage` in mpv's video/out/gpu/video.c), so
+    /// mpv never finds the picture brighter than the target and hands its
+    /// values on as they are (`pass_color_map` in video_shaders.c maps
+    /// tones only then). Fitting them to the display is left to macOS,
+    /// which does it for a layer whose colour space is PQ (CALayer.h, at
+    /// `wantsExtendedDynamicRangeContent`), and which alone knows how far
+    /// above SDR white the display can go at this moment: `NSScreen`
+    /// gives that as a multiple of SDR white, which moves with the
+    /// brightness setting, and gives no nits to set a peak from. A peak
+    /// set here would have the tones mapped twice.
     pub fn set_output_colors(&self, colors: Colors) -> Result<()> {
         let (primaries, transfer) = match colors {
             Colors::Sdr => ("bt.709", "srgb"),

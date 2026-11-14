@@ -131,6 +131,8 @@ impl VideoLayer {
             renderer,
             waker,
             layer: OnceLock::new(),
+            output: Mutex::new(None),
+            owes_a_draw: AtomicBool::new(false),
             cadence: Mutex::new(Cadence::default()),
             idle_refreshes: AtomicU32::new(0),
             ticks: AtomicU64::new(0),
@@ -183,11 +185,28 @@ impl VideoLayer {
     ///
     /// This follows IINA, which drives the same mpv renderer through the
     /// same kind of layer.
+    ///
+    /// mpv waits for the first frame of a file to be shown before it
+    /// answers anything (`vo_wait_frame` in `write_video`, mpv's
+    /// player/video.c), so the colours cannot be asked for before that
+    /// frame is due. The frame clock takes it without drawing it, and
+    /// draws it once the output is right for it. Drawn first and matched
+    /// after, it went out through shaders built for SDR, which took 26 ms
+    /// to build and were built again for HDR.
     pub fn match_video(&self, player: &Player, display_has_headroom: bool) -> player::Result<()> {
-        let Some(video) = player.video_colors()? else {
+        let pace = &self.ivars().pace;
+        let video = player.video_colors()?;
+        let output = video.map(|video| if display_has_headroom { video } else { Colors::Sdr });
+        if pace.output() == output {
+            return Ok(());
+        }
+        // From here on the clock draws nothing: with no picture there is
+        // nothing to draw, and what a picture is drawn as is about to
+        // change.
+        pace.set_output(None);
+        let Some(output) = output else {
             return Ok(());
         };
-        let output = if display_has_headroom { video } else { Colors::Sdr };
         // SAFETY: the names are constants that Core Graphics provides.
         let name = unsafe {
             match output {
@@ -198,7 +217,15 @@ impl VideoLayer {
         };
         self.setWantsExtendedDynamicRangeContent(output != Colors::Sdr);
         self.setColorspace(CGColorSpace::with_name(Some(name)).as_deref());
-        player.set_output_colors(output)
+        // The clock sends each frame to the screen in a transaction of its
+        // own thread. Left to the end of this turn of the main run loop,
+        // the layer's new colour space could get there after a frame drawn
+        // for it.
+        CATransaction::flush();
+        player.set_output_colors(output)?;
+        pace.set_output(Some(output));
+        pace.waker.wake();
+        Ok(())
     }
 
     /// Starts the frame clock on a display link from `view`, which hosts
@@ -284,6 +311,12 @@ struct Pace {
     waker: Arc<Waker>,
     /// Filled in once the layer exists.
     layer: OnceLock<LayerRef>,
+    /// What the layer and the player are set up to show. `None` until the
+    /// colours of the picture are known, and while they are being changed.
+    output: Mutex<Option<Colors>>,
+    /// Whether a frame was taken from mpv without being drawn, because
+    /// `output` was not known, and is still to be drawn.
+    owes_a_draw: AtomicBool,
     cadence: Mutex<Cadence>,
     /// Refreshes in a row at which mpv held nothing out.
     idle_refreshes: AtomicU32,
@@ -298,27 +331,50 @@ struct Pace {
 }
 
 impl Pace {
+    fn output(&self) -> Option<Colors> {
+        *self.output.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_output(&self, output: Option<Colors>) {
+        *self.output.lock().unwrap_or_else(PoisonError::into_inner) = output;
+    }
+
     /// Draws what is due at `refresh`, if anything. Called on the frame
     /// clock's thread ahead of every refresh. Returns whether the clock
     /// should go on ticking: not once mpv has had nothing for a while.
     fn tick(&self, refresh: Refresh) -> bool {
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        let due = match self.renderer.pending() {
-            Pending::Nothing => {
-                return self.idle_refreshes.fetch_add(1, Ordering::AcqRel) + 1 < IDLE_REFRESHES;
+        let pending = self.renderer.pending();
+        if self.output().is_none() {
+            if pending == Pending::Nothing {
+                return self.idle();
             }
-            Pending::Now => None,
+            // A frame that the layer is not set up for is taken at once,
+            // whenever it is due: mpv answers nothing until it is rid of
+            // it. It is drawn when the layer is ready.
+            self.skip();
+            self.owes_a_draw.store(true, Ordering::Release);
+            return true;
+        }
+        let owed = self.owes_a_draw.load(Ordering::Acquire);
+        let due = match pending {
+            Pending::Nothing if !owed => return self.idle(),
+            Pending::Nothing | Pending::Now => None,
             Pending::Due(due) => Some(due),
         };
         self.idle_refreshes.store(0, Ordering::Release);
         let mut cadence = self.cadence.lock().unwrap_or_else(PoisonError::into_inner);
-        if due.is_some_and(|due| !cadence.is_time(due, refresh)) {
+        // A draw that is owed does not wait for the time of the frame that
+        // came after: the screen has no picture yet.
+        let in_time = due.is_none_or(|due| cadence.is_time(due, refresh));
+        if !in_time && !owed {
             return true;
         }
         let Some(layer) = self.layer.get().and_then(|layer| layer.0.load()) else {
             return true;
         };
 
+        self.owes_a_draw.store(false, Ordering::Release);
         self.drew.store(false, Ordering::Release);
         self.drawing_for.store(refresh.at.nanos(), Ordering::Release);
         // The transaction is what sends the drawn frame to the screen:
@@ -330,15 +386,31 @@ impl Pace {
 
         // Core Animation does not draw a layer nobody can see. mpv still
         // has to be rid of the frame (IINA does the same, issue #5025).
-        if !self.drew.load(Ordering::Acquire)
-            && let Err(error) = self.renderer.skip()
-        {
-            eprintln!("plex-rust: {error}");
+        if !self.drew.load(Ordering::Acquire) {
+            self.skip();
         }
-        if let Some(due) = due {
+        if let Some(due) = due.filter(|_| in_time) {
             cadence.shown(due, refresh);
         }
         true
+    }
+
+    /// Counts a refresh with nothing to do. Returns whether the clock
+    /// should go on ticking.
+    fn idle(&self) -> bool {
+        self.idle_refreshes.fetch_add(1, Ordering::AcqRel) + 1 < IDLE_REFRESHES
+    }
+
+    fn skip(&self) {
+        if let Err(error) = self.renderer.skip() {
+            eprintln!("plex-rust: {error}");
+        }
+    }
+
+    /// Whether a tick would find something to draw or to take.
+    fn has_work(&self) -> bool {
+        let owed = self.owes_a_draw.load(Ordering::Acquire) && self.output().is_some();
+        owed || self.renderer.pending() != Pending::Nothing
     }
 
     /// Pauses `link`, unless a frame turned up meanwhile. Called on the
@@ -347,7 +419,7 @@ impl Pace {
         link.setPaused(true);
         self.idle_refreshes.store(0, Ordering::Release);
         self.waker.ticking.store(false, Ordering::Release);
-        if self.renderer.pending() != Pending::Nothing {
+        if self.has_work() {
             self.waker.wake();
         }
     }
