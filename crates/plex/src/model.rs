@@ -47,6 +47,8 @@ pub enum Kind {
     Show,
     Season,
     Episode,
+    /// A trailer or other extra of a film.
+    Clip,
     /// Music, photos and everything else plex-rust does not show.
     #[serde(other)]
     Other,
@@ -69,8 +71,9 @@ pub struct Hub {
     /// A stable name for the row, such as `home.continue`.
     pub identifier: String,
     pub items: Vec<Item>,
-    /// Whether the server has more items for this row than it returned.
-    pub more: bool,
+    /// Server path of the whole list, when the server has more items for
+    /// this row than it returned.
+    pub more: Option<String>,
 }
 
 /// A movie, show, season or episode.
@@ -141,7 +144,19 @@ pub struct Item {
     pub directors: Vec<Tag>,
     /// The cast, most prominent first.
     #[serde(rename = "Role", default)]
-    pub roles: Vec<Tag>,
+    pub roles: Vec<Role>,
+    /// Trailers and the like. Only present when the item was fetched with
+    /// [`MediaServer::item`].
+    ///
+    /// [`MediaServer::item`]: crate::MediaServer::item
+    #[serde(rename = "Extras", default)]
+    pub extras: Extras,
+    /// The library it is in, as in `/library/sections/{id}`. Only present
+    /// when the item was fetched with [`MediaServer::item`].
+    ///
+    /// [`MediaServer::item`]: crate::MediaServer::item
+    #[serde(rename = "librarySectionID")]
+    pub library_section_id: Option<u32>,
 }
 
 impl Item {
@@ -194,8 +209,9 @@ pub struct Part {
     pub id: u64,
     /// Server path of the original file.
     pub key: String,
-    /// Size in bytes.
-    pub size: u64,
+    /// Size in bytes. Absent for a trailer, which the server passes on
+    /// from plex.tv and holds no file for.
+    pub size: Option<u64>,
     /// Only present when the item was fetched with [`MediaServer::item`].
     ///
     /// [`MediaServer::item`]: crate::MediaServer::item
@@ -276,10 +292,32 @@ pub enum MarkerKind {
     Other,
 }
 
-/// A name attached to an item: a genre, a director, a cast member.
+/// A name attached to an item: a genre, a director.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tag {
     pub tag: String,
+}
+
+/// A member of the cast.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Role {
+    /// The server's number for the person, which its `actor` filter takes.
+    /// Only present when the item was fetched in full.
+    pub id: Option<u64>,
+    /// The person's name.
+    pub tag: String,
+    /// Who they play.
+    pub role: Option<String>,
+    /// Address of a photo. Unlike other artwork this is a whole URL, on
+    /// plex.tv, which the server's image endpoint fetches and scales too.
+    pub thumb: Option<String>,
+}
+
+/// The extras of an item, wrapped the way the server sends them.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Extras {
+    #[serde(rename = "Metadata", default)]
+    pub items: Vec<Item>,
 }
 
 /// Four colours taken from an item's artwork, one per corner. Plex's own

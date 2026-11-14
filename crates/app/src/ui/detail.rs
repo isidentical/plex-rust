@@ -269,7 +269,7 @@ impl Detail {
         let item = self.ivars().item.borrow().clone()?;
         match item.kind {
             Kind::Show => next_up(&self.ivars().episodes.borrow()).cloned(),
-            Kind::Movie | Kind::Episode => Some(item),
+            Kind::Movie | Kind::Episode | Kind::Clip => Some(item),
             Kind::Season | Kind::Other => None,
         }
     }
@@ -563,7 +563,8 @@ fn credits(item: &Item) -> String {
         lines.push(format!("Directed by {}", names(&item.directors, CAST_SHOWN).join(", ")));
     }
     if !item.roles.is_empty() {
-        lines.push(format!("Starring {}", names(&item.roles, CAST_SHOWN).join(", ")));
+        let cast: Vec<&str> = item.roles.iter().take(CAST_SHOWN).map(|role| &*role.tag).collect();
+        lines.push(format!("Starring {}", cast.join(", ")));
     }
     lines.join("\n")
 }

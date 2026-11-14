@@ -1,0 +1,364 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "allowSync": true,
+    "identifier": "com.plexapp.plugins.library",
+    "librarySectionID": 1,
+    "librarySectionTitle": "Librarysectiontitle",
+    "librarySectionUUID": "Librarysectionuuid",
+    "Hub": [
+      {
+        "hubKey": "/library/metadata/369,334,93,60,391,417,280,332,99,217,94,85",
+        "key": "/library/metadata/370/similar",
+        "title": "Title",
+        "type": "movie",
+        "hubIdentifier": "movie.similar",
+        "context": "hub.movie.similar",
+        "size": 12,
+        "more": true,
+        "style": "shelf",
+        "Metadata": [
+          {
+            "ratingKey": "369",
+            "key": "/library/metadata/369",
+            "guid": "Guid",
+            "slug": "Slug",
+            "studio": "Studio",
+            "type": "movie",
+            "title": "Title",
+            "librarySectionTitle": "Librarysectiontitle",
+            "librarySectionID": 1,
+            "librarySectionKey": "Librarysectionkey",
+            "originalTitle": "Originaltitle",
+            "contentRating": "PG-13",
+            "contentRatingAge": 11,
+            "summary": "Summary",
+            "rating": 5.1,
+            "audienceRating": 8.6,
+            "viewCount": 1,
+            "lastViewedAt": 1672359240,
+            "year": 2019,
+            "tagline": "Tagline",
+            "thumb": "/library/metadata/369/thumb/1792356774",
+            "art": "/library/metadata/369/art/1792356774",
+            "duration": 8513300,
+            "originallyAvailableAt": "2000-01-01",
+            "addedAt": 1792356774,
+            "updatedAt": 1792356774,
+            "audienceRatingImage": "Audienceratingimage",
+            "loudnessAnalysisVersion": "Loudnessanalysisversion",
+            "primaryExtraKey": "Primaryextrakey",
+            "ratingImage": "Ratingimage",
+            "Media": [
+              {
+                "id": 948,
+                "duration": 8513300,
+                "bitrate": 6649,
+                "width": 3840,
+                "height": 1608,
+                "aspectRatio": 2.35,
+                "audioChannels": 6,
+                "audioCodec": "aac",
+                "videoCodec": "hevc",
+                "videoResolution": "4k",
+                "container": "mkv",
+                "videoFrameRate": "Videoframerate",
+                "videoProfile": "Videoprofile",
+                "hasVoiceActivity": false,
+                "Part": [
+                  {
+                    "id": 948,
+                    "key": "/library/parts/948/1668707482/file.mkv",
+                    "duration": 8513300,
+                    "file": "File",
+                    "size": 7075226877,
+                    "container": "mkv",
+                    "videoProfile": "Videoprofile",
+                    "Stream": [
+                      {
+                        "id": 2051,
+                        "streamType": 1,
+                        "default": true,
+                        "codec": "hevc",
+                        "index": 0,
+                        "bitrate": 6649,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "bitDepth": 10,
+                        "chromaLocation": "Chromalocation",
+                        "chromaSubsampling": "Chromasubsampling",
+                        "codedHeight": 1608,
+                        "codedWidth": 3840,
+                        "colorRange": "Colorrange",
+                        "frameRate": 23.976,
+                        "height": 1608,
+                        "level": 150,
+                        "profile": "Profile",
+                        "refFrames": 1,
+                        "width": 3840,
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      },
+                      {
+                        "id": 2052,
+                        "streamType": 2,
+                        "canNormalizeLoudness": true,
+                        "selected": true,
+                        "default": true,
+                        "codec": "aac",
+                        "index": 1,
+                        "channels": 6,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "gainOffset": "Gainoffset",
+                        "loudness": "Loudness",
+                        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+                        "lra": "Lra",
+                        "peak": "Peak",
+                        "samplingRate": 48000,
+                        "threshold": "Threshold",
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      },
+                      {
+                        "id": 2053,
+                        "streamType": 3,
+                        "canAutoSync": false,
+                        "selected": true,
+                        "default": true,
+                        "codec": "srt",
+                        "index": 2,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "title": "Title",
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "UltraBlurColors": {
+              "topLeft": "133048",
+              "topRight": "863841",
+              "bottomRight": "306090",
+              "bottomLeft": "255174"
+            },
+            "Genre": [
+              {
+                "id": 7,
+                "filter": "genre=1",
+                "tag": "Tag"
+              },
+              {
+                "id": 6,
+                "filter": "genre=1",
+                "tag": "Tag"
+              }
+            ],
+            "Director": [
+              {
+                "id": 2148,
+                "filter": "director=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              }
+            ],
+            "Role": [
+              {
+                "id": 808,
+                "filter": "actor=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "role": "Role",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              },
+              {
+                "id": 807,
+                "filter": "actor=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "role": "Role",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              }
+            ]
+          },
+          {
+            "ratingKey": "334",
+            "key": "/library/metadata/334",
+            "guid": "Guid",
+            "slug": "Slug",
+            "studio": "Studio",
+            "type": "movie",
+            "title": "Title",
+            "librarySectionTitle": "Librarysectiontitle",
+            "librarySectionID": 1,
+            "librarySectionKey": "Librarysectionkey",
+            "contentRating": "PG-13",
+            "contentRatingAge": 10,
+            "summary": "Summary",
+            "rating": 9.1,
+            "audienceRating": 4.1,
+            "viewCount": 1,
+            "lastViewedAt": 1671831136,
+            "year": 2017,
+            "tagline": "Tagline",
+            "thumb": "/library/metadata/334/thumb/1792356774",
+            "art": "/library/metadata/334/art/1792356774",
+            "duration": 9111708,
+            "originallyAvailableAt": "2000-01-01",
+            "addedAt": 1792356774,
+            "updatedAt": 1792356774,
+            "audienceRatingImage": "Audienceratingimage",
+            "loudnessAnalysisVersion": "Loudnessanalysisversion",
+            "primaryExtraKey": "Primaryextrakey",
+            "ratingImage": "Ratingimage",
+            "Media": [
+              {
+                "id": 859,
+                "duration": 9111708,
+                "bitrate": 6442,
+                "width": 3840,
+                "height": 1608,
+                "aspectRatio": 2.35,
+                "audioChannels": 6,
+                "audioCodec": "aac",
+                "videoCodec": "hevc",
+                "videoResolution": "4k",
+                "container": "mkv",
+                "videoFrameRate": "Videoframerate",
+                "videoProfile": "Videoprofile",
+                "hasVoiceActivity": false,
+                "Part": [
+                  {
+                    "id": 859,
+                    "key": "/library/parts/859/1668707488/file.mkv",
+                    "duration": 9111708,
+                    "file": "File",
+                    "size": 7337070512,
+                    "container": "mkv",
+                    "videoProfile": "Videoprofile",
+                    "Stream": [
+                      {
+                        "id": 2019,
+                        "streamType": 1,
+                        "default": true,
+                        "codec": "hevc",
+                        "index": 0,
+                        "bitrate": 6442,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "bitDepth": 10,
+                        "chromaLocation": "Chromalocation",
+                        "chromaSubsampling": "Chromasubsampling",
+                        "codedHeight": 1608,
+                        "codedWidth": 3840,
+                        "colorRange": "Colorrange",
+                        "frameRate": 23.976,
+                        "height": 1608,
+                        "level": 150,
+                        "profile": "Profile",
+                        "refFrames": 1,
+                        "width": 3840,
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      },
+                      {
+                        "id": 2020,
+                        "streamType": 2,
+                        "canNormalizeLoudness": true,
+                        "selected": true,
+                        "default": true,
+                        "codec": "aac",
+                        "index": 1,
+                        "channels": 6,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "gainOffset": "Gainoffset",
+                        "loudness": "Loudness",
+                        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+                        "lra": "Lra",
+                        "peak": "Peak",
+                        "samplingRate": 48000,
+                        "threshold": "Threshold",
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      },
+                      {
+                        "id": 2021,
+                        "streamType": 3,
+                        "canAutoSync": false,
+                        "selected": true,
+                        "default": true,
+                        "codec": "srt",
+                        "index": 2,
+                        "language": "Language",
+                        "languageTag": "Languagetag",
+                        "languageCode": "Languagecode",
+                        "title": "Title",
+                        "displayTitle": "Displaytitle",
+                        "extendedDisplayTitle": "Extendeddisplaytitle"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "UltraBlurColors": {
+              "topLeft": "3d0407",
+              "topRight": "501816",
+              "bottomRight": "34030b",
+              "bottomLeft": "210506"
+            },
+            "Genre": [
+              {
+                "id": 7,
+                "filter": "genre=1",
+                "tag": "Tag"
+              },
+              {
+                "id": 6,
+                "filter": "genre=1",
+                "tag": "Tag"
+              }
+            ],
+            "Director": [
+              {
+                "id": 2056,
+                "filter": "director=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              }
+            ],
+            "Role": [
+              {
+                "id": 807,
+                "filter": "actor=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "role": "Role",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              },
+              {
+                "id": 808,
+                "filter": "actor=1",
+                "tag": "Tag",
+                "tagKey": "Tagkey",
+                "role": "Role",
+                "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

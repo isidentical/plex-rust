@@ -1410,7 +1410,7 @@ mod tests {
             title: identifier.to_owned(),
             identifier: identifier.to_owned(),
             items: vec![item.unwrap()],
-            more: false,
+            more: None,
         }
     }
 

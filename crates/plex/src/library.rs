@@ -109,6 +109,8 @@ struct RawHub {
     kind: String,
     #[serde(default)]
     more: bool,
+    /// The path of the whole list.
+    key: Option<String>,
     #[serde(rename = "Metadata", default)]
     items: Vec<serde_json::Value>,
 }
@@ -116,21 +118,21 @@ struct RawHub {
 impl MediaServer {
     /// The movie and TV libraries, in the server's order.
     pub async fn sections(&self) -> Result<Vec<Section>> {
-        let Sections { sections } = self.get("/library/sections/all", "", &[]).await?;
+        let Sections { sections } = self.get("/library/sections/all", &[]).await?;
         let shown = |section: &Section| matches!(section.kind, Kind::Movie | Kind::Show);
         Ok(sections.into_iter().filter(shown).collect())
     }
 
     /// The rows of the home screen, each with up to `count` items.
     pub async fn home(&self, count: u32) -> Result<Vec<Hub>> {
-        let hubs: Hubs = self.get("/hubs", "", &[("count", &count.to_string())]).await?;
+        let hubs: Hubs = self.get("/hubs", &[("count", &count.to_string())]).await?;
         video_hubs(hubs, "/hubs")
     }
 
     /// Results for `query`, one row per kind of item, up to `limit` each.
     pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<Hub>> {
         let query = [("query", query), ("limit", &limit.to_string())];
-        let hubs: Hubs = self.get("/hubs/search", "", &query).await?;
+        let hubs: Hubs = self.get("/hubs/search", &query).await?;
         video_hubs(hubs, "/hubs/search")
     }
 
@@ -143,34 +145,61 @@ impl MediaServer {
         start: u32,
         size: u32,
     ) -> Result<Page> {
-        let rest = format!("{}/all", section.key);
+        let path = format!("/library/sections/{}/all", section.key);
+        self.page(&path, &listing.query(section.kind), start, size).await
+    }
+
+    /// `size` items of the list at server path `path`, starting at index
+    /// `start`. For the paths the server hands out itself: the whole of a
+    /// row ([`Hub::more`]) or what a filter selects.
+    pub async fn list(&self, path: &str, start: u32, size: u32) -> Result<Page> {
+        self.page(path, &[], start, size).await
+    }
+
+    async fn page(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        start: u32,
+        size: u32,
+    ) -> Result<Page> {
         let (start, size) = (start.to_string(), size.to_string());
-        let mut query = listing.query(section.kind);
+        let mut query = query.to_vec();
         query.push(("X-Plex-Container-Start", &start));
         query.push(("X-Plex-Container-Size", &size));
-        let Items { items, total_size } = self.get("/library/sections/", &rest, &query).await?;
+        let Items { items, total_size } = self.get(path, &query).await?;
         let total = total_size.unwrap_or_else(|| u32::try_from(items.len()).unwrap_or(u32::MAX));
         Ok(Page { items, total })
     }
 
-    /// One item in full, including its markers and the tracks of its files.
+    /// One item in full, including its markers, its extras and the tracks
+    /// of its files.
     pub async fn item(&self, key: &RatingKey) -> Result<Item> {
-        let Items { items, .. } =
-            self.get("/library/metadata/", key.as_str(), &[("includeMarkers", "1")]).await?;
+        let path = format!("/library/metadata/{key}");
+        let query = [("includeMarkers", "1"), ("includeExtras", "1")];
+        let Items { items, .. } = self.get(&path, &query).await?;
         items.into_iter().next().ok_or_else(|| Error::Missing(key.clone()))
+    }
+
+    /// Rows of items that go with a film or show, such as others like it,
+    /// each with up to `count` items.
+    pub async fn related(&self, key: &RatingKey, count: u32) -> Result<Vec<Hub>> {
+        let path = format!("/hubs/metadata/{key}/related");
+        let hubs: Hubs = self.get(&path, &[("count", &count.to_string())]).await?;
+        video_hubs(hubs, &path)
     }
 
     /// The seasons of a show, or the episodes of a season.
     pub async fn children(&self, key: &RatingKey) -> Result<Vec<Item>> {
-        let rest = format!("{key}/children");
-        let Items { items, .. } = self.get("/library/metadata/", &rest, &[]).await?;
+        let path = format!("/library/metadata/{key}/children");
+        let Items { items, .. } = self.get(&path, &[]).await?;
         Ok(items)
     }
 
     /// Every episode of a show, in order, across all its seasons.
     pub async fn episodes(&self, show: &RatingKey) -> Result<Vec<Item>> {
-        let rest = format!("{show}/allLeaves");
-        let Items { items, .. } = self.get("/library/metadata/", &rest, &[]).await?;
+        let path = format!("/library/metadata/{show}/allLeaves");
+        let Items { items, .. } = self.get(&path, &[]).await?;
         Ok(items)
     }
 }
@@ -191,7 +220,7 @@ pub fn next_up(episodes: &[Item]) -> Option<&Item> {
 }
 
 /// Keeps the rows that hold movies, shows or episodes and decodes them.
-fn video_hubs(hubs: Hubs, path: &'static str) -> Result<Vec<Hub>> {
+fn video_hubs(hubs: Hubs, path: &str) -> Result<Vec<Hub>> {
     const VIDEO: [&str; 5] = ["movie", "show", "season", "episode", "mixed"];
 
     hubs.hubs
@@ -199,8 +228,9 @@ fn video_hubs(hubs: Hubs, path: &'static str) -> Result<Vec<Hub>> {
         .filter(|hub| VIDEO.contains(&hub.kind.as_str()) && !hub.items.is_empty())
         .map(|hub| {
             let items = serde_json::from_value(serde_json::Value::Array(hub.items))
-                .map_err(|source| Error::Shape { path, source })?;
-            Ok(Hub { title: hub.title, identifier: hub.hub_identifier, items, more: hub.more })
+                .map_err(|source| Error::Shape { path: path.to_owned(), source })?;
+            let more = hub.key.filter(|_| hub.more);
+            Ok(Hub { title: hub.title, identifier: hub.hub_identifier, items, more })
         })
         .collect()
 }
@@ -275,6 +305,27 @@ mod tests {
         let kinds: Vec<StreamKind> =
             episode.media[0].parts[0].streams.iter().map(|stream| stream.kind).collect();
         assert_eq!(kinds, [StreamKind::Video, StreamKind::Audio, StreamKind::Subtitle]);
+    }
+
+    #[test]
+    fn a_full_film_has_its_cast_and_its_extras() {
+        let film = fixture!("film" as Items).items.remove(0);
+
+        assert_eq!(film.library_section_id, Some(1));
+        let actor = &film.roles[0];
+        assert!(actor.id.is_some() && actor.role.is_some());
+        assert!(actor.thumb.as_deref().is_some_and(|photo| photo.starts_with("https://")));
+        // A trailer is passed on from plex.tv, so its part has no size.
+        let trailer = &film.extras.items[0];
+        assert_eq!(trailer.kind, Kind::Clip);
+        assert_eq!(trailer.media[0].parts[0].size, None);
+    }
+
+    #[test]
+    fn a_related_row_names_its_whole_list() {
+        let hubs = video_hubs(fixture!("related"), "/hubs/metadata/370/related").unwrap();
+        assert_eq!(hubs[0].identifier, "movie.similar");
+        assert_eq!(hubs[0].more.as_deref(), Some("/library/metadata/370/similar"));
     }
 
     #[test]

@@ -1,0 +1,359 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "allowSync": true,
+    "identifier": "com.plexapp.plugins.library",
+    "librarySectionID": 1,
+    "librarySectionTitle": "Librarysectiontitle",
+    "librarySectionUUID": "Librarysectionuuid",
+    "mediaTagPrefix": "Mediatagprefix",
+    "mediaTagVersion": 1786914632,
+    "Metadata": [
+      {
+        "ratingKey": "370",
+        "key": "/library/metadata/370",
+        "guid": "Guid",
+        "slug": "Slug",
+        "studio": "Studio",
+        "type": "movie",
+        "title": "Title",
+        "librarySectionTitle": "Librarysectiontitle",
+        "librarySectionID": 1,
+        "librarySectionKey": "Librarysectionkey",
+        "contentRating": "PG-13",
+        "contentRatingAge": 10,
+        "summary": "Summary",
+        "rating": 9.3,
+        "audienceRating": 8.4,
+        "viewOffset": 4565000,
+        "viewCount": 1,
+        "lastViewedAt": 1794647818,
+        "year": 2015,
+        "tagline": "Tagline",
+        "thumb": "/library/metadata/370/thumb/1792356775",
+        "art": "/library/metadata/370/art/1792356775",
+        "duration": 8286624,
+        "originallyAvailableAt": "2000-01-01",
+        "addedAt": 1792356774,
+        "updatedAt": 1792356775,
+        "audienceRatingImage": "Audienceratingimage",
+        "chapterSource": "Chaptersource",
+        "loudnessAnalysisVersion": "Loudnessanalysisversion",
+        "primaryExtraKey": "Primaryextrakey",
+        "ratingImage": "Ratingimage",
+        "Media": [
+          {
+            "id": 949,
+            "duration": 8286624,
+            "bitrate": 6593,
+            "width": 3840,
+            "height": 2160,
+            "aspectRatio": 1.78,
+            "audioChannels": 6,
+            "audioCodec": "ac3",
+            "videoCodec": "hevc",
+            "videoResolution": "4k",
+            "container": "mkv",
+            "videoFrameRate": "Videoframerate",
+            "videoProfile": "Videoprofile",
+            "hasVoiceActivity": false,
+            "Part": [
+              {
+                "id": 949,
+                "key": "/library/parts/949/1668707448/file.mkv",
+                "duration": 8286624,
+                "file": "File",
+                "size": 6828818931,
+                "container": "mkv",
+                "hasThumbnail": "Hasthumbnail",
+                "videoProfile": "Videoprofile",
+                "Stream": [
+                  {
+                    "id": 2337,
+                    "streamType": 1,
+                    "default": true,
+                    "codec": "hevc",
+                    "index": 0,
+                    "bitrate": 5953,
+                    "language": "Language",
+                    "languageTag": "Languagetag",
+                    "languageCode": "Languagecode",
+                    "bitDepth": 10,
+                    "chromaLocation": "Chromalocation",
+                    "chromaSubsampling": "Chromasubsampling",
+                    "codedHeight": 2176,
+                    "codedWidth": 3840,
+                    "colorPrimaries": "Colorprimaries",
+                    "colorRange": "Colorrange",
+                    "colorSpace": "Colorspace",
+                    "colorTrc": "Colortrc",
+                    "frameRate": 23.976,
+                    "height": 2160,
+                    "level": 150,
+                    "profile": "Profile",
+                    "refFrames": 1,
+                    "title": "Title",
+                    "width": 3840,
+                    "displayTitle": "Displaytitle",
+                    "extendedDisplayTitle": "Extendeddisplaytitle"
+                  },
+                  {
+                    "id": 2338,
+                    "streamType": 2,
+                    "canNormalizeLoudness": true,
+                    "selected": true,
+                    "codec": "ac3",
+                    "index": 1,
+                    "channels": 6,
+                    "bitrate": 640,
+                    "language": "Language",
+                    "languageTag": "Languagetag",
+                    "languageCode": "Languagecode",
+                    "audioChannelLayout": "Audiochannellayout",
+                    "gainOffset": "Gainoffset",
+                    "loudness": "Loudness",
+                    "loudnessAnalysisVersion": "Loudnessanalysisversion",
+                    "lra": "Lra",
+                    "peak": "Peak",
+                    "samplingRate": 48000,
+                    "threshold": "Threshold",
+                    "title": "Title",
+                    "displayTitle": "Displaytitle",
+                    "extendedDisplayTitle": "Extendeddisplaytitle"
+                  },
+                  {
+                    "id": 2339,
+                    "streamType": 3,
+                    "canAutoSync": false,
+                    "default": true,
+                    "codec": "pgs",
+                    "index": 2,
+                    "language": "Language",
+                    "languageTag": "Languagetag",
+                    "languageCode": "Languagecode",
+                    "title": "Title",
+                    "displayTitle": "Displaytitle",
+                    "extendedDisplayTitle": "Extendeddisplaytitle"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "UltraBlurColors": {
+          "topLeft": "320e03",
+          "topRight": "501e0f",
+          "bottomRight": "4a1404",
+          "bottomLeft": "8d2d05"
+        },
+        "Genre": [
+          {
+            "id": 7,
+            "filter": "genre=1",
+            "tag": "Tag"
+          },
+          {
+            "id": 6,
+            "filter": "genre=1",
+            "tag": "Tag"
+          }
+        ],
+        "Director": [
+          {
+            "id": 2148,
+            "filter": "director=1",
+            "tag": "Tag",
+            "tagKey": "Tagkey",
+            "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+          }
+        ],
+        "Role": [
+          {
+            "id": 2059,
+            "filter": "actor=1",
+            "tag": "Tag",
+            "tagKey": "Tagkey",
+            "role": "Role",
+            "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+          },
+          {
+            "id": 2060,
+            "filter": "actor=1",
+            "tag": "Tag",
+            "tagKey": "Tagkey",
+            "role": "Role",
+            "thumb": "https://metadata-static.plex.tv/people/photo.jpg"
+          }
+        ],
+        "Marker": [
+          {
+            "id": 524,
+            "type": "credits",
+            "startTimeOffset": 7629961,
+            "endTimeOffset": 8257961,
+            "Attributes": {
+              "id": 524,
+              "version": 4
+            }
+          },
+          {
+            "final": true,
+            "id": 524,
+            "type": "credits",
+            "startTimeOffset": 8275961,
+            "endTimeOffset": 8286624,
+            "Attributes": {
+              "id": 524,
+              "version": 4
+            }
+          }
+        ],
+        "Extras": {
+          "size": 7,
+          "Metadata": [
+            {
+              "ratingKey": "419",
+              "key": "/library/metadata/419",
+              "guid": "Guid",
+              "type": "clip",
+              "title": "Title",
+              "summary": "Summary",
+              "index": 1,
+              "year": 2022,
+              "thumb": "/library/metadata/419/thumb/1644438302",
+              "primaryGuid": "Primaryguid",
+              "subtype": "trailer",
+              "duration": 133000,
+              "originallyAvailableAt": "2000-01-01",
+              "addedAt": 1644438302,
+              "extraType": 1,
+              "Media": [
+                {
+                  "id": 1088,
+                  "duration": 133000,
+                  "bitrate": 5000,
+                  "width": 1920,
+                  "height": 800,
+                  "aspectRatio": 2.35,
+                  "audioCodec": "aac",
+                  "videoCodec": "h264",
+                  "videoResolution": "1080",
+                  "container": "mp4",
+                  "optimizedForStreaming": 1,
+                  "protocol": "mp4",
+                  "premium": true,
+                  "hasVoiceActivity": false,
+                  "Part": [
+                    {
+                      "id": 1088,
+                      "duration": 133000,
+                      "container": "mp4",
+                      "key": "/services/iva/assets/1/video.mp4?fmt=4&bitrate=5000",
+                      "Stream": [
+                        {
+                          "id": 2384,
+                          "streamType": 1,
+                          "codec": "h264",
+                          "index": 0,
+                          "bitrate": 5000,
+                          "height": 800,
+                          "width": 1920,
+                          "displayTitle": "Displaytitle",
+                          "extendedDisplayTitle": "Extendeddisplaytitle"
+                        },
+                        {
+                          "id": 2385,
+                          "streamType": 2,
+                          "canNormalizeLoudness": false,
+                          "selected": true,
+                          "codec": "aac",
+                          "index": 1,
+                          "channels": 2,
+                          "language": "Language",
+                          "languageTag": "Languagetag",
+                          "languageCode": "Languagecode",
+                          "displayTitle": "Displaytitle",
+                          "extendedDisplayTitle": "Extendeddisplaytitle"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "ratingKey": "420",
+              "key": "/library/metadata/420",
+              "guid": "Guid",
+              "type": "clip",
+              "title": "Title",
+              "summary": "Summary",
+              "index": 2,
+              "year": 2022,
+              "thumb": "/library/metadata/420/thumb/1644438302",
+              "primaryGuid": "Primaryguid",
+              "subtype": "trailer",
+              "duration": 90000,
+              "originallyAvailableAt": "2000-01-01",
+              "addedAt": 1644438302,
+              "extraType": 1,
+              "Media": [
+                {
+                  "id": 1091,
+                  "duration": 90000,
+                  "bitrate": 5000,
+                  "width": 1920,
+                  "height": 1080,
+                  "aspectRatio": 1.78,
+                  "audioCodec": "aac",
+                  "videoCodec": "h264",
+                  "videoResolution": "1080",
+                  "container": "mp4",
+                  "optimizedForStreaming": 1,
+                  "protocol": "mp4",
+                  "premium": true,
+                  "hasVoiceActivity": false,
+                  "Part": [
+                    {
+                      "id": 1091,
+                      "duration": 90000,
+                      "container": "mp4",
+                      "key": "/services/iva/assets/1/video.mp4?fmt=4&bitrate=5000",
+                      "Stream": [
+                        {
+                          "id": 2390,
+                          "streamType": 1,
+                          "codec": "h264",
+                          "index": 0,
+                          "bitrate": 5000,
+                          "height": 1080,
+                          "width": 1920,
+                          "displayTitle": "Displaytitle",
+                          "extendedDisplayTitle": "Extendeddisplaytitle"
+                        },
+                        {
+                          "id": 2391,
+                          "streamType": 2,
+                          "canNormalizeLoudness": false,
+                          "selected": true,
+                          "codec": "aac",
+                          "index": 1,
+                          "channels": 2,
+                          "language": "Language",
+                          "languageTag": "Languagetag",
+                          "languageCode": "Languagecode",
+                          "displayTitle": "Displaytitle",
+                          "extendedDisplayTitle": "Extendeddisplaytitle"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

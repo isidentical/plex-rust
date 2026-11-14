@@ -87,15 +87,15 @@ impl MediaServer {
         Ok(response.error_for_status()?.text().await?)
     }
 
-    /// Fetches `path` and decodes the contents of its `MediaContainer`.
+    /// Fetches `path`, which may end in a query of its own, with `query`
+    /// added to it, and decodes the contents of its `MediaContainer`.
     pub(crate) async fn get<T: DeserializeOwned>(
         &self,
-        path: &'static str,
-        rest: &str,
+        path: &str,
         query: &[(&str, &str)],
     ) -> Result<T> {
         let file = self.cache.as_deref().map(|directory| {
-            let question = format!("{}{path}{rest}?{query:?}", self.address);
+            let question = format!("{}{path}?{query:?}", self.address);
             directory.join(format!("{:016x}.json", stable_hash(&question)))
         });
 
@@ -105,7 +105,7 @@ impl MediaServer {
             }
             (Answers::Cache, None) => return Err(Error::NotRemembered),
             (Answers::Server, _) => {
-                let request = self.request(Method::GET, &format!("{path}{rest}")).query(query);
+                let request = self.request(Method::GET, path).query(query);
                 let body = request.send().await?.error_for_status()?.text().await?;
                 if let Some(file) = &file {
                     // A failed write only means a slower start next time.
@@ -114,8 +114,8 @@ impl MediaServer {
                 body
             }
         };
-        let envelope: Envelope<T> =
-            serde_json::from_str(&body).map_err(|source| Error::Shape { path, source })?;
+        let envelope: Envelope<T> = serde_json::from_str(&body)
+            .map_err(|source| Error::Shape { path: path.to_owned(), source })?;
         Ok(envelope.media_container)
     }
 

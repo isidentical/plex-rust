@@ -14,8 +14,8 @@ pub enum Error {
     Unreachable { server: String, tried: Vec<String> },
 
     /// The server answered, but not with what its API description promises.
-    #[error("unexpected response from {path}: {source}")]
-    Shape { path: &'static str, source: serde_json::Error },
+    #[error("unexpected response from {path}")]
+    Shape { path: String, source: serde_json::Error },
 
     /// Asked of [`MediaServer::remembered`](crate::MediaServer::remembered)
     /// for something it never kept.
