@@ -3,13 +3,14 @@
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSEvent, NSLayoutAttribute, NSStackView, NSTextField,
+    NSBezierPath, NSColor, NSEvent, NSLayoutAttribute, NSStackView, NSTextAlignment, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString};
 use plex::model::Item;
 
 use super::chip::{Chip, Style};
+use super::controls::{label, medium};
 use super::layout::{add, pin, row};
 use super::theme;
 
@@ -116,9 +117,10 @@ fn name(episode: &Item) -> String {
     }
 }
 
-fn line(main_thread: MainThreadMarker, color: &objc2_app_kit::NSColor) -> Retained<NSTextField> {
-    let line =
-        super::controls::label(main_thread, theme::FONT_SIZE, super::controls::medium(), color);
-    line.setAlignment(objc2_app_kit::NSTextAlignment::Right);
+/// One line of the card's text, set against its right edge like the
+/// buttons under it.
+fn line(main_thread: MainThreadMarker, color: &NSColor) -> Retained<NSTextField> {
+    let line = label(main_thread, theme::FONT_SIZE, medium(), color);
+    line.setAlignment(NSTextAlignment::Right);
     line
 }
