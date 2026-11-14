@@ -284,6 +284,11 @@ enum Unanswered {
     ShowsTheError,
     /// The screen does without. The error is logged.
     GoesWithout,
+    /// The screen was drawn from what the place the viewer came from
+    /// knew, and stands as that, marked as saved. Unless the server says
+    /// that what it shows is gone and nothing of it is `kept_here`, as a
+    /// download: then there is nothing left to do on it.
+    StandsAsDrawn { kept_here: bool },
 }
 
 /// Who is asked for an item that something waits for.
@@ -899,6 +904,7 @@ impl Shell {
         }
         let reason = match Failure::of(error) {
             Failure::Unanswered => Reason::Offline,
+            Failure::Missing => Reason::Gone,
             _ => Reason::Refused,
         };
         self.stale.show(Some(reason));
@@ -1503,13 +1509,27 @@ impl Shell {
         // page at once. The full item follows.
         detail.show(item);
 
+        // A download has the item in full next to its file. Where
+        // nothing was saved of the server's own answer, that stands in
+        // for it, so the page is whole without the server.
+        let download = self.downloads.find(&item.rating_key).map(|entry| entry.download);
+        let kept = download.as_ref().and_then(|download| {
+            let kept = self.downloads.as_left(download);
+            kept.map_err(|error| eprintln!("plex-rust: {}", with_causes(&error))).ok()
+        });
+
         let (shown, key) = (Rc::clone(&detail), item.rating_key.clone());
         let mut loads = vec![self.loader(
             session,
-            Unanswered::ShowsTheError,
+            Unanswered::StandsAsDrawn { kept_here: download.is_some() },
             move |server| {
-                let key = key.clone();
-                async move { server.item(&key).await }
+                let (key, kept) = (key.clone(), kept.clone());
+                async move {
+                    match (server.item(&key).await, kept) {
+                        (Err(plex::Error::NotRemembered), Some(kept)) => Ok(kept),
+                        (answer, _) => answer,
+                    }
+                }
             },
             move |item: &Item| shown.show(item),
         )];
@@ -1784,11 +1804,15 @@ impl Shell {
         otherwise: Unanswered,
         error: &plex::Error,
     ) {
-        if error.is_unauthorized() || !(has_shown || otherwise == Unanswered::GoesWithout) {
+        let drawn = matches!(otherwise, Unanswered::StandsAsDrawn { .. });
+        let gone =
+            error.is_missing() && otherwise == Unanswered::StandsAsDrawn { kept_here: false };
+        let stands = has_shown || otherwise != Unanswered::ShowsTheError;
+        if error.is_unauthorized() || gone || !stands {
             return self.fail(moves, error);
         }
         eprintln!("plex-rust: {}", with_causes(error));
-        if has_shown {
+        if has_shown || drawn {
             self.mark_stale(error);
         }
     }
@@ -1961,6 +1985,12 @@ impl Shell {
             shell.heard(asked, &changed);
             match changed {
                 Ok(()) => shell.refresh(),
+                // The page is as good as it was. The line says why it
+                // is not as the viewer just set it.
+                Err(error) if error.is_unanswered() => {
+                    eprintln!("plex-rust: {}", with_causes(&error));
+                    shell.mark_stale(&error);
+                }
                 Err(error) => shell.fail(moves, &error),
             }
         });
@@ -2116,8 +2146,9 @@ impl Shell {
                     playback.apply(&mut item);
                     shell.open_player(&item, purpose);
                 }
-                // The server has gone since it last answered.
-                (Err(error), Some(download)) if error.is_unanswered() => {
+                // The server has gone since it last answered, or the
+                // item has gone from the server. The file is still here.
+                (Err(error), Some(download)) if error.is_unanswered() || error.is_missing() => {
                     eprintln!("plex-rust: {}", with_causes(&error));
                     shell.play_kept(&download, purpose, playback);
                 }

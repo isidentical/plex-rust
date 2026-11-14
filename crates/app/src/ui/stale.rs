@@ -21,6 +21,8 @@ const RETRY: &str = "Try Again";
 pub enum Reason {
     /// Nothing answered: the server is off, asleep or on another network.
     Offline,
+    /// The server answered that it no longer has this.
+    Gone,
     /// The server answered with something that could not be used.
     Refused,
     /// The server is being asked again.
@@ -31,6 +33,7 @@ impl Reason {
     fn words(self) -> &'static str {
         match self {
             Self::Offline => "Offline, showing what was saved",
+            Self::Gone => "No longer on your server, showing what was saved",
             Self::Refused => "Not up to date, the server could not be asked",
             Self::Asking => "Asking your server again",
         }
