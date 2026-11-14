@@ -53,7 +53,7 @@ pub enum Kind {
 }
 
 /// A library, such as "Movies".
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Section {
     /// The identifier used in `/library/sections/{key}`.
     pub key: String,
@@ -63,7 +63,7 @@ pub struct Section {
 }
 
 /// A titled row of items, such as "Continue Watching".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Hub {
     pub title: String,
     /// A stable name for the row, such as `home.continue`.
@@ -74,7 +74,7 @@ pub struct Hub {
 }
 
 /// A movie, show, season or episode.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     pub rating_key: RatingKey,
@@ -82,7 +82,15 @@ pub struct Item {
     pub kind: Kind,
     pub title: String,
     pub summary: Option<String>,
+    /// The line from the poster, such as "In space no one can hear you".
+    pub tagline: Option<String>,
     pub year: Option<u16>,
+    /// The age rating, such as `PG-13` or `TV-14`.
+    pub content_rating: Option<String>,
+    /// What critics gave it, out of 10.
+    pub rating: Option<f32>,
+    /// What viewers gave it, out of 10.
+    pub audience_rating: Option<f32>,
     /// Server path of the poster.
     pub thumb: Option<String>,
     /// Server path of the backdrop.
@@ -99,10 +107,16 @@ pub struct Item {
     pub parent_index: Option<u32>,
     /// For an episode, its season. For a season, its show.
     pub parent_rating_key: Option<RatingKey>,
+    /// For an episode, its show.
+    pub grandparent_rating_key: Option<RatingKey>,
     /// For an episode, the show's title.
     pub grandparent_title: Option<String>,
     /// For an episode, the show's poster.
     pub grandparent_thumb: Option<String>,
+    /// For an episode, the show's backdrop.
+    pub grandparent_art: Option<String>,
+    /// For a show, the number of seasons in it.
+    pub child_count: Option<u32>,
     /// For a show or season, the number of episodes in it.
     pub leaf_count: Option<u32>,
     /// For a show or season, the number of watched episodes in it.
@@ -117,6 +131,13 @@ pub struct Item {
     pub markers: Vec<Marker>,
     #[serde(rename = "UltraBlurColors")]
     pub colors: Option<Colors>,
+    #[serde(rename = "Genre", default)]
+    pub genres: Vec<Tag>,
+    #[serde(rename = "Director", default)]
+    pub directors: Vec<Tag>,
+    /// The cast, most prominent first.
+    #[serde(rename = "Role", default)]
+    pub roles: Vec<Tag>,
 }
 
 impl Item {
@@ -125,6 +146,17 @@ impl Item {
         match (self.leaf_count, self.viewed_leaf_count) {
             (Some(episodes), Some(watched)) => watched >= episodes,
             _ => self.view_count > 0,
+        }
+    }
+
+    /// How much of it was watched, from 0 to 1. Zero when it was never
+    /// started or was watched to the end.
+    pub fn progress(&self) -> f64 {
+        match (self.view_offset, self.duration) {
+            (Some(offset), Some(duration)) if duration.0 > 0 => {
+                (offset.0 as f64 / duration.0 as f64).clamp(0.0, 1.0)
+            }
+            _ => 0.0,
         }
     }
 
@@ -137,7 +169,7 @@ impl Item {
 }
 
 /// One playable version of an item, such as its 4K encode.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
     pub id: u64,
@@ -145,13 +177,15 @@ pub struct Media {
     pub video_resolution: Option<String>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    /// 2 for stereo, 6 for 5.1 and so on.
+    pub audio_channels: Option<u32>,
     /// Almost always exactly one. More when a film is split across files.
     #[serde(rename = "Part")]
     pub parts: Vec<Part>,
 }
 
 /// One file on the server.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Part {
     pub id: u64,
     /// Server path of the original file.
@@ -181,7 +215,7 @@ impl Part {
 }
 
 /// A video, audio or subtitle track inside a file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
     pub id: u64,
@@ -218,7 +252,7 @@ impl From<u8> for StreamKind {
 }
 
 /// A stretch of an episode the viewer may want to skip.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Marker {
     #[serde(rename = "type")]
@@ -238,15 +272,42 @@ pub enum MarkerKind {
     Other,
 }
 
-/// Four colours taken from an item's artwork, one per corner, as `#rrggbb`.
-/// Plex's own apps paint page backgrounds with them.
+/// A name attached to an item: a genre, a director, a cast member.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Tag {
+    pub tag: String,
+}
+
+/// Four colours taken from an item's artwork, one per corner. Plex's own
+/// apps paint page backgrounds with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Colors {
-    pub top_left: String,
-    pub top_right: String,
-    pub bottom_left: String,
-    pub bottom_right: String,
+    pub top_left: Rgb,
+    pub top_right: Rgb,
+    pub bottom_left: Rgb,
+    pub bottom_right: Rgb,
+}
+
+/// A colour, which the server writes as `rrggbb`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Rgb {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+impl TryFrom<String> for Rgb {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let digits = text.strip_prefix('#').unwrap_or(&text);
+        let value = u32::from_str_radix(digits, 16).ok().filter(|_| digits.len() == 6);
+        let value = value.ok_or_else(|| format!("{text:?} is not a colour written as rrggbb"))?;
+        let [_, red, green, blue] = value.to_be_bytes();
+        Ok(Self { red, green, blue })
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +333,14 @@ mod tests {
         // the file's own tracks and does not count.
         assert_eq!(part.chosen(StreamKind::Subtitle), Some(2));
         assert_eq!(part.chosen(StreamKind::Video), None);
+    }
+
+    #[test]
+    fn a_colour_is_six_hex_digits_and_nothing_else() {
+        let rgb = |text: &str| Rgb::try_from(text.to_owned());
+        assert_eq!(rgb("8d2d05"), Ok(Rgb { red: 0x8d, green: 0x2d, blue: 0x05 }));
+        assert_eq!(rgb("#8d2d05"), Ok(Rgb { red: 0x8d, green: 0x2d, blue: 0x05 }));
+        assert!(rgb("8d2d").is_err());
+        assert!(rgb("red").is_err());
     }
 }

@@ -18,7 +18,7 @@ use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
 };
 use plex::MediaServer;
-use plex::library::Page;
+use plex::library::{Listing, Page};
 use plex::model::{Hub, Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
@@ -368,7 +368,7 @@ impl Shell {
             session,
             move |server| {
                 let section = section.clone();
-                async move { server.section_items(&section, 0, PAGE_SIZE).await }
+                async move { server.section_items(&section, Listing::default(), 0, PAGE_SIZE).await }
             },
             move |page: Page| posters.show(vec![Shelf { title: String::new(), items: page.items }]),
         );
@@ -383,7 +383,9 @@ impl Shell {
         let posters = posters.clone();
         let start = u32::try_from(posters.len()).unwrap_or(u32::MAX);
         let (server, section) = (session.server.clone(), section.clone());
-        let load = async move { server.section_items(&section, start, PAGE_SIZE).await };
+        let load = async move {
+            server.section_items(&section, Listing::default(), start, PAGE_SIZE).await
+        };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, load, move |page| match page {
             Ok(page) => posters.append(page.items),

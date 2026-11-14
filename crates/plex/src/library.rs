@@ -7,11 +7,74 @@ use crate::model::{Hub, Item, Kind, RatingKey, Section};
 use crate::server::MediaServer;
 
 /// One page of a longer list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     pub items: Vec<Item>,
     /// How many items the whole list has.
     pub total: u32,
+}
+
+/// The order a library is listed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sort {
+    #[default]
+    Title,
+    /// Newest in the library first.
+    DateAdded,
+    /// Newest release first.
+    ReleaseDate,
+    /// Best liked by viewers first.
+    Rating,
+    /// Most recently watched first.
+    LastWatched,
+}
+
+impl Sort {
+    pub const ALL: [Self; 5] =
+        [Self::Title, Self::DateAdded, Self::ReleaseDate, Self::Rating, Self::LastWatched];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::DateAdded => "Date Added",
+            Self::ReleaseDate => "Release Date",
+            Self::Rating => "Rating",
+            Self::LastWatched => "Last Watched",
+        }
+    }
+
+    /// The value of the server's `sort` parameter, from the names it lists
+    /// at `/library/sections/{id}/sorts`.
+    fn parameter(self) -> &'static str {
+        match self {
+            Self::Title => "titleSort",
+            Self::DateAdded => "addedAt:desc",
+            Self::ReleaseDate => "originallyAvailableAt:desc",
+            Self::Rating => "audienceRating:desc",
+            Self::LastWatched => "lastViewedAt:desc",
+        }
+    }
+}
+
+/// Which items of a library to list, and in what order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Listing {
+    pub sort: Sort,
+    /// Leave out what was watched to the end. For shows, those with no
+    /// episode left to watch.
+    pub unwatched_only: bool,
+}
+
+impl Listing {
+    fn query(self, kind: Kind) -> Vec<(&'static str, &'static str)> {
+        let mut query = vec![("sort", self.sort.parameter())];
+        if self.unwatched_only {
+            // A show is unwatched while any of its episodes is.
+            let filter = if kind == Kind::Show { "unwatchedLeaves" } else { "unwatched" };
+            query.push((filter, "1"));
+        }
+        query
+    }
 }
 
 #[derive(Deserialize)]
@@ -71,14 +134,20 @@ impl MediaServer {
         video_hubs(hubs, "/hubs/search")
     }
 
-    /// `size` items of a library, starting at index `start`.
-    pub async fn section_items(&self, section: &Section, start: u32, size: u32) -> Result<Page> {
+    /// `size` items of a library as `listing` selects and orders them,
+    /// starting at index `start`.
+    pub async fn section_items(
+        &self,
+        section: &Section,
+        listing: Listing,
+        start: u32,
+        size: u32,
+    ) -> Result<Page> {
         let rest = format!("{}/all", section.key);
-        let query = [
-            ("X-Plex-Container-Start", start.to_string()),
-            ("X-Plex-Container-Size", size.to_string()),
-        ];
-        let query: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let (start, size) = (start.to_string(), size.to_string());
+        let mut query = listing.query(section.kind);
+        query.push(("X-Plex-Container-Start", &start));
+        query.push(("X-Plex-Container-Size", &size));
         let Items { items, total_size } = self.get("/library/sections/", &rest, &query).await?;
         let total = total_size.unwrap_or_else(|| u32::try_from(items.len()).unwrap_or(u32::MAX));
         Ok(Page { items, total })
@@ -123,7 +192,7 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     use super::*;
-    use crate::model::{MarkerKind, StreamKind};
+    use crate::model::{MarkerKind, Rgb, StreamKind};
     use crate::server::Envelope;
 
     macro_rules! fixture {
@@ -154,6 +223,16 @@ mod tests {
         assert_eq!(page.total_size, Some(49));
         assert!(page.items.iter().all(|movie| movie.kind == Kind::Movie));
         assert!(page.items[0].media[0].parts[0].key.starts_with("/library/parts/"));
+        let colors = page.items[0].colors.unwrap();
+        assert_eq!(colors.top_left, Rgb { red: 0x49, green: 0x21, blue: 0x0f });
+    }
+
+    #[test]
+    fn a_listing_filters_shows_by_their_episodes() {
+        let listing = Listing { sort: Sort::DateAdded, unwatched_only: true };
+        assert_eq!(listing.query(Kind::Movie), [("sort", "addedAt:desc"), ("unwatched", "1")]);
+        assert_eq!(listing.query(Kind::Show), [("sort", "addedAt:desc"), ("unwatchedLeaves", "1")]);
+        assert_eq!(Listing::default().query(Kind::Show), [("sort", "titleSort")]);
     }
 
     #[test]
