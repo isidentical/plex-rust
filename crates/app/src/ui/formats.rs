@@ -1,7 +1,7 @@
 //! What a file is, in the words printed on a disc case: "4K", "Dolby
 //! Vision", "DTS-HD MA 5.1".
 
-use plex::model::{Media, Stream, StreamKind};
+use plex::model::{Media, Part, Stream, StreamKind};
 
 use super::text;
 
@@ -62,18 +62,83 @@ pub fn version(media: &Media) -> String {
 /// sentence about the track, not a name for it.
 const LONGEST_TRACK_TITLE: usize = 30;
 
-/// What a menu calls a track: the server's words for it, such as
-/// "English (AC3 5.1)", and the file's own where they are short and say
-/// something more, as in "English · SDH".
-pub fn track(stream: &Stream) -> String {
-    let name = stream.display_title.clone().unwrap_or_else(|| "Unknown".to_owned());
-    let own = stream.title.as_deref().map(str::trim).filter(|own| {
-        let said = name.to_lowercase().contains(&own.to_lowercase());
-        !own.is_empty() && !said && own.chars().count() <= LONGEST_TRACK_TITLE
-    });
-    match own {
+/// What a menu calls `stream`, a track of `part`, on one line: its
+/// [name](track_name), and what the file calls it where that is short and
+/// says something more, as in "English · SDH".
+pub fn track(stream: &Stream, part: &Part) -> String {
+    let name = track_name(stream, part);
+    let said = |own: &str| name.to_lowercase().contains(&own.to_lowercase());
+    match own_title(stream).filter(|own| !said(own)) {
         Some(own) => format!("{name} · {own}"),
         None => name,
+    }
+}
+
+/// What the server calls a track whose language it does not know, before
+/// anything else it says of it: "Unknown (DTS-HD MA 5.1)".
+const NAMELESS: &str = "Unknown";
+
+/// The name of `stream`, a track of `part`, in the pages and in the
+/// player: the server's words for it, such as "English (AC3 5.1)".
+///
+/// Where the server knows no language its word is "Unknown", which tells
+/// one such track from the next by nothing. That one goes by what is
+/// known of it: what the file calls it, or else where it is, "Track 3"
+/// among the file's own of its kind or "Subtitle file" beside it. Then,
+/// in brackets, how it is encoded and whom it is for.
+pub fn track_name(stream: &Stream, part: &Part) -> String {
+    let said = stream.display_title.as_deref().unwrap_or(NAMELESS);
+    let Some(rest) = said.strip_prefix(NAMELESS) else {
+        return said.to_owned();
+    };
+    let rest = rest.trim().trim_start_matches('(').trim_end_matches(')');
+    let mut facts: Vec<String> = Vec::new();
+    match (rest.is_empty(), stream.kind, &stream.codec) {
+        (false, _, _) => facts.push(rest.to_owned()),
+        (true, StreamKind::Subtitle, Some(codec)) => facts.push(subtitle_format(codec)),
+        (true, _, _) => {}
+    }
+    let mentioned = |fact: &str| rest.to_lowercase().contains(&fact.to_lowercase());
+    for (holds, fact) in [(stream.forced, "Forced"), (stream.hearing_impaired, "SDH")] {
+        if holds && !mentioned(fact) {
+            facts.push(fact.to_owned());
+        }
+    }
+    let name = own_title(stream).map_or_else(|| place(stream, part), str::to_owned);
+    if facts.is_empty() { name } else { format!("{name} ({})", facts.join(", ")) }
+}
+
+/// What the file itself calls `stream`, if that is a name for it.
+fn own_title(stream: &Stream) -> Option<&str> {
+    let own = stream.title.as_deref()?.trim();
+    (!own.is_empty() && own.chars().count() <= LONGEST_TRACK_TITLE).then_some(own)
+}
+
+/// Where `stream` is among the tracks of `part`, for one with no name:
+/// its number among the file's own of its kind, counted as a player
+/// counts them, or that it is a file of its own, with a number when
+/// there are several such.
+fn place(stream: &Stream, part: &Part) -> String {
+    let number = |among: &[&Stream]| {
+        among.iter().position(|other| other.id == stream.id).map_or(1, |position| position + 1)
+    };
+    if stream.key.is_none() {
+        let own: Vec<&Stream> = part.embedded(stream.kind).collect();
+        return format!("Track {}", number(&own));
+    }
+    let files: Vec<&Stream> = part.sidecars().collect();
+    match files.len() {
+        0 | 1 => "Subtitle file".to_owned(),
+        _ => format!("Subtitle file {}", number(&files)),
+    }
+}
+
+/// How subtitles are encoded, as it is written out.
+fn subtitle_format(codec: &str) -> String {
+    match codec {
+        "vobsub" | "dvd_subtitle" => "VobSub".to_owned(),
+        "mov_text" => "Timed Text".to_owned(),
+        other => other.to_uppercase(),
     }
 }
 
@@ -192,14 +257,73 @@ mod tests {
         assert!(ranges(&standard).is_empty());
     }
 
+    fn part(streams: serde_json::Value) -> Part {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "key": "/library/parts/1/0/file.mkv", "Stream": streams,
+        }))
+        .unwrap()
+    }
+
+    fn names(part: &Part) -> Vec<String> {
+        part.streams.iter().map(|stream| track(stream, part)).collect()
+    }
+
+    #[test]
+    fn a_track_of_no_known_language_goes_by_its_place_in_the_file() {
+        // As the server lists a film whose file names no languages.
+        let film = part(serde_json::json!([
+            { "id": 216, "streamType": 1, "codec": "h264", "displayTitle": "1080p (H.264)" },
+            { "id": 217, "streamType": 2, "codec": "dca", "profile": "ma", "title": "Surround",
+              "displayTitle": "Unknown (DTS-HD MA 5.1)" },
+            { "id": 218, "streamType": 2, "codec": "ac3", "displayTitle": "Unknown (AC3 5.1)" },
+            { "id": 219, "streamType": 3, "codec": "pgs", "displayTitle": "Unknown" },
+            { "id": 220, "streamType": 3, "codec": "pgs", "displayTitle": "English" },
+            { "id": 221, "streamType": 3, "codec": "pgs", "displayTitle": "Unknown" },
+            { "id": 222, "streamType": 3, "codec": "vobsub", "forced": true,
+              "displayTitle": "Unknown" },
+            { "id": 223, "streamType": 3, "codec": "ass", "hearingImpaired": true,
+              "displayTitle": "Unknown (SDH)" },
+        ]));
+        assert_eq!(
+            names(&film),
+            [
+                "1080p (H.264)",
+                "Surround (DTS-HD MA 5.1)",
+                "Track 2 (AC3 5.1)",
+                "Track 1 (PGS)",
+                "English",
+                "Track 3 (PGS)",
+                "Track 4 (VobSub, Forced)",
+                "Track 5 (SDH)",
+            ]
+        );
+    }
+
+    #[test]
+    fn subtitles_in_a_file_of_their_own_say_so() {
+        let sidecar = |id: u32| {
+            serde_json::json!({
+                "id": id, "streamType": 3, "codec": "srt", "displayTitle": "Unknown",
+                "key": format!("/library/streams/{id}"),
+            })
+        };
+        let embedded = serde_json::json!({ "id": 1, "streamType": 3, "codec": "pgs", "displayTitle": "Unknown" });
+        let one = part(serde_json::json!([embedded, sidecar(2)]));
+        assert_eq!(names(&one), ["Track 1 (PGS)", "Subtitle file (SRT)"]);
+        let two = part(serde_json::json!([sidecar(2), embedded, sidecar(3)]));
+        assert_eq!(
+            names(&two),
+            ["Subtitle file 1 (SRT)", "Track 1 (PGS)", "Subtitle file 2 (SRT)"]
+        );
+    }
+
     #[test]
     fn a_track_adds_what_the_file_calls_it_when_that_is_a_name() {
         let named = |display: &str, title: Option<&str>| {
-            let stream: Stream = serde_json::from_value(serde_json::json!({
-                "id": 1, "streamType": 3, "displayTitle": display, "title": title,
-            }))
-            .unwrap();
-            track(&stream)
+            let part = part(serde_json::json!([
+                { "id": 1, "streamType": 3, "displayTitle": display, "title": title },
+            ]));
+            track(&part.streams[0], &part)
         };
         assert_eq!(named("English", None), "English");
         assert_eq!(named("English", Some("SDH")), "English · SDH");

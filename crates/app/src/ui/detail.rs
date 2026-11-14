@@ -1124,14 +1124,15 @@ impl Hero {
         self.version.offer(&versions, picked.unwrap_or(0));
 
         let part = media.and_then(|media| media.parts.first());
+        let name = |track: &Stream| part.map(|part| formats::track(track, part));
         let tracks = |kind| part.into_iter().flat_map(move |part| part.embedded(kind));
-        let audio: Vec<String> = tracks(StreamKind::Audio).map(formats::track).collect();
+        let audio: Vec<String> = tracks(StreamKind::Audio).filter_map(name).collect();
         let heard = tracks(StreamKind::Audio).position(|track| track.selected);
         self.audio.offer(&audio, heard.unwrap_or(0));
 
         let written = || part.into_iter().flat_map(subtitles);
         let mut subtitles = vec!["Off".to_owned()];
-        subtitles.extend(written().map(formats::track));
+        subtitles.extend(written().filter_map(name));
         // The first entry is none, so a track is one further down.
         let read = written().position(|track| track.selected).map_or(0, |track| track + 1);
         self.subtitles.offer(&subtitles, read);

@@ -312,6 +312,13 @@ pub struct Stream {
     pub profile: Option<String>,
     /// For sound, 2 for stereo, 6 for 5.1 and so on.
     pub channels: Option<u32>,
+    /// For subtitles, whether they only put into words what is said in
+    /// another language than the film's.
+    #[serde(default)]
+    pub forced: bool,
+    /// For subtitles, whether they also describe what is heard.
+    #[serde(default)]
+    pub hearing_impaired: bool,
     /// For a picture, its transfer curve: `smpte2084` for HDR10,
     /// `arib-std-b67` for HLG, `bt709` or nothing for standard range.
     pub color_trc: Option<String>,

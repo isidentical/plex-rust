@@ -4,6 +4,8 @@ use objc2_foundation::{NSLocale, NSString};
 use player::{Track, TrackKind};
 use plex::model::{Part, Stream, StreamKind};
 
+use crate::ui::formats;
+
 /// The server's kind of stream for the player's kind of track.
 pub fn stream_kind(kind: TrackKind) -> StreamKind {
     match kind {
@@ -35,9 +37,9 @@ pub fn stream<'a>(track: &Track, part: &'a Part) -> Option<&'a Stream> {
 /// 5.1)", and it is what every other Plex app shows. A track the server
 /// does not list goes by what the file says about it.
 pub fn name(track: &Track, part: Option<&Part>) -> String {
-    let stream = part.and_then(|part| stream(track, part));
-    if let Some(title) = stream.and_then(|stream| stream.display_title.clone()) {
-        return title;
+    let listed = part.and_then(|part| Some((stream(track, part)?, part)));
+    if let Some((stream, part)) = listed.filter(|(stream, _)| stream.display_title.is_some()) {
+        return formats::track_name(stream, part);
     }
     let language = track.language.as_deref().map(language_name);
     match (&track.title, language) {
