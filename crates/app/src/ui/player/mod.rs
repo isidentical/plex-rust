@@ -148,6 +148,7 @@ pub struct Ivars {
     ticks_of_notice_left: Cell<u32>,
     notice_shown: Cell<bool>,
     speed: Cell<Speed>,
+    low_power: Cell<bool>,
     controls_shown: Cell<bool>,
     /// Whether the pointer was last seen on the controls. They stay for as
     /// long as it rests there.
@@ -245,6 +246,7 @@ impl PlayerScreen {
         let speed = Speed::from_percent(settings.speed_percent);
         player.set_speed(speed.factor())?;
         player.set_volume(settings.volume.clamp(0.0, controls::FULL_VOLUME))?;
+        player.set_low_power(settings.low_power)?;
 
         let root = InputView::new(main_thread);
         let video = NSView::new(main_thread);
@@ -264,6 +266,7 @@ impl PlayerScreen {
             ticks_of_notice_left: Cell::new(0),
             notice_shown: Cell::new(false),
             speed: Cell::new(speed),
+            low_power: Cell::new(settings.low_power),
             controls_shown: Cell::new(true),
             pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
@@ -331,8 +334,8 @@ impl PlayerScreen {
         &self.ivars().item
     }
 
-    /// The speed and volume the viewer has set, to be used again next time.
-    /// `None` for a check, which must leave no trace.
+    /// What the viewer has set, to be used again next time. `None` for a
+    /// check, which must leave no trace.
     pub fn settings(&self) -> player::Result<Option<Settings>> {
         if self.ivars().purpose == Purpose::Check {
             return Ok(None);
@@ -340,7 +343,16 @@ impl PlayerScreen {
         Ok(Some(Settings {
             speed_percent: self.speed().percent(),
             volume: self.ivars().player.volume()?,
+            low_power: self.ivars().low_power.get(),
         }))
+    }
+
+    /// Turns low power on or off for what is playing, from its next frame.
+    pub fn set_low_power(&self, low_power: bool) {
+        let ivars = self.ivars();
+        self.or_log(ivars.player.set_low_power(low_power));
+        ivars.low_power.set(low_power);
+        self.notify(if low_power { "Low power on" } else { "Low power off" });
     }
 
     fn speed(&self) -> Speed {

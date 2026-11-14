@@ -70,6 +70,11 @@ last given.
 | F, double click | Full screen |
 | Escape | Leave full screen, then the player |
 
+Low Power in the plex-rust menu draws the picture more cheaply, with plain
+scaling and no dithering. It is off until you turn it on, changes what is
+playing at once, and stays as you left it. The picture never depends on
+whether the Mac itself is in Low Power Mode.
+
 ## Layout
 
 | Crate | What it is |

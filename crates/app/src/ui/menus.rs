@@ -3,7 +3,10 @@
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::{MainThreadMarker, MainThreadOnly, sel};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
+use objc2_app_kit::{
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
+    NSMenuItem,
+};
 use objc2_foundation::NSString;
 
 use super::callback::Callback;
@@ -17,6 +20,8 @@ pub struct Commands {
     pub find: Retained<Callback>,
     pub play: Retained<Callback>,
     pub toggle_watched: Retained<Callback>,
+    /// Called with the Low Power menu item, which [`check`] then updates.
+    pub toggle_low_power: Retained<Callback>,
 }
 
 /// A place the Go menu leads to: its title and what going there does.
@@ -25,8 +30,14 @@ pub type Place = (String, Retained<Callback>);
 const COMMAND: NSEventModifierFlags = NSEventModifierFlags::Command;
 
 /// Builds the menu bar and gives it to the app. `places` are Home and the
-/// libraries, which get Command-1 and up.
-pub fn install(main_thread: MainThreadMarker, commands: &Commands, places: &[Place]) {
+/// libraries, which get Command-1 and up. `low_power` is whether that
+/// setting is on, which its menu item shows with a check mark.
+pub fn install(
+    main_thread: MainThreadMarker,
+    commands: &Commands,
+    places: &[Place],
+    low_power: bool,
+) {
     let app = NSApplication::sharedApplication(main_thread);
     let bar = NSMenu::new(main_thread);
     let add = |title: &str, entries: Vec<Retained<NSMenuItem>>| {
@@ -49,11 +60,15 @@ pub fn install(main_thread: MainThreadMarker, commands: &Commands, places: &[Pla
     let with_option = COMMAND | NSEventModifierFlags::Option;
     let with_shift = COMMAND | NSEventModifierFlags::Shift;
     let with_control = COMMAND | NSEventModifierFlags::Control;
+    let low_power_entry = own("Low Power", &commands.toggle_low_power, "", COMMAND);
+    check(&low_power_entry, low_power);
 
     add(
         "plex-rust",
         vec![
             system("About plex-rust", sel!(orderFrontStandardAboutPanel:), "", COMMAND),
+            line(),
+            low_power_entry,
             line(),
             system("Hide plex-rust", sel!(hide:), "h", COMMAND),
             system("Hide Others", sel!(hideOtherApplications:), "h", with_option),
@@ -113,6 +128,11 @@ pub fn install(main_thread: MainThreadMarker, commands: &Commands, places: &[Pla
     );
     app.setWindowsMenu(Some(&window));
     app.setMainMenu(Some(&bar));
+}
+
+/// Gives `entry` its check mark, or takes it away.
+pub fn check(entry: &NSMenuItem, checked: bool) {
+    entry.setState(if checked { NSControlStateValueOn } else { NSControlStateValueOff });
 }
 
 /// One menu item. Without a target the action goes to whatever in the

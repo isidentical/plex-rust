@@ -268,9 +268,11 @@ and `framedrop=vo` stay at defaults. No interpolation.
   read 4 times per second. The only other timer is the 10 second timeline.
 - The system Low Power Mode is never consulted, so picture quality is the
   same whether it is on or off.
-- Settings has one "Low power" switch, off by default. On, it applies mpv's
-  built in `fast` profile (bilinear scaling, no dither, no HDR peak
-  computation [V]). It takes effect on the playing file immediately.
+- The plex-rust menu has one Low Power item, off by default and checked
+  while on. On, it applies mpv's built in `fast` profile (bilinear scaling,
+  no dither, no HDR peak computation [V]). It takes effect on the playing
+  file immediately. A menu item and not a Settings window, because one
+  switch does not fill a window.
 - Display sleep is held off with `NSProcessInfo.beginActivity` only while
   playing, released on pause.
 

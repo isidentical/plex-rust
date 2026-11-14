@@ -8,12 +8,12 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSBackingStoreType, NSSplitViewController, NSSplitViewItem, NSView,
-    NSViewController, NSWindow, NSWindowStyleMask,
+    NSApplicationDelegate, NSBackingStoreType, NSMenuItem, NSSplitViewController, NSSplitViewItem,
+    NSView, NSViewController, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
@@ -106,7 +106,8 @@ struct Shell {
     playing: RefCell<Option<Retained<PlayerScreen>>>,
     /// Set while an item is being fetched in order to play it.
     opening_player: Cell<bool>,
-    /// Speed and volume, kept from one item to the next and across launches.
+    /// Speed, volume and low power, kept from one item to the next and
+    /// across launches.
     settings: Cell<Settings>,
     /// How each library was last listed, kept across launches.
     listings: RefCell<Listings>,
@@ -358,8 +359,16 @@ impl Shell {
                 find: menu(Self::focus_search),
                 play: menu(Self::play_current),
                 toggle_watched: menu(Self::toggle_watched_current),
+                toggle_low_power: {
+                    let shell = Weak::clone(shell);
+                    Callback::new(main_thread, move |entry| {
+                        if let Some(shell) = shell.upgrade() {
+                            shell.toggle_low_power(entry);
+                        }
+                    })
+                },
             };
-            menus::install(main_thread, &commands, &[]);
+            menus::install(main_thread, &commands, &[], settings.low_power);
 
             Self {
                 main_thread,
@@ -541,7 +550,7 @@ impl Shell {
             (title, go)
         };
         let places: Vec<menus::Place> = destinations.iter().map(place).collect();
-        menus::install(self.main_thread, &self.commands, &places);
+        menus::install(self.main_thread, &self.commands, &places, self.settings.get().low_power);
         *self.places.borrow_mut() = places;
     }
 
@@ -1271,14 +1280,31 @@ impl Shell {
     /// Takes over the speed and volume the viewer set in `screen`, for
     /// whatever is played next and for the next launch.
     fn keep_settings(&self, screen: &PlayerScreen) {
-        let settings = match screen.settings() {
-            Ok(Some(settings)) => settings,
-            Ok(None) => return,
-            Err(error) => return eprintln!("plex-rust: {error}"),
-        };
+        match screen.settings() {
+            Ok(Some(settings)) => self.save_settings(settings),
+            Ok(None) => {}
+            Err(error) => eprintln!("plex-rust: {error}"),
+        }
+    }
+
+    fn save_settings(&self, settings: Settings) {
         self.settings.set(settings);
         if let Err(error) = settings.save() {
             eprintln!("plex-rust: {}", with_causes(&error));
+        }
+    }
+
+    /// Turns low power on if it is off and off if it is on, for what is
+    /// playing now and everything played after it. `entry` is the menu
+    /// item that asked for it, which shows the new state.
+    fn toggle_low_power(&self, entry: Option<&AnyObject>) {
+        let low_power = !self.settings.get().low_power;
+        self.save_settings(Settings { low_power, ..self.settings.get() });
+        if let Some(screen) = self.playing.borrow().as_ref() {
+            screen.set_low_power(low_power);
+        }
+        if let Some(entry) = entry.and_then(|entry| entry.downcast_ref::<NSMenuItem>()) {
+            menus::check(entry, low_power);
         }
     }
 

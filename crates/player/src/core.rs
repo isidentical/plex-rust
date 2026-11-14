@@ -25,6 +25,21 @@ const OPTIONS: &[(&str, &str)] = &[
     ("demuxer-hysteresis-secs", "10"),
 ];
 
+/// What mpv's built in `fast` profile changes (`[fast]` in mpv's
+/// etc/builtin.conf), each with the value mpv plays at when left alone
+/// (`gl_video_opts_def` in mpv's video/out/gpu/video.c). mpv cannot take
+/// the profile back itself, so this is what turning low power off sets.
+const QUALITY: &[(&str, &str)] = &[
+    ("scale", "lanczos"),
+    ("dscale", "hermite"),
+    ("dither", "fruit"),
+    ("correct-downscaling", "yes"),
+    ("linear-downscaling", "yes"),
+    ("sigmoid-upscaling", "yes"),
+    ("hdr-compute-peak", "auto"),
+    ("allow-delayed-peak-detect", "no"),
+];
+
 /// The mpv property that is set while playback waits for the network.
 const STALLED: &str = "paused-for-cache";
 
@@ -293,6 +308,17 @@ impl Player {
     /// Sets the playback rate, where 1.0 is normal speed.
     pub fn set_speed(&self, speed: f64) -> Result<()> {
         self.set_string("speed", &speed.to_string())
+    }
+
+    /// Trades picture quality for less work on every frame, or takes that
+    /// back. Low power is mpv's `fast` profile: bilinear scaling, no
+    /// dithering, and no measuring of how bright an HDR picture gets. The
+    /// renderer takes the change up with the next frame it draws.
+    pub fn set_low_power(&self, low_power: bool) -> Result<()> {
+        if low_power {
+            return self.command(&["apply-profile", "fast"]);
+        }
+        QUALITY.iter().try_for_each(|(name, value)| self.set_string(name, value))
     }
 
     /// The playback position, or `None` while nothing is loaded.
@@ -604,4 +630,31 @@ fn end_reason(end: &sys::mpv_event_end_file) -> EndReason {
 
 fn c_string(text: &str) -> Result<CString> {
     CString::new(text).map_err(|_| Error::Nul(text.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rendering(player: &Player) -> Vec<Option<String>> {
+        QUALITY.iter().map(|(name, _)| player.string(name).unwrap()).collect()
+    }
+
+    /// `QUALITY` is copied from mpv's source. This fails when the mpv that
+    /// is linked starts with other values, or its profile changes less.
+    #[test]
+    fn leaving_low_power_restores_what_mpv_starts_with() {
+        let player = Player::new().unwrap();
+        let untouched = rendering(&player);
+        let quality: Vec<_> = QUALITY.iter().map(|(_, value)| Some((*value).to_owned())).collect();
+        assert_eq!(untouched, quality);
+
+        player.set_low_power(true).unwrap();
+        for ((name, _), before) in QUALITY.iter().zip(&untouched) {
+            assert_ne!(&player.string(name).unwrap(), before, "the profile leaves {name} alone");
+        }
+
+        player.set_low_power(false).unwrap();
+        assert_eq!(rendering(&player), untouched);
+    }
 }

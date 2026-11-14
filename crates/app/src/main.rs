@@ -41,8 +41,8 @@ usage: plex-rust
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
-       plex-rust play <file-or-url> [--unattended <seconds>]
-       plex-rust play item:<rating-key> [--unattended <seconds>]
+       plex-rust play <file-or-url> [--unattended <seconds> [--low-power]]
+       plex-rust play item:<rating-key> [--unattended <seconds> [--low-power]]
        plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
        plex-rust pacing <file-or-url-or-item:<rating-key>> <seconds> <speed>...";
 
@@ -88,9 +88,14 @@ fn run(args: &[&str]) -> Result<()> {
         ["api", path] => api(plex::Method::GET, path),
         ["api", "--post", path] => api(plex::Method::POST, path),
         ["play", what] => play(what, None),
-        ["play", what, "--unattended", seconds] => {
-            let seconds = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
-            play(what, Some(Check::State(Duration::from_secs(seconds))))
+        ["play", what, "--unattended", seconds, low_power @ ..] => {
+            let length = Duration::from_secs(seconds.parse().map_err(|_| Error::Usage(USAGE))?);
+            let low_power = match low_power {
+                [] => false,
+                ["--low-power"] => true,
+                _ => return Err(Error::Usage(USAGE)),
+            };
+            play(what, Some(Check::State { length, low_power }))
         }
         ["play", what, "--seeks", script] => {
             let steps = seeks::parse(script).ok_or(Error::Usage(USAGE))?;

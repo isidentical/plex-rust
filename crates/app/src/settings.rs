@@ -20,11 +20,15 @@ pub struct Settings {
     pub speed_percent: u32,
     /// Volume out of 100.
     pub volume: f64,
+    /// Whether the picture is drawn the cheap way: see
+    /// [`player::Player::set_low_power`]. Only the viewer turns this on.
+    /// The system's own Low Power Mode is never looked at.
+    pub low_power: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { speed_percent: 100, volume: 100.0 }
+        Self { speed_percent: 100, volume: 100.0, low_power: false }
     }
 }
 

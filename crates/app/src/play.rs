@@ -15,7 +15,7 @@ use objc2_foundation::{
     NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
     NSSize, ns_string,
 };
-use player::{EndReason, Event, Offscreen, Player, Probe, Source};
+use player::{EndReason, Event, Offscreen, Player, Probe, Source, cpu_time};
 use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
@@ -53,8 +53,10 @@ impl Playback {
 
 /// What a run that is a check, and not a viewing, looks at.
 pub enum Check {
-    /// The playback state after this long.
-    State(Duration),
+    /// The playback state after `length`, and what drawing the picture
+    /// took until then. With `low_power`, the switch is thrown once the
+    /// file is playing, which is how the viewer throws it.
+    State { length: Duration, low_power: bool },
     /// How long these jumps stall playback, and then the playback state.
     /// The video is drawn offscreen, because a window that the owner's other
     /// windows cover is not drawn at all, and that changes the timings.
@@ -267,14 +269,20 @@ fn checked(
     check: &Check,
 ) -> player::Result<serde_json::Value> {
     let started = seeks::started(&mut probe, loading);
-    let seeks = match check {
-        Check::State(delay) => {
-            seeks::idle(&mut probe, delay.saturating_sub(loading.elapsed()));
-            None
+    let (seeks, cpu_share) = match check {
+        Check::State { length, low_power } => {
+            player.set_low_power(*low_power)?;
+            let (clock, cpu) = (Instant::now(), cpu_time());
+            seeks::idle(&mut probe, length.saturating_sub(loading.elapsed()));
+            let cpu_share = (cpu_time() - cpu).as_secs_f64() / clock.elapsed().as_secs_f64();
+            (None, Some(cpu_share))
         }
-        Check::Seeks(steps) => Some(seeks::run(player, &mut probe, steps)?),
+        Check::Seeks(steps) => (Some(seeks::run(player, &mut probe, steps)?), None),
     };
     let mut report = state(player)?;
+    // Processor time over time passed, from the file starting to play
+    // until now: 1.0 is one core kept busy.
+    report["cpu_share"] = cpu_share.into();
     // Seconds from asking for the file to its first picture being ready.
     report["started_in"] = started.as_ref().map(|start| start.took.as_secs_f64()).into();
     // How much later than it is handed to the audio device sound is heard.
@@ -299,12 +307,27 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         // Whether the layer asked the display for more than SDR brightness.
         "hdr_output": shows_hdr(),
         "drawn_size": drawn_size(),
+        "rendering": rendering(player)?,
         "volume": player.volume()?,
         "tracks": player.tracks()?.iter().map(track).collect::<Vec<_>>(),
         // macOS does not draw windows that are covered or on another Space,
         // and mpv counts every frame that was not drawn as dropped. A drop
         // count only says something about playback when this is true.
         "window_visible": window_is_visible(),
+    }))
+}
+
+/// The settings that low power changes, as the renderer reads them before
+/// each frame it draws (`gl_video_render_frame` in mpv's
+/// video/out/gpu/video.c). The steps it then takes cannot be read back:
+/// mpv only tells those to a renderer with advanced control, which this
+/// one does not ask for.
+fn rendering(player: &Player) -> player::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "scale": player.diagnostic("scale")?,
+        "dscale": player.diagnostic("dscale")?,
+        "dither": player.diagnostic("dither")?,
+        "hdr_compute_peak": player.diagnostic("hdr-compute-peak")?,
     }))
 }
 
