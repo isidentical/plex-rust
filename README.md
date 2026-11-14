@@ -47,7 +47,8 @@ open target/plex-rust.app
 | Command-R | Load the page again |
 | Shift-Command-U | Mark as watched or unwatched |
 
-A secondary click on an item offers to play it or mark it.
+A secondary click on an item offers to play it or mark it, and on an
+episode to go to its show or its season.
 
 A shelf's heading with a chevron after it leads to the whole list. On an
 episode's page the show's name leads to the show and the season's name to

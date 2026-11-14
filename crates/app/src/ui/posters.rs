@@ -377,6 +377,16 @@ define_class!(
             self.act_on_menu_item(Action::Play);
         }
 
+        #[unsafe(method(menuShow:))]
+        fn menu_show(&self, _sender: Option<&AnyObject>) {
+            self.act_on_menu_item(Action::OpenShow);
+        }
+
+        #[unsafe(method(menuSeason:))]
+        fn menu_season(&self, _sender: Option<&AnyObject>) {
+            self.act_on_menu_item(Action::OpenSeason);
+        }
+
         #[unsafe(method(menuToggleWatched:))]
         fn menu_toggle_watched(&self, _sender: Option<&AnyObject>) {
             self.act_on_menu_item(|item| {
@@ -968,6 +978,13 @@ impl Posters {
         // A trailer has no page to open and no place in what was watched.
         if item.kind != Kind::Clip {
             add("Open", sel!(menuOpen:));
+            // An episode met on a shelf is two steps from the rest of its
+            // show by way of its own page.
+            if item.kind == Kind::Episode && item.grandparent_rating_key.is_some() {
+                menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+                add("Go to Show", sel!(menuShow:));
+                add("Go to Season", sel!(menuSeason:));
+            }
             menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
             let toggle = if item.is_watched() { "Mark as Unwatched" } else { "Mark as Watched" };
             add(toggle, sel!(menuToggleWatched:));
