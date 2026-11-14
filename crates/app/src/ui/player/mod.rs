@@ -257,6 +257,12 @@ impl PlayerScreen {
         // SAFETY: `init` is NSObject's designated initializer.
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
         screen.build_controls(main_thread);
+        // The player knows neither time until the file is open, which can
+        // take a while. The item knows both now, so the controls never show
+        // a film that is being resumed as if it started over.
+        if let Some(duration) = item.duration {
+            screen.show_progress(source.start, duration.into());
+        }
         screen.listen();
         // Loaded before the timer and the event thread exist: both keep the
         // screen and its player alive, so a failure after them would leak.
@@ -817,7 +823,10 @@ impl PlayerScreen {
 
     fn handle(&self, event: &Event) {
         match event {
-            Event::Loaded => self.report(PlaybackState::Playing),
+            Event::Loaded => {
+                self.report(PlaybackState::Playing);
+                self.or_log(self.refresh());
+            }
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.
                 self.set_waiting(false);
@@ -850,12 +859,19 @@ impl PlayerScreen {
         else {
             return Ok(());
         };
+        self.show_progress(position, duration);
+        Ok(())
+    }
+
+    /// Shows `position` in a file of length `duration` on the scrubber and
+    /// in the two times.
+    fn show_progress(&self, position: Duration, duration: Duration) {
+        let ivars = self.ivars();
         ivars.scrubber.setMaxValue(duration.as_secs_f64());
         ivars.scrubber.setDoubleValue(position.as_secs_f64());
         ivars.elapsed.setStringValue(&NSString::from_str(&clock(position)));
         let left = duration.saturating_sub(position);
         ivars.remaining.setStringValue(&NSString::from_str(&format!("-{}", clock(left))));
-        Ok(())
     }
 
     fn report_current_state(&self) {
