@@ -1,10 +1,16 @@
 //! The screen that plays one item: video with controls on top.
 
+mod chip;
+mod chrome;
+mod controls;
 pub mod input;
 mod layout;
+mod pane;
+mod slider;
 mod theme;
+mod tracks;
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
@@ -15,43 +21,44 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSBezelStyle, NSButton, NSControlStateValueOn, NSCursor, NSFont,
-    NSFontWeightRegular, NSFontWeightSemibold, NSGlassEffectView, NSImage, NSMenu, NSMenuItem,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSSlider, NSStackView, NSTextField, NSView,
+    NSAnimatablePropertyContainer, NSControlStateValueOn, NSCursor, NSMenu, NSMenuItem, NSView,
     NSWindowStyleMask,
 };
-use objc2_foundation::{
-    NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSUUID,
-    ns_string,
-};
-use player::{EndReason, Event, Player, Track, TrackKind};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSUUID, ns_string};
+use player::{Chapter, EndReason, Event, Player, Track, TrackKind};
 use plex::MediaServer;
-use plex::model::{Item, Kind, Marker, MarkerKind, StreamKind};
+use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
 
+use self::chip::Chip;
+use self::chrome::Chrome;
+use self::controls::Controls;
 use self::input::{Clicks, InputView, Key};
+use self::slider::Pointed;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::settings::Settings;
 use crate::source;
 use crate::video_layer::{self, VideoLayer};
 
-/// How often the screen catches up with the player.
-const TICK: Duration = Duration::from_secs(1);
+/// How often the screen catches up with the player. Four times a second
+/// is enough for a clock that counts seconds to never look late.
+const TICK: Duration = Duration::from_millis(250);
+const TICKS_PER_SECOND: u32 = 4;
 
 /// Plex asks to hear from a running playback every 10 seconds.
-const TICKS_PER_REPORT: u32 = 10;
+const TICKS_PER_REPORT: u32 = 10 * TICKS_PER_SECOND;
 
 /// The controls go away after this many ticks without input.
-const TICKS_UNTIL_HIDDEN: u32 = 3;
+const TICKS_UNTIL_HIDDEN: u32 = 3 * TICKS_PER_SECOND;
 
 /// A notice, such as the new volume, stays up for this many ticks.
-const TICKS_OF_NOTICE: u32 = 2;
+const TICKS_OF_NOTICE: u32 = 6;
 
 /// How far the left and right arrow keys jump.
 const SHORT_JUMP: f64 = 3.0;
 
-/// How far they jump with Shift held.
+/// How far they jump with Shift held, and how far the buttons jump.
 const LONG_JUMP: f64 = 10.0;
 
 /// How much the up and down arrow keys change the volume, out of 100.
@@ -61,6 +68,9 @@ const VOLUME_STEP: f64 = 5.0;
 const NORMAL_SPEED: u32 = 10;
 const SLOWEST_SPEED: u32 = 1;
 const FASTEST_SPEED: u32 = 40;
+
+/// The speeds the speed menu offers, in tenths. The keys reach the rest.
+const SPEED_CHOICES: [u32; 9] = [5, 8, 10, 12, 15, 17, 20, 25, 30];
 
 /// Why the player is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,29 +99,22 @@ pub struct Ivars {
     video: Retained<NSView>,
     player: Player,
     item: Item,
-    toggle: Retained<NSButton>,
-    scrubber: Retained<NSSlider>,
-    elapsed: Retained<NSTextField>,
-    remaining: Retained<NSTextField>,
-    speed_readout: Retained<NSTextField>,
-    audio: Retained<NSButton>,
-    subtitles: Retained<NSButton>,
-    /// Offers to jump past the intro or the credits while they play.
-    skip: Retained<NSButton>,
-    /// Turns while the picture is on its way: at the start, and whenever
-    /// playback stalls waiting for the network.
-    spinner: Retained<NSProgressIndicator>,
-    /// Briefly says what a key press did.
-    notice: Retained<NSTextField>,
-    /// The pane of glass the notice sits on.
-    notice_pane: OnceCell<Retained<NSView>>,
+    controls: Controls,
+    /// How the window's title bar was before the player cleared it. Empty
+    /// until the screen is in a window, and again once it has closed.
+    chrome: RefCell<Option<Chrome>>,
     ticks_of_notice_left: Cell<u32>,
     /// In tenths: 15 is one and a half times normal speed.
     speed: Cell<u32>,
-    /// The views that sit on top of the video and hide when idle.
-    controls: RefCell<Vec<Retained<NSView>>>,
     controls_shown: Cell<bool>,
+    /// Whether the pointer was last seen on the controls. They stay for as
+    /// long as it rests there.
+    pointer_on_controls: Cell<bool>,
     ticks_idle: Cell<u32>,
+    /// Whether the time to the right of the scrubber is the file's full
+    /// length, and not what is left of it.
+    shows_length: Cell<bool>,
+    chapters: RefCell<Vec<Chapter>>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -137,42 +140,6 @@ define_class!(
     unsafe impl NSObjectProtocol for PlayerScreen {}
 
     impl PlayerScreen {
-        #[unsafe(method(toggle:))]
-        fn toggle_clicked(&self, _sender: Option<&AnyObject>) {
-            self.or_log(self.toggle_pause());
-        }
-
-        #[unsafe(method(scrub:))]
-        fn scrubbed(&self, _sender: Option<&AnyObject>) {
-            let position = Duration::from_secs_f64(self.ivars().scrubber.doubleValue().max(0.0));
-            self.or_log(self.ivars().player.seek(position));
-        }
-
-        #[unsafe(method(close:))]
-        fn close_clicked(&self, _sender: Option<&AnyObject>) {
-            self.close(Outcome::Closed);
-        }
-
-        #[unsafe(method(skip:))]
-        fn skip_clicked(&self, _sender: Option<&AnyObject>) {
-            self.or_log(self.skip_marker());
-        }
-
-        #[unsafe(method(fullScreen:))]
-        fn full_screen_clicked(&self, _sender: Option<&AnyObject>) {
-            self.toggle_full_screen();
-        }
-
-        #[unsafe(method(chooseAudio:))]
-        fn choose_audio(&self, sender: &NSButton) {
-            self.or_log(self.offer_tracks(TrackKind::Audio, sender));
-        }
-
-        #[unsafe(method(chooseSubtitles:))]
-        fn choose_subtitles(&self, sender: &NSButton) {
-            self.or_log(self.offer_tracks(TrackKind::Subtitles, sender));
-        }
-
         /// A menu item's tag is the id of its track, or 0 for no subtitles.
         #[unsafe(method(audioChosen:))]
         fn audio_chosen(&self, item: &NSMenuItem) {
@@ -185,6 +152,13 @@ define_class!(
             let id = item.tag() as i64;
             self.or_log(self.ivars().player.select_subtitles((id != 0).then_some(id)));
             self.remember_track(TrackKind::Subtitles);
+        }
+
+        /// Here the tag is the speed in tenths.
+        #[unsafe(method(speedChosen:))]
+        fn speed_chosen(&self, item: &NSMenuItem) {
+            let speed = u32::try_from(item.tag()).unwrap_or(NORMAL_SPEED);
+            self.or_log(self.set_speed(speed));
         }
 
         #[unsafe(method(tick:))]
@@ -215,7 +189,7 @@ impl PlayerScreen {
         player.set_muted(purpose == Purpose::Check)?;
         let speed = settings.speed.clamp(SLOWEST_SPEED, FASTEST_SPEED);
         player.set_speed(f64::from(speed) / 10.0)?;
-        player.set_volume(settings.volume.clamp(0.0, 100.0))?;
+        player.set_volume(settings.volume.clamp(0.0, controls::FULL_VOLUME))?;
 
         let root = InputView::new(main_thread);
         let video = NSView::new(main_thread);
@@ -223,28 +197,22 @@ impl PlayerScreen {
         video.setLayer(Some(&layer));
         video.setWantsLayer(true);
         crate::ui::layout::cover(&root, &video);
+        let controls = Controls::new(main_thread, &root, item);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
             video,
             player,
             item: item.clone(),
-            toggle: NSButton::new(main_thread),
-            scrubber: NSSlider::new(main_thread),
-            elapsed: readout(main_thread),
-            remaining: readout(main_thread),
-            speed_readout: readout(main_thread),
-            audio: NSButton::new(main_thread),
-            subtitles: NSButton::new(main_thread),
-            skip: NSButton::new(main_thread),
-            spinner: NSProgressIndicator::new(main_thread),
-            notice: readout(main_thread),
-            notice_pane: OnceCell::new(),
+            controls,
+            chrome: RefCell::new(None),
             ticks_of_notice_left: Cell::new(0),
             speed: Cell::new(speed),
-            controls: RefCell::new(Vec::new()),
             controls_shown: Cell::new(true),
+            pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
+            shows_length: Cell::new(false),
+            chapters: RefCell::new(Vec::new()),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             duration: Cell::new(None),
@@ -256,14 +224,16 @@ impl PlayerScreen {
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
-        screen.build_controls(main_thread);
+        screen.connect_controls();
+        screen.listen();
+        screen.show_speed();
+        screen.set_waiting(true);
         // The player knows neither time until the file is open, which can
         // take a while. The item knows both now, so the controls never show
         // a film that is being resumed as if it started over.
         if let Some(duration) = item.duration {
             screen.show_progress(source.start, duration.into());
         }
-        screen.listen();
         // Loaded before the timer and the event thread exist: both keep the
         // screen and its player alive, so a failure after them would leak.
         screen.ivars().player.load(&source)?;
@@ -307,19 +277,23 @@ impl PlayerScreen {
         self.ivars().speed.get()
     }
 
-    /// Directs the keyboard at the player. Call once the view is in a
-    /// window.
+    /// Directs the keyboard at the player and gives the video the whole
+    /// window. Call once the view is in a window.
     pub fn focus(&self) {
-        let root = &self.ivars().root;
-        if let Some(window) = root.window() {
-            window.makeFirstResponder(Some(root));
+        let ivars = self.ivars();
+        if let Some(window) = ivars.root.window() {
+            window.makeFirstResponder(Some(&ivars.root));
+            let mut chrome = ivars.chrome.borrow_mut();
+            if chrome.is_none() {
+                *chrome = Some(Chrome::clear(&window));
+            }
         }
         self.fit_to_display();
     }
 
     /// Shows or hides the spinner that says the picture is on its way.
     fn set_waiting(&self, waiting: bool) {
-        let spinner = &self.ivars().spinner;
+        let spinner = &self.ivars().controls.spinner;
         // SAFETY: the sender is optional and not kept.
         unsafe {
             if waiting {
@@ -361,108 +335,89 @@ impl PlayerScreen {
         self.or_log(self.ivars().player.quit());
     }
 
-    /// Stops the timer. Returns whether the screen was still open.
+    /// Stops the timer and hands the window back as it was found. Returns
+    /// whether the screen was still open.
     fn stop_ticking(&self) -> bool {
-        let Some(timer) = self.ivars().timer.borrow_mut().take() else {
+        let ivars = self.ivars();
+        let Some(timer) = ivars.timer.borrow_mut().take() else {
             return false;
         };
         timer.invalidate();
         NSCursor::setHiddenUntilMouseMoves(false);
+        if let (Some(chrome), Some(window)) =
+            (ivars.chrome.borrow_mut().take(), ivars.root.window())
+        {
+            chrome.restore(&window);
+        }
         true
     }
 
-    fn build_controls(&self, main_thread: MainThreadMarker) {
-        let ivars = self.ivars();
-        self.wire(&ivars.toggle, "pause.fill", sel!(toggle:));
-        self.wire(&ivars.audio, "waveform", sel!(chooseAudio:));
-        self.wire(&ivars.subtitles, "captions.bubble", sel!(chooseSubtitles:));
-        let full_screen = NSButton::new(main_thread);
-        self.wire(&full_screen, "arrow.up.left.and.arrow.down.right", sel!(fullScreen:));
-        // SAFETY: the scrubber does not retain its target. The screen owns
-        // the view it is in, so it outlives every action.
-        unsafe {
-            ivars.scrubber.setTarget(Some(self));
-            ivars.scrubber.setAction(Some(sel!(scrub:)));
-        }
-        // The keyboard belongs to the screen, not to the control that was
-        // clicked last.
-        ivars.scrubber.setRefusesFirstResponder(true);
-        self.show_speed();
+    /// Says what each control does.
+    fn connect_controls(&self) {
+        let controls = &self.ivars().controls;
+        self.on_click(&controls.back, |screen| screen.close(Outcome::Closed));
+        self.on_click(&controls.toggle, |screen| screen.or_log(screen.toggle_pause()));
+        self.on_click(&controls.rewind, |screen| screen.or_log(screen.jump(-LONG_JUMP)));
+        self.on_click(&controls.forward, |screen| screen.or_log(screen.jump(LONG_JUMP)));
+        self.on_click(&controls.next, |screen| screen.close(Outcome::Finished));
+        self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
+        self.on_click(&controls.remaining, |screen| {
+            let shows_length = &screen.ivars().shows_length;
+            shows_length.set(!shows_length.get());
+            screen.or_log(screen.refresh());
+        });
+        self.on_click(&controls.speed, |screen| screen.offer_speeds());
+        self.on_click(&controls.audio, |screen| {
+            screen.or_log(screen.offer_tracks(TrackKind::Audio));
+        });
+        self.on_click(&controls.subtitles, |screen| {
+            screen.or_log(screen.offer_tracks(TrackKind::Subtitles));
+        });
+        self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
+        self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
 
-        let bar: [&NSView; 8] = [
-            &ivars.toggle,
-            &ivars.elapsed,
-            &ivars.scrubber,
-            &ivars.remaining,
-            &ivars.speed_readout,
-            &ivars.audio,
-            &ivars.subtitles,
-            &full_screen,
-        ];
-        let bar = glass(&row(&bar, main_thread), main_thread);
-        layout::dock_bottom(&ivars.root, &bar, theme::MARGIN);
-
-        let close = NSButton::new(main_thread);
-        self.wire(&close, "chevron.left", sel!(close:));
-        let title =
-            NSTextField::labelWithString(&NSString::from_str(&title(&ivars.item)), main_thread);
-        // SAFETY: the weight is a constant that AppKit provides.
-        let semibold = unsafe { NSFontWeightSemibold };
-        title.setFont(Some(&NSFont::systemFontOfSize_weight(theme::FONT_SIZE, semibold)));
-        let heading: [&NSView; 2] = [&close, &title];
-        let heading = glass(&row(&heading, main_thread), main_thread);
-        layout::dock_top_leading(&ivars.root, &heading, theme::MARGIN);
-
-        // SAFETY: as for the scrubber.
-        unsafe {
-            ivars.skip.setTarget(Some(self));
-            ivars.skip.setAction(Some(sel!(skip:)));
-        }
-        ivars.skip.setBezelStyle(NSBezelStyle::Glass);
-        ivars.skip.setRefusesFirstResponder(true);
-        ivars.skip.setHidden(true);
-        layout::dock_above(&ivars.root, &ivars.skip, &bar, theme::CONTROL_SPACING);
-
-        let notice = glass(&row(&[&*ivars.notice as &NSView], main_thread), main_thread);
-        notice.setAlphaValue(0.0);
-        layout::dock_top_trailing(&ivars.root, &notice, theme::MARGIN);
-        // Cannot fail: the controls are built once.
-        let _ = ivars.notice_pane.set(notice);
-
-        ivars.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
-        ivars.spinner.setIndeterminate(true);
-        ivars.spinner.setDisplayedWhenStopped(false);
-        layout::dock_center(&ivars.root, &ivars.spinner);
-        self.set_waiting(true);
-
-        // The skip button, the notice and the spinner come and go by
-        // themselves.
-        *ivars.controls.borrow_mut() = vec![bar, heading];
+        let (scrubbed, pointed, volume) = (Weak::new(self), Weak::new(self), Weak::new(self));
+        controls.scrubber.listen(
+            move |seconds| {
+                if let Some(screen) = scrubbed.load() {
+                    screen.or_log(screen.scrub_to(seconds));
+                }
+            },
+            move |place| {
+                if let Some(screen) = pointed.load() {
+                    screen.show_bubble(place);
+                }
+            },
+        );
+        controls.volume.listen(
+            move |level| {
+                if let Some(screen) = volume.load() {
+                    screen.or_log(screen.ivars().player.set_volume(level));
+                }
+            },
+            |_| {},
+        );
     }
 
-    /// Makes `button` a borderless symbol that calls `action` on the screen.
-    fn wire(&self, button: &NSButton, symbol_name: &str, action: Sel) {
-        // SAFETY: the button does not retain its target. The screen owns
-        // the view the button is in, so it outlives every click.
-        unsafe {
-            button.setTarget(Some(self));
-            button.setAction(Some(action));
-        }
-        button.setBordered(false);
-        button.setImage(symbol(symbol_name).as_deref());
-        button.setTitle(ns_string!(""));
-        button.setRefusesFirstResponder(true);
+    /// Makes a click on `chip` call `act` with the screen.
+    fn on_click(&self, chip: &Chip, act: impl Fn(&Self) + 'static) {
+        let screen = Weak::new(self);
+        chip.on_click(move || {
+            if let Some(screen) = screen.load() {
+                act(&screen);
+            }
+        });
     }
 
     /// Connects the keyboard and the mouse to the screen.
     fn listen(&self) {
-        let (keys, mouse, clicks, display) =
+        let (keys, pointer, clicks, display) =
             (Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self));
         self.ivars().root.listen(
             move |key| keys.load().is_some_and(|screen| screen.press(key)),
-            move || {
-                if let Some(screen) = mouse.load() {
-                    screen.show_controls(true);
+            move |place| {
+                if let Some(screen) = pointer.load() {
+                    screen.pointer_moved(place);
                 }
             },
             move |count| {
@@ -489,6 +444,7 @@ impl PlayerScreen {
 
     /// Acts on a key. Returns whether the key means anything here.
     pub fn press(&self, key: Key) -> bool {
+        let is_episode = self.ivars().item.kind == Kind::Episode;
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
             Key::Left => self.jump(-SHORT_JUMP),
@@ -508,7 +464,7 @@ impl PlayerScreen {
                 self.toggle_full_screen();
                 Ok(())
             }
-            Key::Character('n') => {
+            Key::Character('n') if is_episode => {
                 self.close(Outcome::Finished);
                 return true;
             }
@@ -524,8 +480,23 @@ impl PlayerScreen {
             Key::Character(_) => return false,
         };
         self.or_log(result);
+        // A hand on the keyboard is not on the mouse: wherever the pointer
+        // was left, it is no longer holding the controls up.
+        self.ivars().pointer_on_controls.set(false);
         self.show_controls(true);
         true
+    }
+
+    /// Hears where the pointer has moved to in the screen's view, or that
+    /// it has left the view.
+    fn pointer_moved(&self, place: Option<NSPoint>) {
+        let controls = &self.ivars().controls;
+        let on_controls =
+            place.is_some_and(|place| controls.top.holds(place) || controls.bottom.holds(place));
+        self.ivars().pointer_on_controls.set(on_controls);
+        if place.is_some() {
+            self.show_controls(true);
+        }
     }
 
     fn on_tick(&self) -> player::Result<()> {
@@ -544,10 +515,11 @@ impl PlayerScreen {
             }
         }
 
-        // The position is only read when something on screen depends on it:
-        // the controls, or an intro or credits that could be skipped.
+        // While the controls are hidden the position is read only for an
+        // intro or credits that could be skipped, and then once a second.
         let shown = ivars.controls_shown.get();
-        if shown || !ivars.item.markers.is_empty() {
+        let has_markers = !ivars.item.markers.is_empty();
+        if shown || (has_markers && ticks.is_multiple_of(TICKS_PER_SECOND)) {
             let position = ivars.player.position()?;
             self.offer_skip(position);
         }
@@ -557,8 +529,10 @@ impl PlayerScreen {
         self.refresh()?;
         let idle = ivars.ticks_idle.get() + 1;
         ivars.ticks_idle.set(idle);
-        // A paused picture keeps its controls.
-        if idle >= TICKS_UNTIL_HIDDEN && !ivars.player.is_paused()? {
+        // A paused picture keeps its controls, and so does a pointer that
+        // is on them.
+        let in_use = ivars.pointer_on_controls.get() || ivars.controls.scrubber.is_dragging();
+        if idle >= TICKS_UNTIL_HIDDEN && !in_use && !ivars.player.is_paused()? {
             self.show_controls(false);
         }
         Ok(())
@@ -573,15 +547,53 @@ impl PlayerScreen {
         Ok(())
     }
 
+    /// Goes to `seconds` into the file, as the viewer drags the scrubber
+    /// or clicks on it.
+    fn scrub_to(&self, seconds: f64) -> player::Result<()> {
+        let player = &self.ivars().player;
+        let position = Duration::from_secs_f64(seconds.max(0.0));
+        // The times follow the knob at once, not the player once it has
+        // caught up.
+        if let Some(duration) = player.duration()? {
+            self.show_progress(position, duration);
+        }
+        player.seek(position)
+    }
+
+    /// Shows the time at `place` on the scrubber, and the chapter it is
+    /// in, in a bubble above that place. `None` puts the bubble away.
+    fn show_bubble(&self, place: Option<Pointed>) {
+        let ivars = self.ivars();
+        let controls = &ivars.controls;
+        let Some(place) = place else {
+            controls.bubble.setHidden(true);
+            return;
+        };
+        let time = Duration::from_secs_f64(place.value.max(0.0));
+        let chapters = ivars.chapters.borrow();
+        let chapter = chapters.iter().rev().find(|chapter| chapter.start <= time);
+        let text = match chapter.and_then(|chapter| chapter.title.as_deref()) {
+            Some(title) => format!("{}  {title}", clock(time)),
+            None => clock(time),
+        };
+        controls.bubble.set_title(&text);
+        controls.bubble_x.setConstant(place.x);
+        controls.bubble.setHidden(false);
+    }
+
     fn change_volume(&self, by: f64) -> player::Result<()> {
         let player = &self.ivars().player;
-        let volume = (player.volume()? + by).clamp(0.0, 100.0);
+        let volume = (player.volume()? + by).clamp(0.0, controls::FULL_VOLUME);
         player.set_volume(volume)?;
         self.notify(&format!("Volume {volume:.0}%"));
         Ok(())
     }
 
     fn toggle_mute(&self) -> player::Result<()> {
+        // A check stays silent whatever is pressed.
+        if self.ivars().purpose == Purpose::Check {
+            return Ok(());
+        }
         let player = &self.ivars().player;
         let muted = !player.is_muted()?;
         player.set_muted(muted)?;
@@ -600,8 +612,12 @@ impl PlayerScreen {
     }
 
     fn show_speed(&self) {
-        let text = speed_text(self.speed());
-        self.ivars().speed_readout.setStringValue(&NSString::from_str(&text));
+        self.ivars().controls.speed.set_title(&speed_text(self.speed()));
+    }
+
+    /// The file being played, as the server describes it.
+    fn part(&self) -> Option<&Part> {
+        self.ivars().item.media.first().and_then(|media| media.parts.first())
     }
 
     /// Switches to the track after the current one. For subtitles, "off"
@@ -624,7 +640,8 @@ impl PlayerScreen {
             },
             (_, track) => player.select_subtitles(track.map(|track| track.id))?,
         }
-        let name = next.or(tracks.first().filter(|_| kind == TrackKind::Audio)).map(track_name);
+        let chosen = next.or(tracks.first().filter(|_| kind == TrackKind::Audio));
+        let name = chosen.map(|track| tracks::name(track, self.part()));
         self.remember_track(kind);
         let label = if kind == TrackKind::Audio { "Audio" } else { "Subtitles" };
         self.notify(&format!("{label}: {}", name.as_deref().unwrap_or("Off")));
@@ -637,25 +654,19 @@ impl PlayerScreen {
     /// not disturb the subtitles the server remembers.
     fn remember_track(&self, kind: TrackKind) {
         let ivars = self.ivars();
-        let part = ivars.item.media.first().and_then(|media| media.parts.first());
-        let (Some(part), Purpose::Watching) = (part, ivars.purpose) else {
+        let (Some(part), Purpose::Watching) = (self.part(), ivars.purpose) else {
             return;
         };
         let tracks = match ivars.player.tracks() {
             Ok(tracks) => tracks,
             Err(error) => return eprintln!("plex-rust: {error}"),
         };
-        let stream_kind = match kind {
-            TrackKind::Audio => StreamKind::Audio,
-            TrackKind::Subtitles => StreamKind::Subtitle,
-            TrackKind::Video => return,
-        };
         // The player's id for a track is its position among the tracks of
         // its kind, which is also the order the server lists them in.
         let selected = tracks.iter().find(|track| track.kind == kind && track.selected);
         let stream = selected.and_then(|track| {
             let position = usize::try_from(track.id).ok()?.checked_sub(1)?;
-            part.embedded(stream_kind).nth(position).map(|stream| stream.id)
+            part.embedded(tracks::stream_kind(kind)).nth(position).map(|stream| stream.id)
         });
         let (audio, subtitles) = match (kind, selected, stream) {
             (TrackKind::Audio, _, Some(stream)) => (Some(stream), None),
@@ -676,26 +687,58 @@ impl PlayerScreen {
         });
     }
 
-    /// Pops up a menu of the tracks of `kind` under `button`.
-    fn offer_tracks(&self, kind: TrackKind, button: &NSButton) -> player::Result<()> {
+    /// Pops up a menu of the tracks of `kind` over its button.
+    fn offer_tracks(&self, kind: TrackKind) -> player::Result<()> {
+        let controls = &self.ivars().controls;
+        let tracks = self.ivars().player.tracks()?;
+        let tracks: Vec<&Track> = tracks.iter().filter(|track| track.kind == kind).collect();
+        let mut choices = Vec::new();
+        if kind == TrackKind::Subtitles {
+            choices.push(Choice {
+                title: "Off".to_owned(),
+                tag: 0,
+                chosen: tracks.iter().all(|track| !track.selected),
+            });
+        }
+        choices.extend(tracks.iter().map(|track| Choice {
+            title: tracks::name(track, self.part()),
+            tag: track.id as isize,
+            chosen: track.selected,
+        }));
+        match kind {
+            TrackKind::Audio => self.offer(&choices, sel!(audioChosen:), &controls.audio),
+            _ => self.offer(&choices, sel!(subtitlesChosen:), &controls.subtitles),
+        }
+        Ok(())
+    }
+
+    /// Pops up a menu of playback speeds over the speed button.
+    fn offer_speeds(&self) {
+        let choices: Vec<Choice> = SPEED_CHOICES
+            .iter()
+            .map(|speed| Choice {
+                title: speed_text(*speed),
+                tag: *speed as isize,
+                chosen: *speed == self.speed(),
+            })
+            .collect();
+        self.offer(&choices, sel!(speedChosen:), &self.ivars().controls.speed);
+    }
+
+    /// Pops up a menu of `choices` just above `chip`. Picking one sends
+    /// `action`, a method of this class, with the menu item.
+    fn offer(&self, choices: &[Choice], action: Sel, chip: &Chip) {
         // The menu runs its own event loop. The file can end inside it,
         // which closes the screen and would otherwise free it under us.
         let _alive = self.retain();
         let main_thread = self.mtm();
-        let tracks = self.ivars().player.tracks()?;
-        let tracks: Vec<&Track> = tracks.iter().filter(|track| track.kind == kind).collect();
-        let action = match kind {
-            TrackKind::Audio => sel!(audioChosen:),
-            _ => sel!(subtitlesChosen:),
-        };
-
         let menu = NSMenu::new(main_thread);
-        let add = |title: &str, tag: isize, selected: bool| {
-            // SAFETY: both selectors are defined on this class.
+        for choice in choices {
+            // SAFETY: the caller passes a selector this class defines.
             let entry = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(main_thread),
-                    &NSString::from_str(title),
+                    &NSString::from_str(&choice.title),
                     Some(action),
                     ns_string!(""),
                 )
@@ -703,41 +746,36 @@ impl PlayerScreen {
             // SAFETY: a menu item does not retain its target, and the
             // screen is kept alive above for as long as the menu is up.
             unsafe { entry.setTarget(Some(self)) };
-            entry.setTag(tag);
-            if selected {
+            entry.setTag(choice.tag);
+            if choice.chosen {
                 entry.setState(NSControlStateValueOn);
             }
             menu.addItem(&entry);
-        };
-        if kind == TrackKind::Subtitles {
-            add("Off", 0, tracks.iter().all(|track| !track.selected));
-        }
-        for track in tracks {
-            add(&track_name(track), track.id as isize, track.selected);
         }
 
+        // A menu hangs down from the point it is given, so to sit on top
+        // of the chip it starts its own height above it.
+        let above = NSPoint::new(0.0, chip.bounds().size.height + menu.size().height);
         // Blocks until the menu is dismissed.
-        menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::ZERO, Some(button));
+        menu.popUpMenuPositioningItem_atLocation_inView(None, above, Some(chip));
         if self.ivars().timer.borrow().is_some() {
             self.show_controls(true);
         }
-        Ok(())
     }
 
     /// Shows or hides the skip button to match `position`.
     fn offer_skip(&self, position: Option<Duration>) {
-        let skip = &self.ivars().skip;
+        let skip = &self.ivars().controls.skip;
         let Some(marker) = position.and_then(|position| self.ivars().item.marker_at(position))
         else {
             skip.setHidden(true);
             return;
         };
-        let title = match marker.kind {
+        skip.set_title(match marker.kind {
             MarkerKind::Intro => "Skip Intro",
             MarkerKind::Credits => "Skip Credits",
             MarkerKind::Other => "Skip",
-        };
-        skip.setTitle(&NSString::from_str(title));
+        });
         skip.setHidden(false);
     }
 
@@ -748,7 +786,7 @@ impl PlayerScreen {
             player.position()?.and_then(|position| self.ivars().item.marker_at(position));
         if let Some(marker) = marker {
             player.seek(marker.end_time_offset.into())?;
-            self.ivars().skip.setHidden(true);
+            self.ivars().controls.skip.setHidden(true);
         }
         Ok(())
     }
@@ -767,19 +805,18 @@ impl PlayerScreen {
     /// Says `text` in the corner for a moment.
     fn notify(&self, text: &str) {
         let ivars = self.ivars();
-        ivars.notice.setStringValue(&NSString::from_str(text));
+        ivars.controls.notice.set_title(text);
         ivars.ticks_of_notice_left.set(TICKS_OF_NOTICE);
         self.set_notice_shown(true);
     }
 
     fn set_notice_shown(&self, shown: bool) {
-        if let Some(pane) = self.ivars().notice_pane.get() {
-            pane.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
-        }
+        let notice = &self.ivars().controls.notice;
+        notice.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
     }
 
-    /// Fades the controls in or out. Showing them also restarts the wait
-    /// before they hide again.
+    /// Fades the controls, the window's own buttons and the cursor in or
+    /// out. Showing them also restarts the wait before they hide again.
     fn show_controls(&self, shown: bool) {
         let ivars = self.ivars();
         if shown {
@@ -788,8 +825,10 @@ impl PlayerScreen {
         if ivars.controls_shown.replace(shown) == shown {
             return;
         }
-        for control in ivars.controls.borrow().iter() {
-            control.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
+        ivars.controls.top.set_shown(shown);
+        ivars.controls.bottom.set_shown(shown);
+        if let Some(window) = ivars.root.window() {
+            chrome::show_buttons(&window, shown);
         }
         NSCursor::setHiddenUntilMouseMoves(!shown);
         if shown {
@@ -825,13 +864,13 @@ impl PlayerScreen {
         match event {
             Event::Loaded => {
                 self.report(PlaybackState::Playing);
+                self.or_log(self.show_chapters());
                 self.or_log(self.refresh());
             }
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.
                 self.set_waiting(false);
-                let ivars = self.ivars();
-                self.or_log(video_layer::fit_to_display(&ivars.video, &ivars.player));
+                self.fit_to_display();
             }
             Event::Ended(EndReason::Failed(error)) => self.close(Outcome::Failed(error.clone())),
             Event::Buffering(stalled) => self.set_waiting(*stalled),
@@ -841,25 +880,54 @@ impl PlayerScreen {
         }
     }
 
+    /// Notches the scrubber where the file's chapters start.
+    fn show_chapters(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let chapters = ivars.player.chapters()?;
+        // The first chapter starts with the file, where a notch says nothing.
+        let starts = chapters.iter().map(|chapter| chapter.start.as_secs_f64());
+        ivars.controls.scrubber.set_marks(starts.filter(|start| *start > 0.0).collect());
+        *ivars.chapters.borrow_mut() = chapters;
+        Ok(())
+    }
+
     fn toggle_pause(&self) -> player::Result<()> {
         let player = &self.ivars().player;
         let pause = !player.is_paused()?;
         player.set_paused(pause)?;
-        let image = symbol(if pause { "play.fill" } else { "pause.fill" });
-        self.ivars().toggle.setImage(image.as_deref());
+        let symbol = if pause { "play.fill" } else { "pause.fill" };
+        self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);
         Ok(())
     }
 
-    /// Brings the scrubber and the two times up to date.
+    /// Brings the controls up to date with the player.
     fn refresh(&self) -> player::Result<()> {
         let ivars = self.ivars();
-        let (Some(position), Some(duration)) = (ivars.player.position()?, ivars.player.duration()?)
-        else {
+        let (player, controls) = (&ivars.player, &ivars.controls);
+
+        let volume = player.volume()?;
+        let silent = player.is_muted()? || volume == 0.0;
+        controls.volume.set_value(volume);
+        let speaker = if silent { "speaker.slash.fill" } else { "speaker.wave.2.fill" };
+        controls.mute.set_symbol(speaker, theme::SYMBOL_SIZE);
+        let arrows = if self.is_full_screen() {
+            "arrow.down.right.and.arrow.up.left"
+        } else {
+            "arrow.up.left.and.arrow.down.right"
+        };
+        controls.full_screen.set_symbol(arrows, theme::SYMBOL_SIZE);
+
+        let (Some(position), Some(duration)) = (player.position()?, player.duration()?) else {
             return Ok(());
         };
-        self.show_progress(position, duration);
+        let loaded = player.buffered_until()?.unwrap_or_default();
+        controls.scrubber.set_loaded(loaded.as_secs_f64());
+        // While the knob is held, it and the times belong to the viewer.
+        if !controls.scrubber.is_dragging() {
+            self.show_progress(position, duration);
+        }
         Ok(())
     }
 
@@ -867,11 +935,17 @@ impl PlayerScreen {
     /// in the two times.
     fn show_progress(&self, position: Duration, duration: Duration) {
         let ivars = self.ivars();
-        ivars.scrubber.setMaxValue(duration.as_secs_f64());
-        ivars.scrubber.setDoubleValue(position.as_secs_f64());
-        ivars.elapsed.setStringValue(&NSString::from_str(&clock(position)));
-        let left = duration.saturating_sub(position);
-        ivars.remaining.setStringValue(&NSString::from_str(&format!("-{}", clock(left))));
+        let controls = &ivars.controls;
+        controls.scrubber.set_limit(duration.as_secs_f64());
+        controls.scrubber.set_value(position.as_secs_f64());
+        controls.elapsed.setStringValue(&NSString::from_str(&clock(position)));
+        let right = if ivars.shows_length.get() {
+            clock(duration)
+        } else {
+            // U+2212 is the minus sign, which sits level with the digits.
+            format!("\u{2212}{}", clock(duration.saturating_sub(position)))
+        };
+        controls.remaining.set_title(&right);
     }
 
     fn report_current_state(&self) {
@@ -931,6 +1005,15 @@ impl PlayerScreen {
     }
 }
 
+/// One line of a pop-up menu.
+struct Choice {
+    title: String,
+    /// What the menu item carries to the method that handles it.
+    tag: isize,
+    /// Whether it is the one in effect, which gets the check mark.
+    chosen: bool,
+}
+
 /// One progress report, owning what it needs so it can cross threads.
 struct Progress {
     item: plex::model::RatingKey,
@@ -959,27 +1042,6 @@ fn log_unsaved(sent: plex::Result<()>) {
     }
 }
 
-/// What the player calls the item: an episode by its show, season and
-/// episode numbers and name, anything else by its title.
-fn title(item: &Item) -> String {
-    match (item.kind, &item.grandparent_title, item.parent_index, item.index) {
-        (Kind::Episode, Some(show), Some(season), Some(episode)) => {
-            format!("{show} · S{season} E{episode} · {}", item.title)
-        }
-        _ => item.title.clone(),
-    }
-}
-
-/// What a track is called in a menu: its name, else its language, else its
-/// number.
-fn track_name(track: &Track) -> String {
-    match (&track.title, &track.language) {
-        (Some(title), Some(language)) => format!("{title} ({language})"),
-        (Some(name), None) | (None, Some(name)) => name.clone(),
-        (None, None) => format!("Track {}", track.id),
-    }
-}
-
 /// `1.5×` for 15 tenths.
 fn speed_text(speed: u32) -> String {
     format!("{}.{}×", speed / 10, speed % 10)
@@ -994,41 +1056,4 @@ pub fn clock(time: Duration) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
-}
-
-/// A label for text that changes while it is on screen.
-fn readout(main_thread: MainThreadMarker) -> Retained<NSTextField> {
-    let label = NSTextField::labelWithString(ns_string!("0:00"), main_thread);
-    // SAFETY: the weight is a constant that AppKit provides.
-    let regular = unsafe { NSFontWeightRegular };
-    // Digits of equal width keep the scrubber from shifting every second.
-    let font = NSFont::monospacedDigitSystemFontOfSize_weight(theme::FONT_SIZE, regular);
-    label.setFont(Some(&font));
-    label
-}
-
-/// Views side by side, with room around them.
-fn row(views: &[&NSView], main_thread: MainThreadMarker) -> Retained<NSStackView> {
-    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(views), main_thread);
-    row.setSpacing(theme::CONTROL_SPACING);
-    let padding = theme::CONTROL_SPACING;
-    row.setEdgeInsets(NSEdgeInsets {
-        top: padding,
-        left: padding,
-        bottom: padding,
-        right: padding,
-    });
-    row
-}
-
-/// `content` on a rounded pane of glass.
-fn glass(content: &NSView, main_thread: MainThreadMarker) -> Retained<NSView> {
-    let glass = NSGlassEffectView::new(main_thread);
-    glass.setContentView(Some(content));
-    glass.setCornerRadius(theme::CONTROL_BAR_RADIUS);
-    Retained::into_super(glass)
-}
-
-fn symbol(name: &str) -> Option<Retained<NSImage>> {
-    NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
 }

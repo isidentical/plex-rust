@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use objc2::rc::{Allocated, Retained};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTrackingArea, NSTrackingAreaOptions, NSView};
-use objc2_foundation::NSRect;
+use objc2_foundation::{NSPoint, NSRect};
 
 /// A key press, reduced to the keys the app acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +66,7 @@ mod code {
 #[derive(Default)]
 pub struct Ivars {
     on_key: OnceCell<Box<dyn Fn(Key) -> bool>>,
-    on_mouse_moved: OnceCell<Box<dyn Fn()>>,
+    on_pointer: OnceCell<Box<dyn Fn(Option<NSPoint>)>>,
     on_click: OnceCell<Box<dyn Fn(Clicks)>>,
     on_display_changed: OnceCell<Box<dyn Fn()>>,
 }
@@ -129,9 +129,16 @@ define_class!(
         }
 
         #[unsafe(method(mouseMoved:))]
-        fn mouse_moved(&self, _event: &NSEvent) {
-            if let Some(on_mouse_moved) = self.ivars().on_mouse_moved.get() {
-                on_mouse_moved();
+        fn mouse_moved(&self, event: &NSEvent) {
+            if let Some(on_pointer) = self.ivars().on_pointer.get() {
+                on_pointer(Some(self.convertPoint_fromView(event.locationInWindow(), None)));
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            if let Some(on_pointer) = self.ivars().on_pointer.get() {
+                on_pointer(None);
             }
         }
     }
@@ -146,6 +153,7 @@ impl InputView {
         // Mouse movement is only delivered inside a tracking area. This one
         // follows the view's visible bounds by itself.
         let options = NSTrackingAreaOptions::MouseMoved
+            | NSTrackingAreaOptions::MouseEnteredAndExited
             | NSTrackingAreaOptions::ActiveInKeyWindow
             | NSTrackingAreaOptions::InVisibleRect;
         // SAFETY: the view owns the area, so the owner outlives it.
@@ -163,19 +171,20 @@ impl InputView {
     }
 
     /// Sets what happens on input. `on_key` returns whether it acted on the
-    /// key. `on_click` hears clicks on the view itself, not on the controls
-    /// in front of it. `on_display_changed` hears the window moving to a
+    /// key. `on_pointer` hears where in the view the pointer has moved to,
+    /// or `None` when it has left. `on_click` hears clicks on the view
+    /// itself, not on the controls in front of it. `on_display_changed` hears the window moving to a
     /// display of another kind. Can be called once.
     pub fn listen(
         &self,
         on_key: impl Fn(Key) -> bool + 'static,
-        on_mouse_moved: impl Fn() + 'static,
+        on_pointer: impl Fn(Option<NSPoint>) + 'static,
         on_click: impl Fn(Clicks) + 'static,
         on_display_changed: impl Fn() + 'static,
     ) {
         // Cannot fail the first time, which is the only time by contract.
         let _ = self.ivars().on_key.set(Box::new(on_key));
-        let _ = self.ivars().on_mouse_moved.set(Box::new(on_mouse_moved));
+        let _ = self.ivars().on_pointer.set(Box::new(on_pointer));
         let _ = self.ivars().on_click.set(Box::new(on_click));
         let _ = self.ivars().on_display_changed.set(Box::new(on_display_changed));
     }
