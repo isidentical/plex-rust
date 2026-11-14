@@ -32,6 +32,9 @@ pub enum Key {
     /// And a jump to 15 seconds before the end, where a snapshot would
     /// otherwise have to play the whole file to get to.
     NearEnd,
+    /// A second in which nothing is pressed, for what the key before it
+    /// set off to happen before the next key or the snapshot.
+    Wait,
 }
 
 /// A state of the player that only a snapshot's key script asks for.
@@ -54,8 +57,8 @@ pub enum Scene {
 
 impl Key {
     /// Reads a key from its name, as written on a command line: `space`,
-    /// `left`, or a single character such as `d`. `idle`, `end` and the
-    /// names of the scenes stand for what a script cannot do by itself.
+    /// `left`, or a single character such as `d`. `idle`, `end`, `wait` and
+    /// the names of the scenes stand for what a script cannot do by itself.
     pub fn named(name: &str) -> Option<Self> {
         let mut characters = name.chars();
         match (name, characters.next(), characters.next()) {
@@ -76,6 +79,7 @@ impl Key {
             ("wide", ..) => Some(Self::Scene(Scene::Wide)),
             ("marker", ..) => Some(Self::Scene(Scene::Marker)),
             ("end", ..) => Some(Self::NearEnd),
+            ("wait", ..) => Some(Self::Wait),
             (_, Some(character), None) => Some(Self::Character(character)),
             _ => None,
         }

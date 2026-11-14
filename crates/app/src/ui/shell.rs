@@ -69,6 +69,9 @@ const SNAPSHOT_TWEAKS_SETTLE: Duration = Duration::from_secs(1);
 /// that the file is open and the keys have something to act on.
 const SNAPSHOT_KEYS_AFTER: Duration = Duration::from_millis(1500);
 
+/// How long `Key::Wait` holds up the keys after it, and the snapshot.
+const SNAPSHOT_KEY_WAIT: Duration = Duration::from_secs(1);
+
 /// How long the server of the last launch gets to answer at its old
 /// address before plex.tv is asked where it is now. On another network
 /// that address can take the request and never answer, and a request
@@ -557,7 +560,7 @@ impl Shell {
                 let keys = keys.clone();
                 self.fetch(RatingKey::new(key.as_str()), move |shell, item| {
                     shell.open_player(item, Purpose::Check);
-                    shell.press_later(keys);
+                    shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
                 });
             }
             Some(Subject::Search(query)) => {
@@ -1357,23 +1360,15 @@ impl Shell {
         if purpose == Purpose::Watching {
             self.refresh();
         }
-        match outcome {
-            Outcome::Closed => {}
-            Outcome::Finished if screen.item().kind == Kind::Episode => {
-                self.play_episode_after(screen.item(), purpose);
-            }
-            Outcome::Finished => {}
-            Outcome::Previous => self.play_episode_before(screen.item(), purpose),
-            Outcome::Failed(reason) => {
-                let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
-                self.show_notice(Notice::new(
-                    self.main_thread,
-                    Mark::Symbol("exclamationmark.triangle"),
-                    &format!("{} could not be played", screen.item().title),
-                    &reason,
-                    Some(("Go Back", Box::new(dismiss))),
-                ));
-            }
+        if let Outcome::Failed(reason) = outcome {
+            let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
+            self.show_notice(Notice::new(
+                self.main_thread,
+                Mark::Symbol("exclamationmark.triangle"),
+                &format!("{} could not be played", screen.item().title),
+                &reason,
+                Some(("Go Back", Box::new(dismiss))),
+            ));
         }
     }
 
@@ -1413,70 +1408,24 @@ impl Shell {
         }
     }
 
-    /// Plays the episode that follows `episode` in its season, if there is
-    /// one. The end of a season is a natural place to stop.
-    fn play_episode_after(self: &Rc<Self>, episode: &Item, purpose: Purpose) {
-        let (Some(session), Some(season), Some(number)) =
-            (self.session(), episode.parent_rating_key.clone(), episode.index)
-        else {
-            return;
-        };
-        let server = session.server.clone();
-        let load = async move { server.children(&season).await };
-        let (shell, moves) = (Rc::clone(self), self.moves.get());
-        self.background.run(self.main_thread, load, move |episodes| match episodes {
-            Ok(episodes) => {
-                // The lowest number above this one, not this one plus one: a
-                // season can have a gap, and one file can hold two episodes.
-                let later = episodes.iter().filter(|episode| episode.index > Some(number));
-                let next = later.min_by_key(|episode| episode.index);
-                if let Some(next) = next {
-                    shell.play(next, purpose);
-                }
-            }
-            Err(error) => shell.fail(moves, &error),
-        });
-    }
-
-    /// Plays the episode that comes before `episode` in its season, if
-    /// there is one.
-    fn play_episode_before(self: &Rc<Self>, episode: &Item, purpose: Purpose) {
-        let (Some(session), Some(season), Some(number)) =
-            (self.session(), episode.parent_rating_key.clone(), episode.index)
-        else {
-            return;
-        };
-        let server = session.server.clone();
-        let load = async move { server.children(&season).await };
-        let (shell, moves) = (Rc::clone(self), self.moves.get());
-        self.background.run(self.main_thread, load, move |episodes| match episodes {
-            Ok(episodes) => {
-                // The highest number below this one, for the reasons given
-                // in `play_episode_after`. An episode with no number sorts
-                // as `None` and is not one of them.
-                let earlier = episodes
-                    .iter()
-                    .filter(|episode| episode.index.is_some_and(|index| index < number));
-                if let Some(previous) = earlier.max_by_key(|episode| episode.index) {
-                    shell.play(previous, purpose);
-                }
-            }
-            Err(error) => shell.fail(moves, &error),
-        });
-    }
-
-    /// Presses `keys` in the player once it has had time to open its file.
-    fn press_later(self: &Rc<Self>, keys: Vec<Key>) {
+    /// Presses `keys` in the player once `delay` has passed: at first the
+    /// time the player needs to open its file, then each wait among the
+    /// keys.
+    fn press_later(self: &Rc<Self>, keys: Vec<Key>, delay: Duration) {
         // A timer can only be created on the runtime's own threads.
-        let wait = async { tokio::time::sleep(SNAPSHOT_KEYS_AFTER).await };
+        let wait = async move { tokio::time::sleep(delay).await };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, wait, move |()| {
             // Cloned so that a key that closes the player finds no borrow.
-            let screen = shell.playing.borrow().clone();
-            if let Some(screen) = screen {
-                for key in keys {
-                    screen.press(key);
+            let Some(screen) = shell.playing.borrow().clone() else {
+                return;
+            };
+            let mut keys = keys.into_iter();
+            for key in keys.by_ref() {
+                if key == Key::Wait {
+                    return shell.press_later(keys.collect(), SNAPSHOT_KEY_WAIT);
                 }
+                screen.press(key);
             }
         });
     }
@@ -1555,8 +1504,14 @@ impl Shell {
     /// Waits for the screen to settle, applies the snapshot's tweaks,
     /// waits again and writes the PNG.
     fn snapshot_later(self: &Rc<Self>, snapshot: Snapshot) {
+        // The picture is taken once the keys pressed in a player are done.
+        let waits = match &snapshot.subject {
+            Subject::Play(_, keys) => keys.iter().filter(|key| **key == Key::Wait).count(),
+            _ => 0,
+        };
+        let settle = SNAPSHOT_SETTLE + SNAPSHOT_KEY_WAIT * u32::try_from(waits).unwrap_or(u32::MAX);
         // A timer can only be created on the runtime's own threads.
-        let settle = async { tokio::time::sleep(SNAPSHOT_SETTLE).await };
+        let settle = async move { tokio::time::sleep(settle).await };
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, settle, move |()| {
             let screen = shell.current(|entry| entry.screen.clone());

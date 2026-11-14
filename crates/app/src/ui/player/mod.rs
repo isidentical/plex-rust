@@ -127,17 +127,25 @@ enum UpNext {
     Cancelled,
 }
 
-/// How a playback came to its end.
+/// How far the item on screen has got towards playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The server is being asked for it in full. What the player holds is
+    /// still the episode before it, paused on its last picture.
+    Fetching,
+    /// The player has been given its file and has not opened it yet.
+    Opening,
+    /// Its file is open: positions and the end of the file are its own.
+    Playing,
+}
+
+/// How the screen came to close.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The viewer left.
+    /// The viewer left, or what was playing ended with nothing to follow.
     Closed,
     /// Playback failed. Holds the reason.
     Failed(String),
-    /// It played to the end, or the viewer asked for what comes next.
-    Finished,
-    /// The viewer asked for the episode before this one.
-    Previous,
 }
 
 pub struct Ivars {
@@ -145,7 +153,10 @@ pub struct Ivars {
     /// The view that hosts the video layer.
     video: Retained<NSView>,
     player: Player,
-    item: Item,
+    /// What is playing. Another episode takes its place when the viewer
+    /// moves on to it, or when this one ends.
+    item: RefCell<Rc<Item>>,
+    phase: Cell<Phase>,
     controls: Controls,
     /// How the window's title bar was before the player cleared it. Empty
     /// until the screen is in a window, and again once it has closed.
@@ -167,8 +178,11 @@ pub struct Ivars {
     /// length, and not what is left of it.
     shows_length: Cell<bool>,
     chapters: RefCell<Vec<Chapter>>,
-    /// The episodes before and after this one in its season. `None` for a
-    /// film, and for an episode until the server has listed its season.
+    /// The season of the episode this screen opened with, once the server
+    /// has listed it.
+    episodes: RefCell<Option<Vec<Item>>>,
+    /// The episodes before and after the one playing. `None` for a film,
+    /// and for an episode until its season is listed.
     neighbours: RefCell<Option<Neighbours>>,
     up_next: Cell<UpNext>,
     /// Held while playing, so that the display does not go to sleep in the
@@ -238,7 +252,9 @@ impl PlayerScreen {
     /// volume in `settings`. `on_close` is called once, when the screen is done.
     ///
     /// `item` should be the full item from [`MediaServer::item`], which is
-    /// the one that knows its intro and credits.
+    /// the one that knows its intro and credits. An episode gives way to
+    /// the one after it without the screen closing, so what
+    /// [`item`](Self::item) returns changes.
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         main_thread: MainThreadMarker,
@@ -250,8 +266,6 @@ impl PlayerScreen {
         purpose: Purpose,
         on_close: impl Fn(Outcome) + 'static,
     ) -> Result<Retained<Self>> {
-        let source = source::of(&server, item)?;
-
         let player = Player::new()?;
         player.set_muted(purpose == Purpose::Check)?;
         let speed = Speed::from_percent(settings.speed_percent);
@@ -271,7 +285,8 @@ impl PlayerScreen {
             root,
             video,
             player,
-            item: item.clone(),
+            item: RefCell::new(Rc::new(item.clone())),
+            phase: Cell::new(Phase::Opening),
             controls,
             chrome: RefCell::new(None),
             ticks_of_notice_left: Cell::new(0),
@@ -285,6 +300,7 @@ impl PlayerScreen {
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
+            episodes: RefCell::new(None),
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
             awake: RefCell::new(None),
@@ -303,16 +319,10 @@ impl PlayerScreen {
         screen.connect_controls();
         screen.listen();
         screen.show_speed();
-        screen.set_waiting(true);
-        // The player knows neither time until the file is open, which can
-        // take a while. The item knows both now, so the controls never show
-        // a film that is being resumed as if it started over.
-        if let Some(duration) = item.duration {
-            screen.show_progress(source.start, duration.into());
-        }
+        screen.show_neighbours();
         // Loaded before the timer and the event thread exist: both keep the
         // screen and its player alive, so a failure after them would leak.
-        screen.ivars().player.load(&source)?;
+        screen.load()?;
 
         // SAFETY: `tick:` is defined above. The timer retains the screen
         // until `close` invalidates it.
@@ -331,12 +341,11 @@ impl PlayerScreen {
         // SAFETY: the mode is a constant that Foundation provides.
         unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
         *screen.ivars().timer.borrow_mut() = Some(timer);
-        screen.keep_display_awake(true);
         if purpose == Purpose::Watching {
             screen.take_media_controls(images);
         }
         screen.follow_events(main_thread);
-        screen.find_neighbours();
+        screen.list_season();
         Ok(screen)
     }
 
@@ -345,8 +354,27 @@ impl PlayerScreen {
     }
 
     /// The item being played.
-    pub fn item(&self) -> &Item {
-        &self.ivars().item
+    pub fn item(&self) -> Rc<Item> {
+        Rc::clone(&self.ivars().item.borrow())
+    }
+
+    /// Hands the item's file to the player, to start where the viewer
+    /// left it.
+    fn load(&self) -> Result<()> {
+        let (ivars, item) = (self.ivars(), self.item());
+        let source = source::of(&ivars.server, &item)?;
+        self.set_waiting(true);
+        // The player knows neither time until the file is open, which can
+        // take a while. The item knows both now, so the controls never show
+        // a film that is being resumed as if it started over.
+        if let Some(duration) = item.duration {
+            self.show_progress(source.start, duration.into());
+        }
+        ivars.player.load(&source)?;
+        ivars.phase.set(Phase::Opening);
+        // An episode that takes over from a paused one plays.
+        self.set_paused(false)?;
+        Ok(())
     }
 
     /// What the viewer has set, to be used again next time. `None` for a
@@ -480,9 +508,9 @@ impl PlayerScreen {
     /// Takes the system's media controls for this playback, and fetches
     /// the poster they show next to its title.
     fn take_media_controls(&self, images: &Rc<Images>) {
-        let item = &self.ivars().item;
+        let item = self.item();
         let screen = Weak::new(self);
-        let remote = Remote::register(self.mtm(), item, LONG_JUMP, move |command| {
+        let remote = Remote::register(self.mtm(), &item, LONG_JUMP, move |command| {
             if let Some(screen) = screen.load() {
                 screen.obey(command);
             }
@@ -509,6 +537,11 @@ impl PlayerScreen {
 
     /// Does what the viewer asked for through the media controls.
     fn obey(&self, command: Command) {
+        // What the player holds for now is the episode before this one,
+        // which is not there to be steered.
+        if self.ivars().phase.get() == Phase::Fetching {
+            return;
+        }
         let result = match command {
             Command::Play => self.set_paused(false),
             Command::Pause => self.set_paused(true),
@@ -533,12 +566,16 @@ impl PlayerScreen {
         let Some(remote) = remote.as_ref() else {
             return Ok(());
         };
+        // Until the file is open the player's times are not this item's.
+        if ivars.phase.get() != Phase::Playing {
+            return Ok(());
+        }
         let player = &ivars.player;
         let (Some(position), Some(duration)) = (player.position()?, player.duration()?) else {
             return Ok(());
         };
         let rate = if player.is_paused()? { 0.0 } else { self.speed().factor() };
-        remote.show(&Playing { item: &ivars.item, position, duration, rate });
+        remote.show(&Playing { item: &self.item(), position, duration, rate });
         Ok(())
     }
 
@@ -570,7 +607,7 @@ impl PlayerScreen {
         });
         self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
         self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
-        self.on_click(&controls.up_next.play, |screen| screen.close(Outcome::Finished));
+        self.on_click(&controls.up_next.play, |screen| screen.go_to_next());
         self.on_click(&controls.up_next.cancel, |screen| {
             screen.ivars().up_next.set(UpNext::Cancelled);
             screen.ivars().controls.up_next.hide();
@@ -665,7 +702,7 @@ impl PlayerScreen {
             key,
             Key::Up | Key::Down | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f')
         );
-        let is_episode = self.ivars().item.kind == Kind::Episode;
+        let is_episode = self.item().kind == Kind::Episode;
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
             Key::Left => self.jump(-SHORT_JUMP, press),
@@ -709,8 +746,10 @@ impl PlayerScreen {
             }
             Key::Scene(scene) => {
                 let ivars = self.ivars();
-                stage::set(scene, &ivars.root, &ivars.controls, &ivars.player, &ivars.item)
+                stage::set(scene, &ivars.root, &ivars.controls, &ivars.player, &self.item())
             }
+            // The script that presses the keys does the waiting.
+            Key::Wait => return true,
             Key::Character(_) => return false,
         };
         self.or_log(result);
@@ -763,15 +802,18 @@ impl PlayerScreen {
         // countdown is kept up with on every tick.
         let shown = ivars.controls_shown.get();
         let counting = ivars.up_next.get() == UpNext::Counting;
-        let watches_position = !ivars.item.markers.is_empty() || self.next_episode_is_known();
-        if shown || counting || (watches_position && ticks.is_multiple_of(TICKS_PER_SECOND)) {
+        let watches_position = !self.item().markers.is_empty() || self.next_episode_is_known();
+        let reads_position =
+            shown || counting || (watches_position && ticks.is_multiple_of(TICKS_PER_SECOND));
+        // Until the file is open the player's position is not this item's.
+        if reads_position && ivars.phase.get() == Phase::Playing {
             let position = ivars.player.position()?;
             self.offer_next_episode(position);
-            // The countdown running out closes the screen.
-            if ivars.timer.borrow().is_none() {
-                return Ok(());
+            // The countdown running out moves on to the next episode, and
+            // this position is then no longer the one to act on.
+            if ivars.phase.get() == Phase::Playing {
+                self.offer_skip(position);
             }
-            self.offer_skip(position);
         }
         if !shown {
             return Ok(());
@@ -792,11 +834,9 @@ impl PlayerScreen {
 
     /// Asks the server for the season of the episode being played, to know
     /// what comes before and after it.
-    fn find_neighbours(&self) {
-        let ivars = self.ivars();
-        let (Kind::Episode, Some(season), Some(number)) =
-            (ivars.item.kind, ivars.item.parent_rating_key.clone(), ivars.item.index)
-        else {
+    fn list_season(&self) {
+        let (ivars, item) = (self.ivars(), self.item());
+        let (Kind::Episode, Some(season)) = (item.kind, item.parent_rating_key.clone()) else {
             return;
         };
         let server = ivars.server.clone();
@@ -807,21 +847,42 @@ impl PlayerScreen {
                 return;
             };
             match episodes {
-                Ok(episodes) => screen.set_neighbours(Neighbours::of(episodes, number)),
-                // Next and Previous then work as they do before the answer
-                // has come: the shell looks the season up when asked.
+                Ok(episodes) => {
+                    *screen.ivars().episodes.borrow_mut() = Some(episodes);
+                    screen.find_neighbours();
+                }
+                // Next and Previous then stay as they are before the answer
+                // has come: with nowhere to go.
                 Err(error) => eprintln!("plex-rust: season not listed: {}", with_causes(&error)),
             }
         });
     }
 
-    fn set_neighbours(&self, neighbours: Neighbours) {
-        let controls = &self.ivars().controls;
-        controls.next.set_enabled(neighbours.next.is_some());
-        if let Some(next) = &neighbours.next {
-            controls.up_next.offer(self.mtm(), next);
+    /// Works out which episodes are on either side of the one playing.
+    fn find_neighbours(&self) {
+        let (ivars, item) = (self.ivars(), self.item());
+        let neighbours =
+            ivars.episodes.borrow().as_ref().and_then(|episodes| {
+                item.index.map(|number| Neighbours::of(episodes.clone(), number))
+            });
+        if let Some(next) = neighbours.as_ref().and_then(|known| known.next.as_ref()) {
+            ivars.controls.up_next.offer(next);
         }
-        *self.ivars().neighbours.borrow_mut() = Some(neighbours);
+        *ivars.neighbours.borrow_mut() = neighbours;
+        self.show_neighbours();
+    }
+
+    /// Lights the buttons for the previous and the next episode when there
+    /// is one to go to and the episode playing can be left.
+    fn show_neighbours(&self) {
+        let ivars = self.ivars();
+        let neighbours = ivars.neighbours.borrow();
+        let leads_to = |pick: fn(&Neighbours) -> &Option<Item>| {
+            ivars.phase.get() == Phase::Playing
+                && neighbours.as_ref().is_some_and(|known| pick(known).is_some())
+        };
+        ivars.controls.previous.set_enabled(leads_to(|known| &known.previous));
+        ivars.controls.next.set_enabled(leads_to(|known| &known.next));
     }
 
     /// Goes back to the start of the episode, or to the episode before it
@@ -830,27 +891,101 @@ impl PlayerScreen {
     fn go_to_previous(&self) -> player::Result<()> {
         let ivars = self.ivars();
         let position = ivars.player.position()?.unwrap_or_default();
-        let is_first =
-            ivars.neighbours.borrow().as_ref().is_some_and(|known| known.previous.is_none());
-        if position <= RESTART_AFTER && !is_first {
-            self.close(Outcome::Previous);
-            return Ok(());
+        let previous = ivars.neighbours.borrow().as_ref().and_then(|known| known.previous.clone());
+        match previous {
+            Some(previous) if position <= RESTART_AFTER => self.switch_to(previous),
+            _ => {
+                ivars.player.seek(Duration::ZERO)?;
+                self.notify("From the start");
+            }
         }
-        ivars.player.seek(Duration::ZERO)?;
-        self.notify("From the start");
         Ok(())
     }
 
-    /// Goes to the next episode, unless the season is known to end here.
+    /// Goes to the next episode, if the season is known and has one.
     fn go_to_next(&self) {
-        let is_last =
-            self.ivars().neighbours.borrow().as_ref().is_some_and(|known| known.next.is_none());
-        if is_last {
-            self.notify("Last episode of the season");
-            self.show_controls(true);
+        let next = match &*self.ivars().neighbours.borrow() {
+            Some(known) => known.next.clone(),
+            None => return,
+        };
+        match next {
+            Some(next) => self.switch_to(next),
+            None => {
+                self.notify("Last episode of the season");
+                self.show_controls(true);
+            }
+        }
+    }
+
+    /// Plays `episode` in place of the one playing. The screen stays as it
+    /// is, with its window, speed, volume and controls: only what plays
+    /// changes.
+    ///
+    /// `episode` comes from a listing, which is enough to name it at once.
+    /// Its file follows when the server has sent the episode in full: a
+    /// listing leaves out the markers and the tracks.
+    fn switch_to(&self, episode: Item) {
+        let ivars = self.ivars();
+        // An episode that is itself still on its way cannot be left yet:
+        // what the player would say next could be about either of the two.
+        if ivars.phase.get() != Phase::Playing {
             return;
         }
-        self.close(Outcome::Finished);
+        self.report(PlaybackState::Stopped);
+        ivars.phase.set(Phase::Fetching);
+        // Holds the last picture still under the new name.
+        self.or_log(ivars.player.set_paused(true));
+
+        let key = episode.rating_key.clone();
+        self.show_item(episode);
+        let server = ivars.server.clone();
+        let fetch = async move { server.item(&key).await };
+        let screen = Weak::new(self);
+        ivars.background.run(self.mtm(), fetch, move |item| {
+            let Some(screen) = screen.load() else {
+                return;
+            };
+            // The viewer may have left while the server was answering.
+            if screen.ivars().timer.borrow().is_none() {
+                return;
+            }
+            let loaded = item.map_err(Into::into).and_then(|item| {
+                *screen.ivars().item.borrow_mut() = Rc::new(item);
+                screen.load()
+            });
+            if let Err(error) = loaded {
+                screen.close(Outcome::Failed(with_causes(&error)));
+            }
+        });
+    }
+
+    /// Makes the controls, and the system's, those of `item`, with nothing
+    /// left on them of what played before it.
+    fn show_item(&self, item: Item) {
+        let ivars = self.ivars();
+        let controls = &ivars.controls;
+        controls.set_heading(&item);
+        let start = item.view_offset.map(Into::into).unwrap_or_default();
+        let duration = item.duration.map(Into::into).unwrap_or_default();
+        self.show_progress(start, duration);
+        controls.scrubber.set_loaded(0.0);
+        controls.scrubber.set_marks(Vec::new());
+        controls.bubble.setHidden(true);
+        controls.skip.setHidden(true);
+        controls.up_next.hide();
+        ivars.chapters.borrow_mut().clear();
+        ivars.up_next.set(UpNext::Waiting);
+        ivars.duration.set(None);
+        ivars.ticks_of_scrub_settling_left.set(0);
+        // The media controls name the episode now too, standing still at
+        // its start until its file plays.
+        if let Some(remote) = ivars.remote.borrow().as_ref() {
+            remote.show(&Playing { item: &item, position: start, duration, rate: 0.0 });
+        }
+        *ivars.item.borrow_mut() = Rc::new(item);
+        self.set_waiting(true);
+        self.find_neighbours();
+        self.show_controls(true);
     }
 
     /// Jumps `seconds` forward, or back if negative.
@@ -957,11 +1092,6 @@ impl PlayerScreen {
         self.ivars().controls.speed.set_title(&self.speed().to_string());
     }
 
-    /// The file being played, as the server describes it.
-    fn part(&self) -> Option<&Part> {
-        self.ivars().item.media.first().and_then(|media| media.parts.first())
-    }
-
     /// Switches to the track after the current one. For subtitles, "off"
     /// comes after the last track.
     fn next_track(&self, kind: TrackKind) -> player::Result<()> {
@@ -983,7 +1113,8 @@ impl PlayerScreen {
             (_, track) => player.select_subtitles(track.map(|track| track.id))?,
         }
         let chosen = next.or(tracks.first().filter(|_| kind == TrackKind::Audio));
-        let name = chosen.map(|track| tracks::described(track, self.part()));
+        let item = self.item();
+        let name = chosen.map(|track| tracks::described(track, part(&item)));
         self.remember_track(kind);
         let label = if kind == TrackKind::Audio { "Audio" } else { "Subtitles" };
         self.notify(&format!("{label}: {}", name.as_deref().unwrap_or("Off")));
@@ -995,8 +1126,8 @@ impl PlayerScreen {
     /// other Plex app. Only that kind is touched: changing the audio must
     /// not disturb the subtitles the server remembers.
     fn remember_track(&self, kind: TrackKind) {
-        let ivars = self.ivars();
-        let (Some(part), Purpose::Watching) = (self.part(), ivars.purpose) else {
+        let (ivars, item) = (self.ivars(), self.item());
+        let (Some(part), Purpose::Watching) = (part(&item), ivars.purpose) else {
             return;
         };
         let tracks = match ivars.player.tracks() {
@@ -1032,6 +1163,7 @@ impl PlayerScreen {
     /// Pops up a menu of the tracks of `kind` over its button.
     fn offer_tracks(&self, kind: TrackKind) -> player::Result<()> {
         let controls = &self.ivars().controls;
+        let item = self.item();
         let tracks = self.ivars().player.tracks()?;
         let tracks: Vec<&Track> = tracks.iter().filter(|track| track.kind == kind).collect();
         let mut choices = Vec::new();
@@ -1045,8 +1177,8 @@ impl PlayerScreen {
             });
         }
         choices.extend(tracks.iter().map(|track| Choice {
-            title: tracks::name(track, self.part()),
-            detail: tracks::detail(track, self.part()),
+            title: tracks::name(track, part(&item)),
+            detail: tracks::detail(track, part(&item)),
             tag: track.id as isize,
             chosen: track.selected,
             stands_apart: false,
@@ -1105,8 +1237,8 @@ impl PlayerScreen {
     /// The stretch of the episode in which the next one is offered: from
     /// where the card comes up to where the next episode takes over.
     fn up_next_stretch(&self) -> (Duration, Duration) {
-        let length = self.length_shown();
-        let closing_credits = self.ivars().item.markers.iter().find(|marker| {
+        let (length, item) = (self.length_shown(), self.item());
+        let closing_credits = item.markers.iter().find(|marker| {
             let ends_before_end = length.saturating_sub(marker.end_time_offset.into());
             marker.kind == MarkerKind::Credits && ends_before_end <= CLOSING_CREDITS_END_WITHIN
         });
@@ -1142,7 +1274,7 @@ impl PlayerScreen {
             return;
         }
         if position >= takeover {
-            self.close(Outcome::Finished);
+            self.go_to_next();
             return;
         }
         ivars.up_next.set(UpNext::Counting);
@@ -1157,7 +1289,8 @@ impl PlayerScreen {
         // The offer of the next episode takes the same corner, and its
         // Play Now does what skipping the closing credits would.
         let counting = self.ivars().up_next.get() == UpNext::Counting;
-        let marker = position.and_then(|position| self.ivars().item.marker_at(position));
+        let item = self.item();
+        let marker = position.and_then(|position| item.marker_at(position));
         let Some(marker) = marker.filter(|_| !counting) else {
             skip.setHidden(true);
             return;
@@ -1174,12 +1307,12 @@ impl PlayerScreen {
     /// or to the next episode while it is being offered.
     fn skip_marker(&self) -> player::Result<()> {
         if self.ivars().up_next.get() == UpNext::Counting {
-            self.close(Outcome::Finished);
+            self.go_to_next();
             return Ok(());
         }
-        let player = &self.ivars().player;
+        let (player, item) = (&self.ivars().player, self.item());
         let marker: Option<&Marker> =
-            player.position()?.and_then(|position| self.ivars().item.marker_at(position));
+            player.position()?.and_then(|position| item.marker_at(position));
         if let Some(marker) = marker {
             player.seek(marker.end_time_offset.into())?;
             self.ivars().controls.skip.setHidden(true);
@@ -1276,28 +1409,41 @@ impl PlayerScreen {
     }
 
     fn handle(&self, event: &Event) {
+        let ivars = self.ivars();
+        // Until its file is open, what the player says is about the file
+        // this item took over from, which is on its way out.
+        let playing = ivars.phase.get() == Phase::Playing;
         match event {
             Event::Loaded => {
+                ivars.phase.set(Phase::Playing);
                 self.report(PlaybackState::Playing);
                 self.or_log(self.show_chapters());
                 self.or_log(self.refresh());
                 self.or_log(self.warn_of_wrong_colors());
+                self.or_log(self.show_now_playing());
+                self.show_neighbours();
             }
             Event::Restarted => self.or_log(self.show_now_playing()),
             Event::VideoChanged => {
                 // The first picture is here: the wait since opening is over.
-                self.set_waiting(false);
+                if playing {
+                    self.set_waiting(false);
+                }
                 self.fit_to_display();
             }
             Event::Ended(EndReason::Failed(error)) => self.close(Outcome::Failed(error.clone())),
-            Event::Buffering(stalled) => self.set_waiting(*stalled),
+            Event::Buffering(stalled) if playing => self.set_waiting(*stalled),
             // A viewer who turned the next episode down gets none.
-            Event::Ended(EndReason::Finished) => {
-                let cancelled = self.ivars().up_next.get() == UpNext::Cancelled;
-                self.close(if cancelled { Outcome::Closed } else { Outcome::Finished });
+            Event::Ended(EndReason::Finished) if playing => {
+                let cancelled = ivars.up_next.get() == UpNext::Cancelled;
+                if cancelled || !self.next_episode_is_known() {
+                    self.close(Outcome::Closed);
+                } else {
+                    self.go_to_next();
+                }
             }
             // Stopped is our own doing, and shutdown follows `close`.
-            Event::Ended(EndReason::Stopped) | Event::Shutdown => {}
+            Event::Buffering(_) | Event::Ended(_) | Event::Shutdown => {}
         }
     }
 
@@ -1317,6 +1463,11 @@ impl PlayerScreen {
     }
 
     fn set_paused(&self, pause: bool) -> player::Result<()> {
+        // The pause that holds the last picture of the episode before
+        // this one is not the viewer's to lift.
+        if self.ivars().phase.get() == Phase::Fetching {
+            return Ok(());
+        }
         self.ivars().player.set_paused(pause)?;
         let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
@@ -1347,6 +1498,11 @@ impl PlayerScreen {
         controls.full_screen.set_symbol(arrows, theme::SYMBOL_SIZE);
         controls.full_screen.set_name(name);
 
+        // Until the file is open the times are the item's own, as `load`
+        // showed them.
+        if ivars.phase.get() != Phase::Playing {
+            return Ok(());
+        }
         let (Some(position), Some(duration)) = (player.position()?, player.duration()?) else {
             return Ok(());
         };
@@ -1401,7 +1557,7 @@ impl PlayerScreen {
     /// tell: a check, or nothing loaded yet.
     fn progress(&self, state: PlaybackState) -> Option<Progress> {
         let ivars = self.ivars();
-        if ivars.purpose == Purpose::Check {
+        if ivars.purpose == Purpose::Check || ivars.phase.get() != Phase::Playing {
             return None;
         }
         let times = ivars.player.duration().and_then(|duration| {
@@ -1416,7 +1572,7 @@ impl PlayerScreen {
         });
         match times {
             Ok(times) => times.map(|(position, duration)| Progress {
-                item: ivars.item.rating_key.clone(),
+                item: self.item().rating_key.clone(),
                 session: ivars.session.clone(),
                 state,
                 position,
@@ -1434,6 +1590,11 @@ impl PlayerScreen {
             eprintln!("plex-rust: {error}");
         }
     }
+}
+
+/// The file of `item`, as the server describes it.
+fn part(item: &Item) -> Option<&Part> {
+    item.media.first().and_then(|media| media.parts.first())
 }
 
 /// One progress report, owning what it needs so it can cross threads.

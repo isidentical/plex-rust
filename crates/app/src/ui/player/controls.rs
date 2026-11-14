@@ -31,6 +31,9 @@ pub struct Controls {
     /// The scrubber and the buttons. Fades when idle.
     pub bottom: Retained<Pane>,
     pub back: Retained<Chip>,
+    /// The name of what is playing, and under it the line that places it.
+    title: Retained<NSTextField>,
+    detail: Retained<NSTextField>,
     pub toggle: Retained<Chip>,
     pub rewind: Retained<Chip>,
     pub forward: Retained<Chip>,
@@ -74,6 +77,8 @@ impl Controls {
             top: Pane::new(main_thread, Edge::Top),
             bottom: Pane::new(main_thread, Edge::Bottom),
             back: button("chevron.left", "Back", "Esc"),
+            title: label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text()),
+            detail: label(main_thread, theme::FONT_SIZE, regular(), &theme::secondary_text()),
             toggle: button("pause.fill", "Pause", "Space"),
             rewind: button("gobackward.10", "Back 10 seconds", "Shift \u{2190}"),
             forward: button("goforward.10", "Forward 10 seconds", "Shift \u{2192}"),
@@ -115,22 +120,24 @@ impl Controls {
         controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);
 
-        controls.place_top(main_thread, root, item);
+        controls.set_heading(item);
+        controls.place_top(main_thread, root);
         controls.place_bottom(main_thread, root);
         controls.place_loose(root);
         controls
     }
 
-    fn place_top(&self, main_thread: MainThreadMarker, root: &NSView, item: &Item) {
-        let pane = &self.top;
+    /// Names `item` as what is playing.
+    pub fn set_heading(&self, item: &Item) {
         let (title, detail) = heading(item);
-        let title_label = label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text());
-        title_label.setStringValue(&NSString::from_str(&title));
-        let detail_label =
-            label(main_thread, theme::FONT_SIZE, regular(), &theme::secondary_text());
-        detail_label.setStringValue(&NSString::from_str(&detail.unwrap_or_default()));
-        detail_label.setHidden(detail_label.stringValue().is_empty());
-        let titles: [&NSView; 2] = [&title_label, &detail_label];
+        self.title.setStringValue(&NSString::from_str(&title));
+        self.detail.setStringValue(&NSString::from_str(detail.as_deref().unwrap_or_default()));
+        self.detail.setHidden(detail.is_none());
+    }
+
+    fn place_top(&self, main_thread: MainThreadMarker, root: &NSView) {
+        let pane = &self.top;
+        let titles: [&NSView; 2] = [&self.title, &self.detail];
         let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
         titles.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         titles.setAlignment(NSLayoutAttribute::Leading);

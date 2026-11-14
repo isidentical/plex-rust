@@ -43,6 +43,8 @@ define_class!(
 pub struct UpNext {
     card: Retained<Card>,
     countdown: Retained<NSTextField>,
+    /// Names the episode on offer.
+    title: Retained<NSTextField>,
     /// The number of the episode on offer, once one is.
     number: Cell<Option<u32>>,
     pub play: Retained<Chip>,
@@ -59,6 +61,7 @@ impl UpNext {
         let this = Self {
             card,
             countdown,
+            title: label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text()),
             number: Cell::new(None),
             play: Chip::new(main_thread, Style::Solid),
             cancel: Chip::new(main_thread, Style::Quiet),
@@ -75,6 +78,7 @@ impl UpNext {
         this.card.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
         this.card.setAccessibilityLabel(Some(&NSString::from_str("Up Next")));
         this.card.setHidden(true);
+        this.lay_out(main_thread);
         this
     }
 
@@ -82,21 +86,23 @@ impl UpNext {
         &self.card
     }
 
-    /// Fills the card in for `episode` and lays it out. Called once, when
-    /// the episode that follows is known.
-    pub fn offer(&self, main_thread: MainThreadMarker, episode: &Item) {
-        let title = label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text());
-        title.setStringValue(&NSString::from_str(&episode.title));
+    /// Makes `episode` the one the card offers.
+    pub fn offer(&self, episode: &Item) {
+        self.title.setStringValue(&NSString::from_str(&episode.title));
         self.number.set(episode.index);
+    }
+
+    fn lay_out(&self, main_thread: MainThreadMarker) {
+        let title = &self.title;
         // The one to press comes first, where reading starts.
         let buttons: [&NSView; 2] = [&self.play, &self.cancel];
         let buttons = row(&buttons, theme::CARD_BUTTON_SPACING, main_thread);
-        let lines: [&NSView; 3] = [&self.countdown, &title, &buttons];
+        let lines: [&NSView; 3] = [&self.countdown, title, &buttons];
         let lines = NSStackView::stackViewWithViews(&NSArray::from_slice(&lines), main_thread);
         lines.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         lines.setAlignment(NSLayoutAttribute::Leading);
         lines.setSpacing(theme::CARD_LINE_SPACING);
-        lines.setCustomSpacing_afterView(theme::CARD_PADDING, &title);
+        lines.setCustomSpacing_afterView(theme::CARD_PADDING, title);
 
         let padding = theme::CARD_PADDING;
         add(&self.card, &lines);
