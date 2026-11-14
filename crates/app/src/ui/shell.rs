@@ -1021,6 +1021,7 @@ impl Shell {
         let posters = self.posters(session, Some(header), outlines, nothing, || {});
         posters.fit_header_to_page(theme::HOME_HERO_HEIGHT_PER_WIDTH, theme::HOME_HERO_MOST);
         posters.set_header_keys(hero.keys());
+        posters.let_header_reach(hero.reach());
         let shown = posters.clone();
         let reload = self.loader(
             session,

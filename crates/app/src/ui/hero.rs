@@ -1,7 +1,8 @@
 //! The top of the home screen: the first few things to watch, one at a
-//! time and large. Each has its backdrop on the right, running into a
-//! panel of the artwork's own colour that holds its title and a button
-//! that plays it.
+//! time and large, as a banner that runs under the toolbar and the
+//! sidebar to the edges of the window. Each has its backdrop on the right,
+//! running into the artwork's own colour on the left, which holds its
+//! title and a button that plays it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -57,19 +58,24 @@ pub struct Hero(Rc<Views>);
 
 struct Views {
     view: Retained<NSView>,
-    /// Drawn around the card while the keyboard is on it.
+    /// Drawn around the play button while the keyboard is on the hero.
     ring: Retained<NSView>,
-    /// Clipped to rounded corners, and painted in the colour of the item.
-    card: Retained<HoverView>,
+    ring_place: RefCell<Option<Retained<NSArray<NSLayoutConstraint>>>>,
+    /// Painted in the colour of the item, and larger than `view` by what
+    /// of the page lies under the sidebar and the toolbar.
+    banner: Retained<NSView>,
+    /// How far the banner reaches past `view` to the left and upwards.
+    reach: (Retained<NSLayoutConstraint>, Retained<NSLayoutConstraint>),
     art: ArtView,
-    /// Runs the card's colour over the near edge of the artwork.
+    /// Runs the banner's colour over the near edge of the artwork.
     shade: Retained<NSView>,
     fade: Retained<CAGradientLayer>,
-    /// The hairline around the card, which brightens under the pointer.
-    frame: Retained<NSView>,
-    /// Everything that says something about the item, hidden until there
-    /// is one.
-    overlay: Retained<NSView>,
+    /// Runs the page's colour over the bottom of the banner.
+    floor: Retained<NSView>,
+    /// As large as `view`, which is the part of the page clear of the
+    /// sidebar and the toolbar. Holds everything that says something
+    /// about the item, and takes the click that opens it.
+    card: Retained<HoverView>,
     title: Retained<NSTextField>,
     facts: Retained<NSTextField>,
     play: Pill,
@@ -152,6 +158,19 @@ impl Hero {
         }
     }
 
+    /// Hears how much of the page lies under the sidebar, to the left of
+    /// the hero's own view, and under the toolbar, above it. The banner
+    /// reaches that far past the view, to the edges of the window.
+    pub fn reach(&self) -> impl Fn(f64, f64) + 'static {
+        let views = Rc::downgrade(&self.0);
+        move |left, up| {
+            if let Some(views) = views.upgrade() {
+                views.reach.0.setConstant(-left);
+                views.reach.1.setConstant(-up);
+            }
+        }
+    }
+
     /// Shows the first of `items`, or the one that was on screen if it is
     /// still among them, and offers the others. With none it leaves the
     /// space empty.
@@ -175,25 +194,21 @@ impl Views {
     ) -> Self {
         let art = ArtView::new(main_thread, 0.0);
         art.set_flat();
-        let frame = artwork::layered(main_thread);
-        let lit = frame.clone();
-        let card = HoverView::pressable(
-            main_thread,
-            move |over| outline(&lit, over),
-            with(|views| views.act(Action::Open)),
-        );
-        card.setTranslatesAutoresizingMaskIntoConstraints(false);
-        card.setWantsLayer(true);
+        let card = HoverView::pressable(main_thread, |_| {}, with(|views| views.act(Action::Open)));
         // VoiceOver reads the hero as one button that opens the item, with
         // the play button inside it as another.
         card.setAccessibilityElement(true);
         // SAFETY: the role is a constant that AppKit provides.
         card.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
-        let rounded: [&NSView; 2] = [&card, &frame];
-        for view in rounded {
-            round(view);
+        let view = NSView::new(main_thread);
+        let banner = artwork::layered(main_thread);
+        if let Some(layer) = banner.layer() {
+            layer.setMasksToBounds(true);
         }
-        outline(&frame, false);
+        let reach = (
+            banner.leadingAnchor().constraintEqualToAnchor(&view.leadingAnchor()),
+            banner.topAnchor().constraintEqualToAnchor(&view.topAnchor()),
+        );
 
         let white = NSColor::whiteColor();
         let faint = theme::white(theme::SECONDARY_ON_ART_OPACITY);
@@ -245,20 +260,22 @@ impl Views {
         if let Some(layer) = ring.layer() {
             layer.setBorderWidth(theme::FOCUS_RING_WIDTH);
             layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
-            layer.setCornerRadius(theme::RADIUS_L + theme::FOCUS_RING_OUTSET);
+            layer.setCornerRadius(theme::PILL_HEIGHT / 2.0 + theme::FOCUS_RING_OUTSET);
             // SAFETY: the curve is a constant that Core Animation provides.
             unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
         }
 
         Self {
-            view: NSView::new(main_thread),
+            view,
             ring,
-            card,
+            ring_place: RefCell::new(None),
+            banner,
+            reach,
             art,
             shade: artwork::layered(main_thread),
             fade: CAGradientLayer::new(),
-            frame,
-            overlay: artwork::layered(main_thread),
+            floor: artwork::layered(main_thread),
+            card,
             title,
             facts,
             play,
@@ -278,80 +295,84 @@ impl Views {
 
     /// Puts the views where they belong, once.
     fn place(&self) {
-        let (view, card, art, overlay) = (&self.view, &self.card, self.art.view(), &self.overlay);
-        view.addSubview(card);
+        let (view, banner, card) = (&self.view, &self.banner, &self.card);
+        let (art, shade, floor) = (self.art.view(), &self.shade, &self.floor);
+        view.addSubview(banner);
+        layout::cover(view, card);
         view.addSubview(&self.ring);
-        let (ring, outset) = (&self.ring, theme::FOCUS_RING_OUTSET);
-        let margin = theme::PAGE_MARGIN;
+        let (reach_left, reach_up) = &self.reach;
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            ring.leadingAnchor().constraintEqualToAnchor_constant(&card.leadingAnchor(), -outset),
-            ring.trailingAnchor().constraintEqualToAnchor_constant(&card.trailingAnchor(), outset),
-            ring.topAnchor().constraintEqualToAnchor_constant(&card.topAnchor(), -outset),
-            ring.bottomAnchor().constraintEqualToAnchor_constant(&card.bottomAnchor(), outset),
-            card.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            card.trailingAnchor().constraintEqualToAnchor_constant(&view.trailingAnchor(), -margin),
-            card.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
-            card.bottomAnchor()
-                .constraintEqualToAnchor_constant(&view.bottomAnchor(), -theme::SPACE_L),
+            reach_left.clone(),
+            reach_up.clone(),
+            banner.trailingAnchor().constraintEqualToAnchor(&view.trailingAnchor()),
+            banner.bottomAnchor().constraintEqualToAnchor(&view.bottomAnchor()),
         ]));
 
         // The artwork keeps to the right at its own proportions, so that
-        // no window cuts the faces out of it, and reaches past the card
-        // by its own hairline, which the card's corners then clip away.
-        card.addSubview(art);
+        // no window cuts the faces out of it, and reaches past the banner
+        // by its own hairline, which the banner then clips away.
+        banner.addSubview(art);
+        banner.addSubview(shade);
+        layout::cover(banner, floor);
         let past = theme::ARTWORK_OUTLINE_WIDTH;
         let uncut = art
             .widthAnchor()
             .constraintEqualToAnchor_multiplier(&art.heightAnchor(), 1.0 / theme::LANDSCAPE_ASPECT);
         uncut.setPriority(NSLayoutPriorityDefaultHigh);
-        // In a card far wider than the artwork is, the artwork is cut top
-        // and bottom to keep the card from being mostly empty.
+        // In a banner far wider than the artwork is, the artwork is cut
+        // top and bottom to keep the banner from being mostly empty.
         let least = art.widthAnchor().constraintGreaterThanOrEqualToAnchor_multiplier(
-            &card.widthAnchor(),
+            &banner.widthAnchor(),
             theme::HOME_HERO_ART_LEAST,
         );
-        let shade = &self.shade;
-        card.addSubview(shade);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            art.trailingAnchor().constraintEqualToAnchor_constant(&card.trailingAnchor(), past),
-            art.topAnchor().constraintEqualToAnchor_constant(&card.topAnchor(), -past),
-            art.bottomAnchor().constraintEqualToAnchor_constant(&card.bottomAnchor(), past),
+            art.trailingAnchor().constraintEqualToAnchor_constant(&banner.trailingAnchor(), past),
+            art.topAnchor().constraintEqualToAnchor_constant(&banner.topAnchor(), -past),
+            art.bottomAnchor().constraintEqualToAnchor_constant(&banner.bottomAnchor(), past),
             uncut,
             least,
             shade.leadingAnchor().constraintEqualToAnchor(&art.leadingAnchor()),
-            shade.topAnchor().constraintEqualToAnchor(&card.topAnchor()),
-            shade.bottomAnchor().constraintEqualToAnchor(&card.bottomAnchor()),
+            shade.topAnchor().constraintEqualToAnchor(&banner.topAnchor()),
+            shade.bottomAnchor().constraintEqualToAnchor(&banner.bottomAnchor()),
             shade
                 .widthAnchor()
                 .constraintEqualToAnchor_multiplier(&art.widthAnchor(), theme::HOME_HERO_FADE),
         ]));
         self.fade.setStartPoint(CGPoint { x: 0.0, y: 0.5 });
         self.fade.setEndPoint(CGPoint { x: 1.0, y: 0.5 });
-        // The gradient is not the view's own layer, so it has to be told to
-        // follow the view's size.
-        self.fade.setAutoresizingMask(
-            CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable,
-        );
-        if let Some(layer) = shade.layer() {
-            self.fade.setFrame(layer.bounds());
-            layer.addSublayer(&self.fade);
+        // From clear part of the way down to the page's own colour at the
+        // bottom, so that the banner ends in the page and not at an edge.
+        // A layer's own coordinates have their origin at the bottom left.
+        let sink = CAGradientLayer::new();
+        sink.setStartPoint(CGPoint { x: 0.5, y: theme::HOME_HERO_SINK });
+        sink.setEndPoint(CGPoint { x: 0.5, y: 0.0 });
+        let page = theme::page_background();
+        backdrop::set_gradient(&sink, &page.colorWithAlphaComponent(0.0), &page);
+        // Neither gradient is its view's own layer, so each has to be told
+        // to follow the view's size.
+        for (gradient, holder) in [(&*self.fade, shade), (&*sink, floor)] {
+            gradient.setAutoresizingMask(
+                CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable,
+            );
+            if let Some(layer) = holder.layer() {
+                gradient.setFrame(layer.bounds());
+                layer.addSublayer(gradient);
+            }
         }
-        layout::cover(card, overlay);
-        layout::cover(card, &self.frame);
 
         let (title, facts, play, left) = (&self.title, &self.facts, &self.play.button, &self.left);
         let (track, fill, pager) = (&self.track, &self.fill, &self.pager);
         let parts: [&NSView; 6] = [title, facts, play, left, track, pager];
         for part in parts {
-            overlay.addSubview(part);
+            card.addSubview(part);
         }
         track.addSubview(fill);
-        let (inset, text_width) = (theme::SPACE_XXL, theme::HERO_TEXT_WIDTH);
+        let (margin, text_width) = (theme::PAGE_MARGIN, theme::HERO_TEXT_WIDTH);
         for words in [title, facts] {
             NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
                 words
                     .leadingAnchor()
-                    .constraintEqualToAnchor_constant(&overlay.leadingAnchor(), inset),
+                    .constraintEqualToAnchor_constant(&card.leadingAnchor(), margin),
                 words.widthAnchor().constraintLessThanOrEqualToConstant(text_width),
                 // No further over the artwork than where it is half
                 // faded, so the words always have the colour under them.
@@ -360,8 +381,9 @@ impl Views {
         }
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             // From the bottom up: the button, the facts and the title.
-            play.leadingAnchor().constraintEqualToAnchor_constant(&overlay.leadingAnchor(), inset),
-            play.bottomAnchor().constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -inset),
+            play.leadingAnchor().constraintEqualToAnchor_constant(&card.leadingAnchor(), margin),
+            play.bottomAnchor()
+                .constraintEqualToAnchor_constant(&card.bottomAnchor(), -theme::SPACE_XL),
             facts
                 .bottomAnchor()
                 .constraintEqualToAnchor_constant(&play.topAnchor(), -theme::SPACE_L),
@@ -384,11 +406,27 @@ impl Views {
             fill.bottomAnchor().constraintEqualToAnchor(&track.bottomAnchor()),
             pager
                 .trailingAnchor()
-                .constraintEqualToAnchor_constant(&overlay.trailingAnchor(), -theme::SPACE_L),
-            pager
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&overlay.bottomAnchor(), -theme::SPACE_L),
+                .constraintEqualToAnchor_constant(&card.trailingAnchor(), -margin),
+            pager.centerYAnchor().constraintEqualToAnchor(&play.centerYAnchor()),
         ]));
+    }
+
+    /// Draws the ring of the keyboard around the play button, or around
+    /// the title of an item that is not something to play.
+    fn ring_around(&self, target: &NSView) {
+        let (ring, outset) = (&self.ring, theme::FOCUS_RING_OUTSET);
+        let around = [
+            ring.leadingAnchor().constraintEqualToAnchor_constant(&target.leadingAnchor(), -outset),
+            ring.trailingAnchor()
+                .constraintEqualToAnchor_constant(&target.trailingAnchor(), outset),
+            ring.topAnchor().constraintEqualToAnchor_constant(&target.topAnchor(), -outset),
+            ring.bottomAnchor().constraintEqualToAnchor_constant(&target.bottomAnchor(), outset),
+        ];
+        let around = NSArray::from_retained_slice(&around);
+        if let Some(old) = self.ring_place.replace(Some(around.clone())) {
+            NSLayoutConstraint::deactivateConstraints(&old);
+        }
+        NSLayoutConstraint::activateConstraints(&around);
     }
 
     /// Tells the owner what the viewer asked of the item on screen.
@@ -429,7 +467,7 @@ impl Views {
             layer.addAnimation_forKey(&fade, Some(ns_string!("page")));
         }
         self.card.set_live(item.is_some());
-        self.overlay.setHidden(item.is_none());
+        self.card.setHidden(item.is_none());
         self.art.view().setHidden(item.is_none());
         self.paint(item.and_then(|item| item.colors).map(|colors| colors.bottom_left));
         let Some(item) = item else {
@@ -454,7 +492,9 @@ impl Views {
         label::set(&self.left, left.as_deref().unwrap_or_default());
         self.set_progress(item.progress());
         self.play.set_title(if item.view_offset.is_some() { "Resume" } else { "Play" });
-        self.play.button.setHidden(!poster::is_playable(item));
+        let plays = poster::is_playable(item);
+        self.play.button.setHidden(!plays);
+        self.ring_around(if plays { &self.play.button } else { &self.title });
         let spoken: Vec<&str> = [title, &facts]
             .into_iter()
             .chain(left.as_deref())
@@ -472,7 +512,7 @@ impl Views {
         }
     }
 
-    /// Paints the card in `colour`, darkened until white text reads on it,
+    /// Paints the banner in `colour`, darkened until white text reads on it,
     /// and runs the same colour over the near edge of the artwork. Without
     /// a colour, in the grey of artwork that has not arrived.
     fn paint(&self, colour: Option<Rgb>) {
@@ -492,7 +532,7 @@ impl Views {
         // next's by themselves, out of step with the fade of the rest.
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        artwork::fill_with(&self.card, &colour);
+        artwork::fill_with(&self.banner, &colour);
         // SAFETY: a gradient layer takes an array of CGColors.
         unsafe { self.fade.setColors(Some(&NSArray::from_slice(&colours))) };
         self.fade.setLocations(Some(&NSArray::from_retained_slice(&places)));
@@ -527,28 +567,6 @@ fn facts(item: &Item) -> String {
         facts.extend(item.duration.map(|length| text::length(length.into())));
     }
     facts.join(" · ")
-}
-
-/// Rounds the corners of `view` as a card's are, cutting off what is in it.
-fn round(view: &NSView) {
-    if let Some(layer) = view.layer() {
-        layer.setCornerRadius(theme::RADIUS_XL);
-        // SAFETY: the curve is a constant that Core Animation provides.
-        unsafe { layer.setCornerCurve(kCACornerCurveContinuous) };
-        layer.setMasksToBounds(true);
-    }
-}
-
-/// Draws the hairline of `frame`, brighter with the pointer over the card.
-fn outline(frame: &NSView, over: bool) {
-    let opacity = match over {
-        true => theme::ARTWORK_HOVER_OUTLINE_OPACITY,
-        false => theme::artwork_outline_opacity(),
-    };
-    if let Some(layer) = frame.layer() {
-        layer.setBorderWidth(theme::ARTWORK_OUTLINE_WIDTH);
-        layer.setBorderColor(Some(&theme::white(opacity).CGColor()));
-    }
 }
 
 /// One of the marks that say how many items there are and which is shown.

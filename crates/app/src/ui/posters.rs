@@ -276,6 +276,10 @@ pub struct Ivars {
     header_fit: Cell<Option<HeaderFit>>,
     header_height: Cell<f64>,
     header_keys: OnceCell<HeaderKeys>,
+    /// Told how much of the page lies under the sidebar and the toolbar,
+    /// for a header that draws there too, and what it was last told.
+    header_reach: OnceCell<Box<dyn Fn(f64, f64)>>,
+    header_reached: Cell<(f64, f64)>,
     /// Whether the keyboard is on the header, not on a card.
     in_header: Cell<bool>,
 }
@@ -489,6 +493,8 @@ impl Posters {
             header_fit: Cell::new(None),
             header_height: Cell::new(0.0),
             header_keys: OnceCell::new(),
+            header_reach: OnceCell::new(),
+            header_reached: Cell::new((0.0, 0.0)),
             in_header: Cell::new(false),
         });
         // SAFETY: `init` is NSObject's designated initializer.
@@ -521,6 +527,27 @@ impl Posters {
     pub fn set_header_keys(&self, keys: HeaderKeys) {
         // Cannot matter if it fails: the first answer stands.
         let _ = self.ivars().header_keys.set(keys);
+    }
+
+    /// Lets the header draw under the sidebar and the toolbar, which lie
+    /// over the left and the top of the page: `reach` hears how many
+    /// points of the page each covers, now and whenever that changes.
+    pub fn let_header_reach(&self, reach: impl Fn(f64, f64) + 'static) {
+        // Cannot matter if it fails: the first answer stands.
+        let _ = self.ivars().header_reach.set(Box::new(reach));
+    }
+
+    /// Tells a header that draws under the sidebar and the toolbar how
+    /// far they reach over the page, if that changed.
+    fn reach_header(&self) {
+        let ivars = self.ivars();
+        let insets = ivars.scroll.contentInsets();
+        let covered = (insets.left, insets.top);
+        if let (Some(reach), true) =
+            (ivars.header_reach.get(), ivars.header_reached.replace(covered) != covered)
+        {
+            reach(covered.0, covered.1);
+        }
     }
 
     /// Gives a header that follows the page the height the page now calls
@@ -1202,6 +1229,9 @@ define_class!(
             // height the window now calls for.
             let owner = self.ivars().get().and_then(Weak::load);
             let moved_top = owner.as_ref().is_some_and(|posters| posters.fit_header());
+            if let Some(posters) = &owner {
+                posters.reach_header();
+            }
             // SAFETY: forwards the call unchanged.
             let () = unsafe { msg_send![super(self), layout] };
             if let (true, Some(posters)) = (moved_top, owner) {

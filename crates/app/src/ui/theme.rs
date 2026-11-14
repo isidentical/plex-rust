@@ -212,6 +212,9 @@ pub const HOME_HERO_FADE_STOPS: [(f64, f64); 5] =
     [(0.0, 1.0), (0.25, 0.86), (0.5, 0.58), (0.75, 0.24), (1.0, 0.0)];
 /// The white of a card whose item has no colours of its own.
 pub const HOME_HERO_PLAIN_WHITE: f64 = 0.14;
+/// How far up the banner, from its bottom, the page's colour starts to
+/// run over it.
+pub const HOME_HERO_SINK: f64 = 0.45;
 pub const HOME_HERO_TITLE_LINES: isize = 2;
 /// The bar beside the hero's button that shows how much was watched.
 pub const HOME_HERO_PROGRESS_WIDTH: f64 = 120.0;
