@@ -26,21 +26,36 @@ pub enum Key {
     /// controls go away. Only the key script of a snapshot can press it,
     /// because a snapshot cannot wait that long.
     Idle,
-    /// Not a key either: the pointer coming to rest halfway along the
-    /// scrubber, which a snapshot has no pointer to do with.
-    Hover,
-    /// Nor this: the pointer taking the scrubber's knob three quarters of
-    /// the way along and keeping hold of it.
-    Drag,
+    /// Not a key either: a state of the player that a snapshot has no
+    /// pointer or window of its own to bring about.
+    Scene(Scene),
     /// And a jump to 15 seconds before the end, where a snapshot would
     /// otherwise have to play the whole file to get to.
     NearEnd,
 }
 
+/// A state of the player that only a snapshot's key script asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scene {
+    /// The pointer resting halfway along the scrubber.
+    Hover,
+    /// The pointer taking the scrubber's knob three quarters of the way
+    /// along and keeping hold of it.
+    Drag,
+    /// A white picture, the hardest to read the controls on.
+    Bright,
+    /// The window at its smallest.
+    Small,
+    /// The window in the shape of a 2.39 to 1 film.
+    Wide,
+    /// Playback inside the item's first intro or credits.
+    Marker,
+}
+
 impl Key {
     /// Reads a key from its name, as written on a command line: `space`,
-    /// `left`, or a single character such as `d`. `idle`, `hover`,
-    /// `drag` and `end` stand for what a script cannot do by itself.
+    /// `left`, or a single character such as `d`. `idle`, `end` and the
+    /// names of the scenes stand for what a script cannot do by itself.
     pub fn named(name: &str) -> Option<Self> {
         let mut characters = name.chars();
         match (name, characters.next(), characters.next()) {
@@ -54,8 +69,12 @@ impl Key {
             ("up", ..) => Some(Self::Up),
             ("down", ..) => Some(Self::Down),
             ("idle", ..) => Some(Self::Idle),
-            ("hover", ..) => Some(Self::Hover),
-            ("drag", ..) => Some(Self::Drag),
+            ("hover", ..) => Some(Self::Scene(Scene::Hover)),
+            ("drag", ..) => Some(Self::Scene(Scene::Drag)),
+            ("bright", ..) => Some(Self::Scene(Scene::Bright)),
+            ("small", ..) => Some(Self::Scene(Scene::Small)),
+            ("wide", ..) => Some(Self::Scene(Scene::Wide)),
+            ("marker", ..) => Some(Self::Scene(Scene::Marker)),
             ("end", ..) => Some(Self::NearEnd),
             (_, Some(character), None) => Some(Self::Character(character)),
             _ => None,

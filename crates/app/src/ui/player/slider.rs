@@ -128,7 +128,6 @@ define_class!(
 
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, event: &NSEvent) {
-            self.set_hovered(true);
             self.point_at(self.x_in(event));
         }
 
@@ -226,6 +225,7 @@ impl Slider {
 
     /// Reports the place `x` points from the left edge as pointed at.
     pub fn point_at(&self, x: f64) {
+        self.set_hovered(true);
         if let Some(on_point) = self.ivars().on_point.get() {
             on_point(Some(Pointed { value: self.value_at(x), x }));
         }

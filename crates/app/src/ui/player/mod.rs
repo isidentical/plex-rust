@@ -10,6 +10,7 @@ mod remote;
 mod season;
 mod slider;
 mod speed;
+mod stage;
 mod theme;
 mod tracks;
 mod upnext;
@@ -705,15 +706,9 @@ impl PlayerScreen {
                 let player = &self.ivars().player;
                 player.seek(self.length_shown().saturating_sub(UP_NEXT_LEAD / 2))
             }
-            Key::Hover => {
-                let scrubber = &self.ivars().controls.scrubber;
-                scrubber.point_at(scrubber.bounds().size.width / 2.0);
-                Ok(())
-            }
-            Key::Drag => {
-                let scrubber = &self.ivars().controls.scrubber;
-                scrubber.hold_at(scrubber.bounds().size.width * 0.75);
-                Ok(())
+            Key::Scene(scene) => {
+                let ivars = self.ivars();
+                stage::set(scene, &ivars.root, &ivars.controls, &ivars.player, &ivars.item)
             }
             Key::Character(_) => return false,
         };
