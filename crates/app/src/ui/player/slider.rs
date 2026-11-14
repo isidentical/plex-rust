@@ -24,6 +24,14 @@ pub struct Pointed {
     pub x: f64,
 }
 
+/// Whether the viewer still has hold of the knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grip {
+    Held,
+    /// The knob was just let go, where it now is.
+    Released,
+}
+
 #[derive(Default)]
 pub struct Ivars {
     /// Between 0 and `limit`.
@@ -35,7 +43,7 @@ pub struct Ivars {
     marks: RefCell<Vec<f64>>,
     hovered: Cell<bool>,
     dragging: Cell<bool>,
-    on_change: OnceCell<Box<dyn Fn(f64)>>,
+    on_change: OnceCell<Box<dyn Fn(f64, Grip)>>,
     on_point: OnceCell<Box<dyn Fn(Option<Pointed>)>>,
 }
 
@@ -75,20 +83,19 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            self.ivars().dragging.set(true);
-            self.drag_to(event);
+            self.hold_at(self.x_in(event));
         }
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            self.drag_to(event);
+            self.hold_at(self.x_in(event));
         }
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            self.ivars().dragging.set(false);
-            self.drag_to(event);
             let x = self.x_in(event);
+            self.ivars().dragging.set(false);
+            self.move_knob(x, Grip::Released);
             if !(0.0..self.bounds().size.width).contains(&x) {
                 self.set_hovered(false);
             }
@@ -145,12 +152,12 @@ impl Slider {
         slider
     }
 
-    /// Sets what happens when the viewer moves the knob, and when the
-    /// pointer comes over the slider, moves along it and leaves. Can be
-    /// called once.
+    /// Sets what happens when the viewer moves the knob or lets it go, and
+    /// when the pointer comes over the slider, moves along it and leaves.
+    /// Can be called once.
     pub fn listen(
         &self,
-        on_change: impl Fn(f64) + 'static,
+        on_change: impl Fn(f64, Grip) + 'static,
         on_point: impl Fn(Option<Pointed>) + 'static,
     ) {
         // Cannot fail the first time, which is the only time by contract.
@@ -168,6 +175,10 @@ impl Slider {
             return;
         }
         self.show(&self.ivars().value, value);
+    }
+
+    pub fn limit(&self) -> f64 {
+        self.ivars().limit.get()
     }
 
     pub fn set_limit(&self, limit: f64) {
@@ -207,14 +218,26 @@ impl Slider {
         }
     }
 
-    /// Puts the knob under the pointer of `event` and says so.
-    fn drag_to(&self, event: &NSEvent) {
-        let x = self.x_in(event);
+    /// Takes hold of the knob, if it is not held already, and puts it `x`
+    /// points from the left edge.
+    pub fn hold_at(&self, x: f64) {
+        self.ivars().dragging.set(true);
+        self.move_knob(x, Grip::Held);
+    }
+
+    /// Puts the knob `x` points from the left edge and says so. A held
+    /// knob that has not moved says nothing: the pointer moves far more
+    /// often than the knob has a new place to be.
+    fn move_knob(&self, x: f64, grip: Grip) {
         let value = self.value_at(x);
-        self.show(&self.ivars().value, value);
+        let moved = self.ivars().value.replace(value) != value;
+        self.setNeedsDisplay(true);
         self.point_at(x);
+        if !moved && grip == Grip::Held {
+            return;
+        }
         if let Some(on_change) = self.ivars().on_change.get() {
-            on_change(value);
+            on_change(value, grip);
         }
     }
 

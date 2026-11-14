@@ -34,7 +34,7 @@ use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, InputView, Key, Press};
-use self::slider::Pointed;
+use self::slider::{Grip, Pointed};
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::settings::Settings;
@@ -54,6 +54,11 @@ const TICKS_UNTIL_HIDDEN: u32 = 3 * TICKS_PER_SECOND;
 
 /// A notice, such as the new volume, stays up for this many ticks.
 const TICKS_OF_NOTICE: u32 = 6;
+
+/// For this many ticks after the scrubber's knob is let go, the knob and
+/// the times stay where the viewer put them. The player needs a moment to
+/// start on the jump, and until then still reports where it was before.
+const TICKS_OF_SCRUB_SETTLING: u32 = 2;
 
 /// How far the left and right arrow keys jump.
 const SHORT_JUMP: f64 = 3.0;
@@ -113,6 +118,7 @@ pub struct Ivars {
     /// long as it rests there.
     pointer_on_controls: Cell<bool>,
     ticks_idle: Cell<u32>,
+    ticks_of_scrub_settling_left: Cell<u32>,
     /// Whether the time to the right of the scrubber is the file's full
     /// length, and not what is left of it.
     shows_length: Cell<bool>,
@@ -213,6 +219,7 @@ impl PlayerScreen {
             controls_shown: Cell::new(true),
             pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
+            ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
             timer: RefCell::new(None),
@@ -385,9 +392,9 @@ impl PlayerScreen {
 
         let (scrubbed, pointed, volume) = (Weak::new(self), Weak::new(self), Weak::new(self));
         controls.scrubber.listen(
-            move |seconds| {
+            move |seconds, grip| {
                 if let Some(screen) = scrubbed.load() {
-                    screen.or_log(screen.scrub_to(seconds));
+                    screen.or_log(screen.scrub_to(seconds, grip));
                 }
             },
             move |place| {
@@ -397,7 +404,7 @@ impl PlayerScreen {
             },
         );
         controls.volume.listen(
-            move |level| {
+            move |level, _| {
                 if let Some(screen) = volume.load() {
                     screen.or_log(screen.ivars().player.set_volume(level));
                 }
@@ -502,6 +509,11 @@ impl PlayerScreen {
                 scrubber.point_at(scrubber.bounds().size.width / 2.0);
                 Ok(())
             }
+            Key::Drag => {
+                let scrubber = &self.ivars().controls.scrubber;
+                scrubber.hold_at(scrubber.bounds().size.width * 0.75);
+                Ok(())
+            }
             Key::Character(_) => return false,
         };
         self.or_log(result);
@@ -579,16 +591,28 @@ impl PlayerScreen {
     }
 
     /// Goes to `seconds` into the file, as the viewer drags the scrubber
-    /// or clicks on it.
-    fn scrub_to(&self, seconds: f64) -> player::Result<()> {
-        let player = &self.ivars().player;
+    /// or clicks on it. While the knob is held the picture follows it from
+    /// keyframe to keyframe, which is fast enough to keep up with a hand.
+    /// Letting go lands on the exact place.
+    fn scrub_to(&self, seconds: f64, grip: Grip) -> player::Result<()> {
+        let ivars = self.ivars();
         let position = Duration::from_secs_f64(seconds.max(0.0));
         // The times follow the knob at once, not the player once it has
         // caught up.
-        if let Some(duration) = player.duration()? {
-            self.show_progress(position, duration);
+        self.show_progress(position, self.length_shown());
+        match grip {
+            Grip::Held => ivars.player.scan_to(position),
+            Grip::Released => {
+                ivars.ticks_of_scrub_settling_left.set(TICKS_OF_SCRUB_SETTLING);
+                ivars.player.seek(position)
+            }
         }
-        player.seek(position)
+    }
+
+    /// The length of the file as the scrubber has it, which saves asking
+    /// the player on every move of the pointer.
+    fn length_shown(&self) -> Duration {
+        Duration::from_secs_f64(self.ivars().controls.scrubber.limit())
     }
 
     /// Shows the time at `place` on the scrubber, and the chapter it is
@@ -955,8 +979,11 @@ impl PlayerScreen {
         };
         let loaded = player.buffered_until()?.unwrap_or_default();
         controls.scrubber.set_loaded(loaded.as_secs_f64());
-        // While the knob is held, it and the times belong to the viewer.
-        if !controls.scrubber.is_dragging() {
+        // While the knob is held, and just after, it and the times belong
+        // to the viewer.
+        let settling = ivars.ticks_of_scrub_settling_left.get();
+        ivars.ticks_of_scrub_settling_left.set(settling.saturating_sub(1));
+        if !controls.scrubber.is_dragging() && settling == 0 {
             self.show_progress(position, duration);
         }
         Ok(())

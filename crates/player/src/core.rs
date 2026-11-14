@@ -228,6 +228,16 @@ impl Player {
         self.command(&["seek", &seconds.to_string(), "relative+keyframes"])
     }
 
+    /// Goes to the nearest picture at or before `position` that can be
+    /// shown without decoding the ones before it. This is for the scrubber
+    /// while its knob is held: each move of the pointer shows a picture
+    /// within about 20 ms, where [`seek`](Self::seek) would take the 270 ms
+    /// described at [`scan_by`](Self::scan_by) and be given up on when the
+    /// next move arrives. Finish with one `seek` when the knob is let go.
+    pub fn scan_to(&self, position: Duration) -> Result<()> {
+        self.command(&["seek", &position.as_secs_f64().to_string(), "absolute+keyframes"])
+    }
+
     pub fn set_paused(&self, paused: bool) -> Result<()> {
         self.set_string("pause", if paused { "yes" } else { "no" })
     }

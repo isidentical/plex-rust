@@ -29,12 +29,15 @@ pub enum Key {
     /// Not a key either: the pointer coming to rest halfway along the
     /// scrubber, which a snapshot has no pointer to do with.
     Hover,
+    /// Nor this: the pointer taking the scrubber's knob three quarters of
+    /// the way along and keeping hold of it.
+    Drag,
 }
 
 impl Key {
     /// Reads a key from its name, as written on a command line: `space`,
-    /// `left`, or a single character such as `d`. `idle` and `hover` stand
-    /// for what a script cannot do by itself.
+    /// `left`, or a single character such as `d`. `idle`, `hover` and
+    /// `drag` stand for what a script cannot do by itself.
     pub fn named(name: &str) -> Option<Self> {
         let mut characters = name.chars();
         match (name, characters.next(), characters.next()) {
@@ -49,6 +52,7 @@ impl Key {
             ("down", ..) => Some(Self::Down),
             ("idle", ..) => Some(Self::Idle),
             ("hover", ..) => Some(Self::Hover),
+            ("drag", ..) => Some(Self::Drag),
             (_, Some(character), None) => Some(Self::Character(character)),
             _ => None,
         }
