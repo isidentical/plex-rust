@@ -667,14 +667,21 @@ impl Hero {
         };
         set(&self.directors, &directed);
 
-        let badges: Vec<Retained<NSView>> = item
-            .media
-            .first()
+        let main_thread = self.view.mtm();
+        let media = item.media.first();
+        let mut badges: Vec<Retained<NSView>> = media
             .map(badges)
             .unwrap_or_default()
             .iter()
-            .map(|words| badge(words, self.view.mtm()))
+            .map(|words| badge(words, main_thread))
             .collect();
+        let file = media.map(file_facts).unwrap_or_default();
+        if !file.is_empty() {
+            let secondary = NSColor::secondaryLabelColor();
+            let plain = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
+            label::set(&plain, &file);
+            badges.push(Retained::into_super(Retained::into_super(plain)));
+        }
         self.badges.setViews_inGravity(
             &NSArray::from_retained_slice(&badges),
             NSStackViewGravity::Leading,
@@ -947,7 +954,7 @@ fn names(tags: &[plex::model::Tag], limit: usize) -> Vec<&str> {
 }
 
 /// What the file is, in the words printed on a disc case: "4K", "HDR10",
-/// "5.1".
+/// "Dolby Digital 5.1".
 fn badges(media: &Media) -> Vec<String> {
     let mut badges: Vec<String> = Vec::new();
     badges.extend(media.video_resolution.as_deref().map(|resolution| match resolution {
@@ -963,14 +970,46 @@ fn badges(media: &Media) -> Vec<String> {
     if !range.is_empty() {
         badges.push(range.join(" "));
     }
-    badges.extend(media.audio_channels.map(|channels| match channels {
+    let layout = media.audio_channels.map(|channels| match channels {
         1 => "Mono".to_owned(),
         2 => "Stereo".to_owned(),
         6 => "5.1".to_owned(),
         8 => "7.1".to_owned(),
         other => format!("{other} ch"),
-    }));
+    });
+    let format = media.audio_codec.as_deref().map(|codec| match codec {
+        "ac3" => "Dolby Digital".to_owned(),
+        "eac3" => "Dolby Digital Plus".to_owned(),
+        "truehd" => "Dolby TrueHD".to_owned(),
+        "dca" => "DTS".to_owned(),
+        "dca-ma" => "DTS-HD MA".to_owned(),
+        "opus" => "Opus".to_owned(),
+        other => other.to_uppercase(),
+    });
+    let sound: Vec<String> = format.into_iter().chain(layout).collect();
+    if !sound.is_empty() {
+        badges.push(sound.join(" "));
+    }
     badges
+}
+
+/// What a badge has no word for: how the picture is encoded and how big
+/// the file is, as in "HEVC · 6.8 GB".
+fn file_facts(media: &Media) -> String {
+    let mut facts: Vec<String> = Vec::new();
+    facts.extend(media.video_codec.as_deref().map(|codec| match codec {
+        "h264" => "H.264".to_owned(),
+        "mpeg2video" => "MPEG-2".to_owned(),
+        "mpeg4" => "MPEG-4".to_owned(),
+        "vc1" => "VC-1".to_owned(),
+        other => other.to_uppercase(),
+    }));
+    // A film split across files is as big as all of them.
+    let sizes: Vec<u64> = media.parts.iter().filter_map(|part| part.size).collect();
+    if !sizes.is_empty() {
+        facts.push(text::size(sizes.iter().sum()));
+    }
+    facts.join(" · ")
 }
 
 /// A few words in an outlined box.
@@ -1023,17 +1062,20 @@ mod tests {
     }
 
     #[test]
-    fn badges_name_the_picture_and_the_sound() {
+    fn the_file_is_named_by_picture_sound_encoding_and_size() {
         let film = item(serde_json::json!({
             "ratingKey": "1", "type": "movie", "title": "Title",
             "Media": [{
                 "id": 1, "videoResolution": "4k", "audioChannels": 6,
-                "Part": [{ "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 1, "Stream": [
-                    { "id": 1, "streamType": 1, "displayTitle": "4K HDR10" },
-                ]}],
+                "videoCodec": "hevc", "audioCodec": "eac3",
+                "Part": [{
+                    "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 6_828_818_931_u64,
+                    "Stream": [{ "id": 1, "streamType": 1, "displayTitle": "4K HDR10" }],
+                }],
             }],
         }));
-        assert_eq!(badges(&film.media[0]), ["4K", "HDR10", "5.1"]);
+        assert_eq!(badges(&film.media[0]), ["4K", "HDR10", "Dolby Digital Plus 5.1"]);
+        assert_eq!(file_facts(&film.media[0]), "HEVC · 6.8 GB");
     }
 
     #[test]

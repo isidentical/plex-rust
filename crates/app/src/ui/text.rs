@@ -32,6 +32,19 @@ pub fn count(number: u32, one: &str) -> String {
     if number == 1 { format!("1 {one}") } else { format!("{number} {one}s") }
 }
 
+/// The size of a file as the Finder writes it, in units of a thousand:
+/// "6.8 GB", "734 MB".
+pub fn size(bytes: u64) -> String {
+    const MB: u64 = 1_000_000;
+    const GB: u64 = 1_000 * MB;
+    // Tenths of a gigabyte, rounded, without going through a float.
+    let tenths = (bytes + GB / 20) / (GB / 10);
+    match bytes {
+        0..GB => format!("{} MB", (bytes + MB / 2) / MB),
+        _ => format!("{}.{} GB", tenths / 10, tenths % 10),
+    }
+}
+
 /// What kind of extra the server's `subtype` names.
 pub fn extra(subtype: Option<&str>) -> &'static str {
     match subtype {
@@ -57,5 +70,14 @@ mod tests {
         assert_eq!(seconds(2 * 3600), "2 h");
         assert_eq!(seconds(8286), "2 h 18 min");
         assert_eq!(seconds(3599), "1 h");
+    }
+
+    #[test]
+    fn sizes_are_in_thousands_and_change_unit_at_a_gigabyte() {
+        assert_eq!(size(733_900_000), "734 MB");
+        assert_eq!(size(999_999_999), "1000 MB");
+        assert_eq!(size(1_000_000_000), "1.0 GB");
+        assert_eq!(size(6_828_818_931), "6.8 GB");
+        assert_eq!(size(58_960_000_000), "59.0 GB");
     }
 }
