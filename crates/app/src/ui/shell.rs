@@ -88,6 +88,9 @@ struct Shell {
     /// The area right of the sidebar. Its one subview is the current place.
     content: Retained<NSView>,
     sidebar: Retained<Sidebar>,
+    /// The sidebar's place in the split, which it gives up while there is
+    /// nothing to list in it.
+    sidebar_item: Retained<NSSplitViewItem>,
     toolbar: Retained<Toolbar>,
     /// What the menu bar's own entries do.
     commands: Commands,
@@ -399,6 +402,7 @@ impl Shell {
                 window,
                 content,
                 sidebar,
+                sidebar_item,
                 toolbar,
                 commands,
                 places: RefCell::new(Vec::new()),
@@ -540,6 +544,7 @@ impl Shell {
         let session = Session { server, images, sections: sections.clone() };
         *self.session.borrow_mut() = Some(session);
         self.history.borrow_mut().clear();
+        self.set_browsing_shown(true);
 
         let mut destinations = vec![Destination::Home];
         destinations.extend(sections.iter().cloned().map(Destination::Section));
@@ -598,6 +603,7 @@ impl Shell {
     // Signing in.
 
     fn show_sign_in(self: &Rc<Self>) {
+        self.set_browsing_shown(false);
         let pressed = Self::command(&Rc::downgrade(self), Self::sign_in);
         self.show_notice(Notice::new(
             self.main_thread,
@@ -663,6 +669,16 @@ impl Shell {
              carries on by itself once you have.",
             Some(("Open the Page Again", Box::new(move || account::open_in_browser(&page)))),
         ));
+    }
+
+    /// Shows or hides what browsing is done with: the sidebar and the
+    /// toolbar. Without a library they lead nowhere, and the sign-in has
+    /// the window to itself. They come back together with the first
+    /// screen of the library, and in one step: a sidebar that slid in
+    /// would push that screen sideways as it arrived.
+    fn set_browsing_shown(&self, shown: bool) {
+        self.sidebar_item.setCollapsed(!shown);
+        self.toolbar.set_visible(shown);
     }
 
     // Moving from place to place.
@@ -1476,6 +1492,10 @@ impl Shell {
             Failure::SignedOut => ("Sign In", Self::sign_in as fn(&Rc<Self>)),
             _ => ("Try Again", retry),
         };
+        // Being asked to sign in again is the sign-in screen once more.
+        if failure == Failure::SignedOut {
+            self.set_browsing_shown(false);
+        }
         let act = Self::command(&Rc::downgrade(self), act);
         let notice = Notice::new(
             self.main_thread,
