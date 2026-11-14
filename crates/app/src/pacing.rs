@@ -22,7 +22,7 @@ use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationOcclusionState, NSBackingStoreType,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSScreen, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink, CVOptionFlags, CVReturn, CVTimeStamp};
@@ -139,7 +139,12 @@ fn video_window(
     // SAFETY: called before the window can be closed.
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(ns_string!("plex-rust pacing"));
-    window.center();
+    // Bottom right, out of the way of whoever is using the Mac.
+    if let Some(screen) = NSScreen::mainScreen(main_thread) {
+        let visible = screen.visibleFrame();
+        let x = visible.origin.x + visible.size.width - frame.size.width - 16.0;
+        window.setFrameOrigin(NSPoint::new(x, visible.origin.y + 16.0));
+    }
 
     let layer = VideoLayer::new(player, main_thread)?;
     let view = NSView::initWithFrame(NSView::alloc(main_thread), frame);
