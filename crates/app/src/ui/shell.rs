@@ -1699,6 +1699,7 @@ impl Shell {
         };
         let images = session.as_ref().map(|session| &session.images);
         let (closed, opened_with) = (Rc::downgrade(self), item.rating_key.clone());
+        let saved = Self::command(&Rc::downgrade(self), Self::refresh_behind_player);
         let screen = PlayerScreen::open(
             self.main_thread,
             Rc::clone(&self.background),
@@ -1710,7 +1711,13 @@ impl Shell {
             purpose,
             move || {
                 if let Some(shell) = closed.upgrade() {
-                    shell.player_closed(purpose, &opened_with);
+                    shell.player_closed(&opened_with);
+                }
+            },
+            move || {
+                // A check told the server nothing, so nothing has changed.
+                if purpose == Purpose::Watching {
+                    saved();
                 }
             },
         );
@@ -1730,7 +1737,7 @@ impl Shell {
 
     /// Puts the browsing screens back in the window. `opened_with` is the
     /// item the player started on, which an episode may have moved on from.
-    fn player_closed(self: &Rc<Self>, purpose: Purpose, opened_with: &RatingKey) {
+    fn player_closed(self: &Rc<Self>, opened_with: &RatingKey) {
         let Some(screen) = self.playing.borrow_mut().take() else {
             return;
         };
@@ -1758,13 +1765,18 @@ impl Shell {
                 // The keyboard was the player's, and the window does not
                 // hand it back to the screen that had it before.
                 behind.focus();
-                // That screen still says where the item was left before it
-                // was played.
-                if purpose == Purpose::Watching {
-                    self.refresh();
-                }
             }
             None => {}
+        }
+    }
+
+    /// Brings the screen the player was opened from up to date: it still
+    /// says where the item was left before it was played. Called when the
+    /// server has heard where the viewer stopped. Asked any sooner, it
+    /// answers with the old place, which the screen would then keep.
+    fn refresh_behind_player(self: &Rc<Self>) {
+        if self.playing.borrow().is_none() {
+            self.refresh();
         }
     }
 

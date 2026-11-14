@@ -219,6 +219,7 @@ pub struct Ivars {
     session: String,
     purpose: Purpose,
     on_close: Box<dyn Fn()>,
+    on_saved: Box<dyn Fn()>,
 }
 
 define_class!(
@@ -266,7 +267,10 @@ define_class!(
 
 impl PlayerScreen {
     /// Starts playing `item` from where it was left, at the speed and
-    /// volume in `settings`. `on_close` is called once, when the screen is done.
+    /// volume in `settings`. `on_close` is called once, when the screen is
+    /// done, and `on_saved` once after it, when the server has been told
+    /// where the viewer stopped or could not be. Only from then on does the
+    /// server answer with the new place.
     ///
     /// `item` should be the full item from [`MediaServer::item`], which is
     /// the one that knows its intro and credits. An episode gives way to
@@ -283,6 +287,7 @@ impl PlayerScreen {
         settings: Settings,
         purpose: Purpose,
         on_close: impl Fn() + 'static,
+        on_saved: impl Fn() + 'static,
     ) -> Result<Retained<Self>> {
         let player = Player::new()?;
         player.set_muted(purpose == Purpose::Check)?;
@@ -337,6 +342,7 @@ impl PlayerScreen {
             session: NSUUID::UUID().UUIDString().to_string(),
             purpose,
             on_close: Box::new(on_close),
+            on_saved: Box::new(on_saved),
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -465,9 +471,28 @@ impl PlayerScreen {
         // Nothing is reported after a failure: mpv has no position then,
         // and a report without one gives the end of the file, which the
         // server would mark as watched.
-        self.report(PlaybackState::Stopped);
+        let stopped = self.progress(PlaybackState::Stopped);
         self.or_log(self.ivars().player.quit());
         (self.ivars().on_close)();
+
+        let (stopped, server) = match (stopped, self.ivars().server.clone()) {
+            (Some(stopped), Some(server)) => (stopped, server),
+            // With no server there, the place is kept for it on this Mac.
+            (Some(stopped), None) => {
+                self.keep(&stopped);
+                return (self.ivars().on_saved)();
+            }
+            (None, _) => return (self.ivars().on_saved)(),
+        };
+        // The window is back with the browsing screens while this is on
+        // its way. The screen is kept until it has arrived, for the sake
+        // of `on_saved`.
+        let screen = self.retain();
+        let send = async move { stopped.send(&server).await };
+        self.ivars().background.run(self.mtm(), send, move |sent| {
+            log_unsaved(sent);
+            (screen.ivars().on_saved)();
+        });
     }
 
     /// Stops on a failure and says so, with `reason` in the player's own
