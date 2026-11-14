@@ -649,9 +649,13 @@ impl Detail {
         let resumes = playable.view_offset.is_some();
         hero.restart.button.setHidden(!resumes);
         hero.menu_restart.setHidden(!resumes);
-        let remaining = text::remaining(&playable);
-        label::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
-        hero.remaining.setHidden(remaining.is_none());
+        // A show's button plays an episode, which the number on it does
+        // not name.
+        let mut beside: Vec<String> = Vec::new();
+        beside.extend(is_show.then(|| playable.title.clone()));
+        beside.extend(text::remaining(&playable));
+        label::set(&hero.remaining, &beside.join(" · "));
+        hero.remaining.setHidden(beside.is_empty());
     }
 }
 
