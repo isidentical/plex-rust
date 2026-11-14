@@ -1,4 +1,5 @@
-//! Asking before a change too large for one click to make.
+//! Asking before a change too large for one click to make, and saying
+//! why something asked for was not done.
 
 use std::cell::Cell;
 
@@ -9,6 +10,16 @@ use objc2_foundation::NSString;
 use plex::model::{Item, Kind};
 
 use super::text;
+
+/// Says, in a sheet on `window`, that what the viewer asked for was not
+/// done: `message` is what, `reason` is why. The page behind it stays as
+/// it is, which an error page in its place would not.
+pub fn refusal(window: &NSWindow, message: &str, reason: &str) {
+    let alert = NSAlert::new(window.mtm());
+    alert.setMessageText(&NSString::from_str(message));
+    alert.setInformativeText(&NSString::from_str(reason));
+    alert.beginSheetModalForWindow_completionHandler(window, None);
+}
 
 /// Asks, in a sheet on `window`, whether every episode of `item`, a show
 /// or a season, is to be marked as watched or as unwatched. Calls `then`

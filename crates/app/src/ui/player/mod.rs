@@ -396,7 +396,7 @@ impl PlayerScreen {
     /// at `from`, or with `None` where the viewer left it the last time.
     fn load(&self, from: Option<Duration>) -> Result<()> {
         let (ivars, item) = (self.ivars(), self.item());
-        let mut source = match (ivars.downloads.whole(&item.rating_key), &ivars.server) {
+        let mut source = match (ivars.downloads.holding(&item), &ivars.server) {
             (Some(download), _) => source::on_disk(&download.file, &item),
             (None, Some(server)) => source::of(server, &item)?,
             (None, None) => return Err(Error::NotPlayable(item.title.clone())),

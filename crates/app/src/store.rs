@@ -98,8 +98,14 @@ impl Store {
     /// Makes room for a download of `item`, the server's full description
     /// of a film or an episode, by writing its record. Its file follows.
     ///
+    /// Of an item kept in several versions, the one whose media has the
+    /// id `version` is downloaded, and without one the first. The record
+    /// lists that version first, which is how every reader of it knows
+    /// the version that is here.
+    ///
     /// Fails if the item already has a download.
-    pub fn add(&self, item: &serde_json::Value) -> Result<Download> {
+    pub fn add(&self, item: &serde_json::Value, version: Option<u64>) -> Result<Download> {
+        let item = &with_first(item.clone(), version);
         let download = self.download(item.clone())?;
         let created = fs::OpenOptions::new().write(true).create_new(true).open(&download.record);
         created
@@ -152,9 +158,14 @@ impl Store {
 
     fn download(&self, item: serde_json::Value) -> Result<Download> {
         let item = item_from(item)?;
-        let part = item.media.first().and_then(|media| media.parts.first()).cloned();
-        let (Some(part), Kind::Movie | Kind::Episode) = (part, item.kind) else {
-            return Err(Error::NotPlayable(item.title));
+        let parts = item.media.first().map_or(&[][..], |media| &media.parts);
+        let part = match (parts, item.kind) {
+            ([part], Kind::Movie | Kind::Episode) => part.clone(),
+            // One file is what a download is, and what the player plays.
+            ([_, _, ..], Kind::Movie | Kind::Episode) => {
+                return Err(Error::InParts { parts: parts.len(), title: item.title });
+            }
+            _ => return Err(Error::NotPlayable(item.title)),
         };
         // A trailer, which the server only passes on, has no size.
         let Some(size) = part.size else {
@@ -220,6 +231,19 @@ fn name(item: &Item) -> String {
     format!("{} [{}]", title.trim_start_matches('.'), item.rating_key)
 }
 
+/// `item`, the server's description of a film or an episode, with the
+/// version whose media has the id `version` put first. The others keep
+/// their order behind it. An item that has no such version is left as it
+/// is.
+fn with_first(mut item: serde_json::Value, version: Option<u64>) -> serde_json::Value {
+    let id = |media: &serde_json::Value| media.get("id").and_then(serde_json::Value::as_u64);
+    let versions = item.get_mut("Media").and_then(serde_json::Value::as_array_mut);
+    if let (Some(version), Some(versions)) = (version, versions) {
+        versions.sort_by_key(|media| id(media) != Some(version));
+    }
+    item
+}
+
 fn read(path: &Path) -> Result<serde_json::Value> {
     let json =
         fs::read_to_string(path).map_err(|source| Error::File { path: path.to_owned(), source })?;
@@ -266,7 +290,7 @@ pub mod tests {
     #[test]
     fn the_files_are_named_after_the_item() {
         let store = store("names");
-        let download = store.add(&episode()).unwrap();
+        let download = store.add(&episode(), None).unwrap();
         let name = "A Show - S02E07 - Who-What- Why? [5640]";
         assert_eq!(file_name(&download.file), format!("{name}.mkv"));
         assert_eq!(file_name(&download.partial), format!("{name}.mkv.part"));
@@ -276,7 +300,7 @@ pub mod tests {
             "ratingKey": "370", "type": "movie", "title": "...And a Film", "year": 2015,
             "Media": [{ "id": 1, "Part": [{ "id": 1, "key": "/library/parts/1/2/file", "size": 8 }]}],
         });
-        let download = store.add(&film).unwrap();
+        let download = store.add(&film, None).unwrap();
         assert_eq!(file_name(&download.file), "And a Film (2015) [370]");
         fs::remove_dir_all(&store.directory).unwrap();
     }
@@ -285,12 +309,52 @@ pub mod tests {
     fn only_a_film_or_an_episode_with_a_file_of_known_size_is_kept() {
         let store = store("kinds");
         let show = serde_json::json!({ "ratingKey": "1", "type": "show", "title": "A Show" });
-        assert!(matches!(store.add(&show), Err(Error::NotPlayable(_))));
+        assert!(matches!(store.add(&show, None), Err(Error::NotPlayable(_))));
         let trailer = serde_json::json!({
             "ratingKey": "2", "type": "movie", "title": "A Film",
             "Media": [{ "id": 1, "Part": [{ "id": 1, "key": "/library/parts/1/2/file.mkv" }]}],
         });
-        assert!(matches!(store.add(&trailer), Err(Error::NotPlayable(_))));
+        assert!(matches!(store.add(&trailer, None), Err(Error::NotPlayable(_))));
+        assert_eq!(store.list().unwrap(), []);
+        fs::remove_dir_all(&store.directory).unwrap();
+    }
+
+    #[test]
+    fn the_version_picked_is_the_one_kept_and_listed_first() {
+        let store = store("versions");
+        let version = |id: u64, size: u64| {
+            let key = format!("/library/parts/{id}/1/file.mkv");
+            serde_json::json!({ "id": id, "Part": [{ "id": id, "key": key, "size": size }] })
+        };
+        let film = |key: &str| {
+            serde_json::json!({
+                "ratingKey": key, "type": "movie", "title": "A Film",
+                "Media": [version(1, 10), version(2, 20), version(3, 30)],
+            })
+        };
+        assert_eq!(store.add(&film("1"), None).unwrap().size, 10);
+        assert_eq!(store.add(&film("2"), Some(3)).unwrap().size, 30);
+        // A version the item no longer has leaves the first.
+        assert_eq!(store.add(&film("3"), Some(9)).unwrap().size, 10);
+
+        // Read back from the folder, each is still the version it was.
+        let kept = store.list().unwrap();
+        let sizes: Vec<u64> = kept.iter().map(|download| download.size).collect();
+        assert_eq!(sizes, [10, 30, 10]);
+        let versions: Vec<u64> = kept[1].item.media.iter().map(|media| media.id).collect();
+        assert_eq!(versions, [3, 1, 2]);
+        fs::remove_dir_all(&store.directory).unwrap();
+    }
+
+    #[test]
+    fn an_item_split_across_files_is_refused() {
+        let store = store("parts");
+        let reel = |id: u64| serde_json::json!({ "id": id, "key": "/library/parts/1/2/reel.mkv", "size": 8 });
+        let film = serde_json::json!({
+            "ratingKey": "101", "type": "movie", "title": "Two Reels",
+            "Media": [{ "id": 1, "Part": [reel(1), reel(2)] }],
+        });
+        assert!(matches!(store.add(&film, None), Err(Error::InParts { parts: 2, .. })));
         assert_eq!(store.list().unwrap(), []);
         fs::remove_dir_all(&store.directory).unwrap();
     }
@@ -298,7 +362,7 @@ pub mod tests {
     #[test]
     fn a_download_is_whole_once_its_file_has_lost_the_part_ending() {
         let store = store("states");
-        let download = store.add(&episode()).unwrap();
+        let download = store.add(&episode(), None).unwrap();
         assert_eq!(download.on_disk().unwrap(), OnDisk::Partial(0));
         fs::write(&download.partial, b"half").unwrap();
         assert_eq!(download.on_disk().unwrap(), OnDisk::Partial(4));
@@ -309,7 +373,7 @@ pub mod tests {
         fs::write(store.directory.join("notes.json"), "{}").unwrap();
         assert_eq!(store.list().unwrap(), std::slice::from_ref(&download));
         // A second download of it would write over the record of the first.
-        assert!(matches!(store.add(&episode()), Err(Error::File { .. })));
+        assert!(matches!(store.add(&episode(), None), Err(Error::File { .. })));
 
         // Removing it leaves what is not its own.
         store.set_unsent(&download, Some(Unsent { position_ms: 1, duration_ms: 2 })).unwrap();
@@ -322,7 +386,7 @@ pub mod tests {
     #[test]
     fn a_download_resumes_where_it_was_left_here_until_the_server_knows() {
         let store = store("unsent");
-        let download = store.add(&episode()).unwrap();
+        let download = store.add(&episode(), None).unwrap();
         assert_eq!(store.as_left(&download).unwrap().view_offset, Some(Millis(60_000)));
 
         let left = Unsent::new(Duration::from_secs(900), Duration::from_secs(1500));

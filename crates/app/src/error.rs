@@ -23,6 +23,9 @@ pub enum Error {
     #[error("{0} has no file to play")]
     NotPlayable(String),
 
+    #[error("{title} is split across {parts} files, and a download is one file")]
+    InParts { title: String, parts: usize },
+
     #[error("the window could not be drawn into an image")]
     Snapshot,
 

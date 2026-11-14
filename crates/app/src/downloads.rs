@@ -134,10 +134,23 @@ impl Downloads {
         matches!(entry.state, State::Downloaded).then_some(entry.download)
     }
 
+    /// The download that holds the file `item` plays, if all of it is
+    /// here. A download of another version of the item does not.
+    pub fn holding(&self, item: &Item) -> Option<Arc<Download>> {
+        let plays = item.media.first().and_then(|media| media.parts.first())?;
+        self.whole(&item.rating_key).filter(|download| download.part.id == plays.id)
+    }
+
     /// Starts downloading `item`, the server's full description of a film
-    /// or an episode that has no download yet, from `server`.
-    pub fn add(self: &Rc<Self>, server: &MediaServer, item: &serde_json::Value) -> Result<()> {
-        let download = Arc::new(self.store.add(item)?);
+    /// or an episode that has no download yet, from `server`: the version
+    /// of it whose media has the id `version`, or without one its first.
+    pub fn add(
+        self: &Rc<Self>,
+        server: &MediaServer,
+        item: &serde_json::Value,
+        version: Option<u64>,
+    ) -> Result<()> {
+        let download = Arc::new(self.store.add(item, version)?);
         let key = download.key().clone();
         let state = State::Incomplete { received: 0, error: None };
         self.entries.borrow_mut().push(Entry { download, state });
@@ -331,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn the_server_hears_once_where_a_viewing_without_it_stopped() {
         let store = store("sent");
-        let download = store.add(&episode()).unwrap();
+        let download = store.add(&episode(), None).unwrap();
         let left = Unsent { position_ms: 900_000, duration_ms: 1_500_000 };
         store.set_unsent(&download, Some(left)).unwrap();
 

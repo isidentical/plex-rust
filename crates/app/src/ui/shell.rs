@@ -361,6 +361,8 @@ pub struct Tweaks {
     pub approving: bool,
     /// On the page of a film or an episode, the download button pressed.
     pub download: bool,
+    /// On that page, the version whose media has this id picked first.
+    pub version: Option<u64>,
     /// The server not answering, whether or not it would.
     pub away: bool,
 }
@@ -1780,7 +1782,7 @@ impl Shell {
                 Action::Play(item) => shell.play(&item, Purpose::Watching, Playback::default()),
                 Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
-                Action::ToggleDownload(item) => shell.toggle_download(&item.rating_key),
+                Action::ToggleDownload(item) => shell.toggle_download(&item),
                 Action::ChooseStreams { part, audio, subtitles } => {
                     shell.change(move |server| async move {
                         server.choose_streams(&part, audio, subtitles).await
@@ -1940,25 +1942,32 @@ impl Shell {
 
     /// Does what the download button of an item's page does: downloads the
     /// item, carries on with a download of it that stopped short, or
-    /// deletes one that is whole or on its way.
-    fn toggle_download(self: &Rc<Self>, key: &RatingKey) {
+    /// deletes one that is whole or on its way. The version of `item` to
+    /// download is its first, where its page puts the one that was picked.
+    fn toggle_download(self: &Rc<Self>, item: &Item) {
+        let key = &item.rating_key;
         match self.downloads.find(key).map(|entry| entry.state) {
-            None => self.download(key),
+            None => self.download(item),
             Some(State::Incomplete { .. }) => self.act_on_download(Act::Resume(key.clone())),
             Some(State::Downloading(_) | State::Downloaded) => self.downloads.remove(key),
         }
     }
 
-    /// Starts downloading the item with `key`. It is asked for in full
-    /// first, because that is what is kept next to its file.
-    fn download(self: &Rc<Self>, key: &RatingKey) {
+    /// Starts downloading the first version of `item`. The item is asked
+    /// for in full first, because that is what is kept next to its file.
+    ///
+    /// A download that cannot begin is said in a sheet: the page it was
+    /// asked for on is as good as it was.
+    fn download(self: &Rc<Self>, item: &Item) {
         let Some(session) = self.session() else {
             return;
         };
-        let (server, key) = (session.server.clone(), key.clone());
+        let (server, key, title) =
+            (session.server.clone(), item.rating_key.clone(), item.title.clone());
+        let version = item.media.first().map(|media| media.id);
         let asked = key.clone();
         let ask = async move { server.item_json(&asked).await };
-        let (shell, moves) = (Rc::clone(self), self.moves.get());
+        let shell = Rc::clone(self);
         self.background.run(self.main_thread, ask, move |item| {
             // A second press while the first was still asking.
             if shell.downloads.find(&key).is_some() {
@@ -1966,10 +1975,17 @@ impl Shell {
             }
             let added = item
                 .map_err(Error::from)
-                .and_then(|item| shell.downloads.add(&session.server, &item));
-            if let Err(error) = added {
-                shell.fail(moves, &error);
-            }
+                .and_then(|item| shell.downloads.add(&session.server, &item, version));
+            let reason = match added {
+                Ok(()) => return,
+                Err(Error::InParts { parts, .. }) => format!(
+                    "This version is split across {parts} files, and a download is one file. \
+                     Pick another version if there is one, or play it from your server."
+                ),
+                Err(error) => with_causes(&error),
+            };
+            eprintln!("plex-rust: {title} was not downloaded: {reason}");
+            confirm::refusal(&shell.window, &format!("{title} was not downloaded"), &reason);
         });
     }
 
@@ -2086,7 +2102,8 @@ impl Shell {
     fn play_kept(self: &Rc<Self>, download: &Download, purpose: Purpose, playback: Playback) {
         match self.downloads.as_left(download) {
             Ok(mut item) => {
-                playback.apply(&mut item);
+                // The version that was downloaded is the one there is.
+                Playback { version: None, ..playback }.apply(&mut item);
                 self.open_player(&item, purpose);
             }
             Err(error) => self.fail(self.moves.get(), &error),
@@ -2104,7 +2121,7 @@ impl Shell {
         let session = self.session();
         // A download does without a server that has not answered. Anything
         // else has only the server to come from, answering or not.
-        let downloaded = self.downloads.whole(&item.rating_key).is_some();
+        let downloaded = self.downloads.holding(item).is_some();
         let server = match (&session, self.reach.get()) {
             (None, _) if !downloaded => return,
             (Some(session), Reach::Answering) => Some(session.server.clone()),
@@ -2367,6 +2384,9 @@ impl Shell {
                 }
                 if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
                     detail.follow_link(link);
+                }
+                if let (Some(version), Screen::Detail(detail)) = (snapshot.tweaks.version, screen) {
+                    detail.pick_version(version);
                 }
                 if let (true, Screen::Detail(detail)) = (snapshot.tweaks.download, screen) {
                     detail.press_download();

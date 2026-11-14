@@ -334,7 +334,10 @@ impl Detail {
     /// whole or on its way. One that stopped short is carried on with.
     pub fn press_download(&self) {
         let item = self.item.borrow().clone();
-        if let Some(item) = item.filter(is_downloadable) {
+        if let Some(mut item) = item.filter(is_downloadable) {
+            // The version picked to play is the one to keep, and like the
+            // one to play it goes first.
+            Playback { from_start: false, version: self.version.get() }.apply(&mut item);
             (self.on_action)(Action::ToggleDownload(item));
         }
     }
@@ -360,6 +363,17 @@ impl Detail {
         if let (Some(item), Some(version)) = (&item, version) {
             self.version.set(Some(version.id));
             self.hero.show(item, Some(version.id), &self.images);
+        }
+    }
+
+    /// Picks the version whose media has the id `version`, as choosing it
+    /// in the menu does.
+    pub fn pick_version(&self, version: u64) {
+        let item = self.item.borrow().clone();
+        let has = |item: &Item| item.media.iter().any(|media| media.id == version);
+        if let Some(item) = item.filter(has) {
+            self.version.set(Some(version));
+            self.hero.show(&item, Some(version), &self.images);
         }
     }
 

@@ -50,6 +50,7 @@ usage: plex-rust
                pull, release, bright, small, wide, marker, stall, fail,
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
          tweaks: narrow, wide, collapsed, hover, link, season, download,
+                 version=<media-id>,
                  scroll=<points>, across=<points>, unwatched,
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
@@ -150,7 +151,6 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
             None if *tweak == "download" => parsed.download = true,
             None if *tweak == "away" => parsed.away = true,
-            None if *tweak == "download" => parsed.download = true,
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             None if *tweak == "unanswered" => parsed.unanswered = true,
             None if *tweak == "looking" => parsed.looking = true,
@@ -158,6 +158,9 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "approving" => parsed.approving = true,
             Some(("scroll", points)) => {
                 parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
+            }
+            Some(("version", media)) => {
+                parsed.version = Some(media.parse().map_err(|_| Error::Usage(USAGE))?);
             }
             Some(("across", points)) => {
                 parsed.across = points.parse().map_err(|_| Error::Usage(USAGE))?;
@@ -247,7 +250,7 @@ fn download(key: &str) -> Result<()> {
         let kept = store.list()?.into_iter().find(|download| download.key().as_str() == key);
         let download = match kept {
             Some(download) => download,
-            None => store.add(&server.item_json(&RatingKey::new(key)).await?)?,
+            None => store.add(&server.item_json(&RatingKey::new(key)).await?, None)?,
         };
         if let OnDisk::Partial(bytes) = download.on_disk()? {
             println!("{bytes} of {} bytes are here", download.size);
