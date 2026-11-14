@@ -147,6 +147,8 @@ fetch mpv \
 apply mpv mpv-build-without-vulkan.patch
 # Ours: the picture does not wait for the sound after a seek.
 apply mpv mpv-restart-video-before-audio.patch
+# Ours: a short seek forward does not decode again from the keyframe.
+apply mpv mpv-decode-on-for-short-seeks-forward.patch
 
 if ! built mpv; then
     # macOS ships libcurl but no pkg-config file for it, and mpv's HTTP

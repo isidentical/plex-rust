@@ -213,6 +213,14 @@ impl Player {
     /// one output latency later, in sync, without the picture waiting:
     /// that is `scripts/patches/mpv-restart-video-before-audio.patch`,
     /// and without it the picture stood still for 225 ms on AirPods Pro.
+    ///
+    /// Getting to the target means decoding up to it: 2.4 ms a frame for
+    /// 4K HEVC, which is as fast as VideoToolbox takes frames. A jump
+    /// forward that meets no keyframe decodes on from the current position
+    /// (`scripts/patches/mpv-decode-on-for-short-seeks-forward.patch`),
+    /// so 3 seconds forward in the 4K film take about 180 ms. Any other
+    /// jump decodes from the keyframe before its target, which is 250 ms
+    /// on average there and up to 600 ms.
     pub fn seek_by(&self, seconds: f64) -> Result<()> {
         self.command(&["seek", &seconds.to_string(), "relative+exact"])
     }

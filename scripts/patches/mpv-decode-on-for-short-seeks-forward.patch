@@ -1,0 +1,241 @@
+For mpv 0.42.0. Not from upstream.
+
+On an exact seek a little way forward, decode on from where playback is
+and do not restart the decoder at a keyframe.
+
+An exact seek resets the decoders, moves the demuxer to the keyframe
+before the target and decodes from there to the target, dropping the
+frames on the way. For a short jump forward that keyframe is usually
+behind the current position: in a film with a keyframe every 10 seconds, a
+jump of 3 seconds decodes 5 seconds of video on average and up to 10, all
+but 3 of which the decoder had just decoded.
+
+With this patch, such a seek leaves the video and audio decoders and the
+demuxer where they are when there is no keyframe between the reader's
+position and the target, the packets up to the target are queued, and the
+target is at least 1 second ahead of the picture on screen. The decoders go
+on with the next packet, exactly as plain playback would, and everything
+else about the seek is unchanged: the outputs are reset, frames before the
+target are dropped, and the audio syncs to the first video frame.
+
+  filters/filter.c   mp_filter_set_reset_exempt(): a filter that
+                     mp_filter_reset() leaves alone while it is set.
+  demux/demux.c      demux_reads_on_to(): whether a stream's reader gets
+                     to a pts through queued packets without a keyframe.
+  player/playloop.c  can_decode_on() decides, mp_seek() skips the demuxer
+                     seek, and the reset keeps the two decoders and the
+                     subtitle decoders, which hold packets that would not
+                     be read again.
+
+Not changed: seeks backwards, to keyframes, by frame steps, during another
+seek, across a keyframe, past what is buffered, in reverse playback, and
+with external audio or subtitle files.
+
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -4482,6 +4482,36 @@
+     MP_TARRAY_APPEND(demuxer, demuxer->chapters, demuxer->num_chapters, new);
+     talloc_steal(demuxer->chapters, new.metadata);
+     return demuxer->num_chapters - 1;
++}
++
++// Whether the reader of the stream gets to pts through packets that are
++// queued already and without meeting a keyframe. A decoder that goes on
++// from where it is then has less to decode than one that restarts at the
++// keyframe before pts, which it is already past.
++bool demux_reads_on_to(struct demuxer *demuxer, struct sh_stream *sh, double pts)
++{
++    struct demux_internal *in = demuxer->in;
++    mp_assert(demuxer == in->d_user);
++
++    struct demux_stream *ds = sh->ds;
++    if (!ds || ds->in != in || pts == MP_NOPTS_VALUE)
++        return false;
++
++    bool reaches = false;
++    mp_mutex_lock(&in->lock);
++    pts = MP_ADD_PTS(pts, -in->ts_offset);
++    if (ds->selected && !in->seeking && !in->back_demuxing) {
++        for (struct demux_packet *dp = ds->reader_head; dp; dp = dp->next) {
++            if (dp->keyframe)
++                break;
++            if (dp->pts != MP_NOPTS_VALUE && dp->pts >= pts) {
++                reaches = true;
++                break;
++            }
++        }
++    }
++    mp_mutex_unlock(&in->lock);
++    return reaches;
+ }
+ 
+ // Disallow reading any packets and make readers think there is no new data
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -352,6 +352,7 @@
+ void demux_get_reader_state(struct demuxer *demuxer, struct demux_reader_state *r);
+ 
+ void demux_block_reading(struct demuxer *demuxer, bool block);
++bool demux_reads_on_to(struct demuxer *demuxer, struct sh_stream *sh, double pts);
+ 
+ void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
+                           double ref_pts, bool selected);
+--- a/filters/filter.c
++++ b/filters/filter.c
+@@ -119,6 +119,7 @@
+     bool pending;
+     bool async_pending;
+     bool failed;
++    bool reset_exempt;
+ };
+ 
+ // Called when new work needs to be done on a pin belonging to the filter:
+@@ -589,11 +590,16 @@
+     }
+     mp_frame_unref(&p->data);
+     p->data_requested = false;
++}
++
++void mp_filter_set_reset_exempt(struct mp_filter *filter, bool exempt)
++{
++    filter->in->reset_exempt = exempt;
+ }
+ 
+ void mp_filter_reset(struct mp_filter *filter)
+ {
+-    if (!filter)
++    if (!filter || filter->in->reset_exempt)
+         return;
+ 
+     for (int n = 0; n < filter->in->num_children; n++)
+--- a/filters/filter.h
++++ b/filters/filter.h
+@@ -364,6 +364,10 @@
+ // Invoke mp_filter_info.reset on this filter and all children (but not
+ // other filters connected via pins).
+ void mp_filter_reset(struct mp_filter *filter);
++
++// While exempt, mp_filter_reset() leaves the filter, its children and what
++// their pins hold alone, also when it is reached through a parent.
++void mp_filter_set_reset_exempt(struct mp_filter *filter, bool exempt);
+ 
+ enum mp_filter_command_type {
+     MP_FILTER_COMMAND_TEXT = 1,
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -238,13 +238,31 @@
+ }
+ 
+ // Clear some playback-related fields on file loading or after seeks.
+-void reset_playback_state(struct MPContext *mpctx)
++// With decode_on, the video and audio decoders and the subtitles are left as
++// they are, with the packets they hold: see can_decode_on().
++static void reset_playback(struct MPContext *mpctx, bool decode_on)
+ {
++    struct mp_decoder_wrapper *kept[2] = {0};
++    if (decode_on) {
++        kept[0] = mpctx->vo_chain->track->dec;
++        kept[1] = mpctx->ao_chain ? mpctx->ao_chain->track->dec : NULL;
++    }
++
++    for (int n = 0; n < MP_ARRAY_SIZE(kept); n++) {
++        if (kept[n])
++            mp_filter_set_reset_exempt(kept[n]->f, true);
++    }
+     mp_filter_reset(mpctx->filter_root);
++    for (int n = 0; n < MP_ARRAY_SIZE(kept); n++) {
++        if (kept[n])
++            mp_filter_set_reset_exempt(kept[n]->f, false);
++    }
+ 
+     reset_video_state(mpctx);
+     reset_audio_state(mpctx);
+-    reset_subtitle_state(mpctx);
++    // Resetting them drops packets that were read and not decoded yet.
++    if (!decode_on)
++        reset_subtitle_state(mpctx);
+ 
+     if (mpctx->demuxer)
+         demux_nav_refresh(mpctx->demuxer);
+@@ -280,6 +298,56 @@
+     update_core_idle_state(mpctx);
+ }
+ 
++void reset_playback_state(struct MPContext *mpctx)
++{
++    reset_playback(mpctx, false);
++}
++
++// How far ahead of the picture on screen a decode-on seek must go. What is
++// decoded and not shown or heard yet is dropped by the seek and must all
++// lie before the target: up to 10 video frames and about half a second of
++// audio in the output's buffers.
++#define DECODE_ON_MIN_DISTANCE 1.0
++
++// Whether an exact seek to seek_pts can leave the decoders alone and decode
++// on from where playback is, dropping frames up to the target.
++//
++// A seek resets the decoders and restarts them at the keyframe before the
++// target. For a short jump forward that keyframe usually lies behind the
++// current position, so the decoder decodes again what it just decoded: with
++// a keyframe every 10 seconds, 5 seconds of video on average for a jump of
++// 3. If there is no keyframe between the current position and the target,
++// going on from the current position gets to the same frame with less work,
++// and with the same picture, since it is what plain playback would decode.
++//
++// Everything else about the seek stays: the outputs are reset, frames before
++// the target are dropped and the audio syncs to the first video frame.
++static bool can_decode_on(struct MPContext *mpctx, double seek_pts)
++{
++    struct vo_chain *vo_c = mpctx->vo_chain;
++    struct ao_chain *ao_c = mpctx->ao_chain;
++
++    if (mpctx->opts->play_dir < 0 || mpctx->play_dir < 0)
++        return false;
++    // Playback must be running: mid-seek the decoders are somewhere else.
++    if (!mpctx->restart_complete || !vo_c || vo_c->is_sparse || !vo_c->track ||
++        !vo_c->track->dec || mpctx->video_status != STATUS_PLAYING)
++        return false;
++    if (ao_c && (!ao_c->track || !ao_c->track->dec ||
++                 mpctx->audio_status != STATUS_PLAYING))
++        return false;
++    // External files have demuxers of their own that a seek must move.
++    for (int n = 0; n < mpctx->num_tracks; n++) {
++        struct track *track = mpctx->tracks[n];
++        if (track->selected && track->demuxer != mpctx->demuxer)
++            return false;
++    }
++    if (mpctx->video_pts == MP_NOPTS_VALUE ||
++        seek_pts < mpctx->video_pts + DECODE_ON_MIN_DISTANCE)
++        return false;
++    return demux_reads_on_to(mpctx->demuxer, vo_c->track->stream, seek_pts);
++}
++
+ static double calculate_framestep_pts(MPContext *mpctx, double current_time,
+                                       int step_frames)
+ {
+@@ -378,7 +446,14 @@
+ 
+     demux_flags |= SEEK_BLOCK;
+ 
+-    if (!demux_seek(mpctx->demuxer, demux_pts, demux_flags)) {
++    bool decode_on = hr_seek && seek.exact == MPSEEK_EXACT && play_dir > 0 &&
++                     (seek.type == MPSEEK_RELATIVE ||
++                      seek.type == MPSEEK_ABSOLUTE) &&
++                     can_decode_on(mpctx, seek_pts);
++
++    if (decode_on) {
++        MP_VERBOSE(mpctx, "seek: decoding on to %f\n", seek_pts);
++    } else if (!demux_seek(mpctx->demuxer, demux_pts, demux_flags)) {
+         if (!mpctx->demuxer->seekable) {
+             MP_ERR(mpctx, "Cannot seek in this stream.\n");
+             MP_ERR(mpctx, "You can force it with '--force-seekable=yes'.\n");
+@@ -405,7 +480,7 @@
+     if (!(seek.flags & MPSEEK_FLAG_NOFLUSH))
+         clear_audio_output_buffers(mpctx);
+ 
+-    reset_playback_state(mpctx);
++    reset_playback(mpctx, decode_on);
+ 
+     demux_block_reading(mpctx->demuxer, false);
+     for (int t = 0; t < mpctx->num_tracks; t++) {
