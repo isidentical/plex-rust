@@ -85,6 +85,9 @@ pub const POINTER_WIDTH: f64 = 2.0;
 pub const POINTER_HEIGHT: f64 = 14.0;
 /// The gap in the track where a chapter starts.
 pub const MARK_WIDTH: f64 = 2.0;
+/// With less room than this for each chapter on average, the gaps show
+/// only under the pointer.
+pub const MARK_SPACING_AT_REST: f64 = 28.0;
 pub const VOLUME_WIDTH: f64 = 84.0;
 /// How far VoiceOver moves the scrubber at a time, in seconds, and the
 /// volume, out of 100.

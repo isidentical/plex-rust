@@ -90,7 +90,14 @@ define_class!(
             // is a hole in them.
             NSGraphicsContext::saveGraphicsState_class();
             let drawable = NSBezierPath::bezierPathWithRect(self.bounds());
-            for mark in ivars.marks.borrow().iter() {
+            let marks = ivars.marks.borrow();
+            // A film of fifty chapters in a small window has a gap every
+            // few points, and its track reads as a dotted line. So close
+            // together the gaps wait for the pointer, which is when the
+            // chapters are being looked for.
+            let room = (end - start) / (marks.len() + 1) as f64;
+            let shown = self.is_in_use() || room >= theme::MARK_SPACING_AT_REST;
+            for mark in marks.iter().filter(|_| shown) {
                 let x = self.x_of(*mark) - theme::MARK_WIDTH / 2.0;
                 drawable.appendBezierPathWithRect(self.track_rect(x, x + theme::MARK_WIDTH));
             }
