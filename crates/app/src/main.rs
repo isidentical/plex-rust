@@ -2,6 +2,7 @@
 
 mod account;
 mod background;
+mod downloads;
 mod error;
 mod images;
 mod pacing;
@@ -10,6 +11,7 @@ mod progress;
 mod seeks;
 mod settings;
 mod source;
+mod store;
 mod ui;
 mod video_layer;
 
@@ -23,6 +25,7 @@ use plex::model::RatingKey;
 use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
+use crate::store::{OnDisk, Store};
 use crate::ui::player::input::Key;
 use crate::ui::shell::{Failure, Link, Press, Snapshot, Subject, Tweaks};
 
@@ -46,6 +49,7 @@ usage: plex-rust
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
+       plex-rust download <rating-key>
        plex-rust play <file-or-url> [--unattended <seconds> [--low-power]]
        plex-rust play item:<rating-key> [--unattended <seconds> [--low-power]]
        plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
@@ -92,6 +96,7 @@ fn run(args: &[&str]) -> Result<()> {
         ["servers", address] => servers(Some(address)),
         ["api", path] => api(plex::Method::GET, path),
         ["api", "--post", path] => api(plex::Method::POST, path),
+        ["download", key] => download(key),
         ["play", what] => play(what, None),
         ["play", what, "--unattended", seconds, low_power @ ..] => {
             let length = Duration::from_secs(seconds.parse().map_err(|_| Error::Usage(USAGE))?);
@@ -199,6 +204,30 @@ fn api(method: plex::Method, path: &str) -> Result<()> {
         let server = servers.first().ok_or(Error::NoServer)?;
         let server = plex::MediaServer::connect(&client, server, None).await?;
         println!("{}", server.text(method, path).await?);
+        Ok(())
+    })
+}
+
+/// Downloads the original file of a film or an episode from the first
+/// server, carrying on with what an earlier run left of it.
+fn download(key: &str) -> Result<()> {
+    let (client, token) = account::signed_in()?;
+    let store = Store::open()?;
+    runtime()?.block_on(async {
+        let servers = plex::discovery::servers(&client, &token).await?;
+        let server = servers.first().ok_or(Error::NoServer)?;
+        let server = plex::MediaServer::connect(&client, server, None).await?;
+
+        let kept = store.list()?.into_iter().find(|download| download.key().as_str() == key);
+        let download = match kept {
+            Some(download) => download,
+            None => store.add(&server.item_json(&RatingKey::new(key)).await?)?,
+        };
+        if let OnDisk::Partial(bytes) = download.on_disk()? {
+            println!("{bytes} of {} bytes are here", download.size);
+        }
+        downloads::fetch(&server, &download, &plex::Transfer::default()).await?;
+        println!("{}", download.file.display());
         Ok(())
     })
 }

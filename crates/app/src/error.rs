@@ -32,6 +32,9 @@ pub enum Error {
     #[error("{path} is not a valid settings file: {source}")]
     Settings { path: std::path::PathBuf, source: serde_json::Error },
 
+    #[error("{path} is not the record of a download: {source}")]
+    Record { path: std::path::PathBuf, source: serde_json::Error },
+
     #[error("not signed in, run `plex-rust login` first")]
     SignedOut,
 
