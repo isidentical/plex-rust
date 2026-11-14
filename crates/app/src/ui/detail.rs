@@ -14,9 +14,9 @@ use objc2_app_kit::{
     NSAttributedStringNSExtendedStringDrawing, NSButton, NSCellImagePosition, NSColor,
     NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
     NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
-    NSPopover, NSPopoverBehavior, NSStackView, NSStackViewGravity,
-    NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSPopover, NSPopoverBehavior, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView,
+    NSStackViewGravity, NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions,
+    NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
@@ -41,6 +41,9 @@ use crate::images::Images;
 const GENRES_SHOWN: usize = 3;
 const DIRECTORS_SHOWN: usize = 3;
 const CAST_SHOWN: usize = 20;
+/// Up to this many seasons are side by side to click on, which the
+/// smallest window has room for. More are in a menu.
+const SEASON_TABS_MOST: usize = 5;
 
 /// How a show's page opens.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -156,7 +159,7 @@ struct Hero {
     version: Choice,
     audio: Choice,
     subtitles: Choice,
-    seasons: Retained<NSPopUpButton>,
+    seasons: Seasons,
     season_size: Retained<NSTextField>,
     on_event: Rc<dyn Fn(Event)>,
 }
@@ -217,8 +220,10 @@ impl Detail {
                 hero.menu_restart.setAction(Some(Callback::action()));
                 hero.menu_watched.setTarget(Some(watched));
                 hero.menu_watched.setAction(Some(Callback::action()));
-                hero.seasons.setTarget(Some(season));
-                hero.seasons.setAction(Some(Callback::action()));
+                hero.seasons.tabs.setTarget(Some(season));
+                hero.seasons.tabs.setAction(Some(Callback::action()));
+                hero.seasons.menu.setTarget(Some(season));
+                hero.seasons.menu.setAction(Some(Callback::action()));
                 let choices =
                     [(&hero.version, version), (&hero.audio, audio), (&hero.subtitles, subtitles)];
                 for (choice, target) in choices {
@@ -474,12 +479,8 @@ impl Detail {
         *self.season.borrow_mut() = seasons.get(chosen).map(|(key, _)| key.clone());
         *self.episodes.borrow_mut() = episodes;
 
-        let titles: Vec<Retained<NSString>> =
-            seasons.iter().map(|(_, title)| NSString::from_str(title)).collect();
-        let picker = &self.hero.seasons;
-        picker.removeAllItems();
-        picker.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-        picker.selectItemAtIndex(chosen.cast_signed());
+        let titles: Vec<&str> = seasons.iter().map(|(_, title)| title.as_str()).collect();
+        self.hero.seasons.offer(&titles, chosen);
         self.show_play_button();
         self.list.show(self.shelves());
         self.open_as_asked();
@@ -517,7 +518,7 @@ impl Detail {
     }
 
     fn season_chosen(&self) {
-        let chosen = usize::try_from(self.hero.seasons.indexOfSelectedItem()).ok();
+        let chosen = self.hero.seasons.chosen();
         let seasons = seasons(&self.episodes.borrow());
         if let Some((key, _)) = chosen.and_then(|chosen| seasons.into_iter().nth(chosen)) {
             *self.season.borrow_mut() = Some(key);
@@ -560,7 +561,12 @@ impl Detail {
                     .cloned()
                     .collect();
                 let size = u32::try_from(listed.len()).unwrap_or(u32::MAX);
-                label::set(&self.hero.season_size, &text::count(size, "episode"));
+                let mut size = text::count(size, "episode");
+                // An only season has no picker to name it.
+                if let [(_, only)] = seasons(&episodes).as_slice() {
+                    size = format!("{only} · {size}");
+                }
+                label::set(&self.hero.season_size, &size);
                 self.hero.season_bar_hidden(listed.is_empty());
                 let mut list = Shelf::of("", Style::List, listed);
                 list.current = next_up(&episodes).map(|episode| episode.rating_key.clone());
@@ -801,13 +807,7 @@ impl Hero {
         );
         buttons.setVisibilityPriority_forView(if_necessary, &remaining);
 
-        let seasons = NSPopUpButton::initWithFrame_pullsDown(
-            NSPopUpButton::alloc(main_thread),
-            NSRect::ZERO,
-            false,
-        );
-        seasons.setControlSize(NSControlSize::Large);
-        seasons.setAccessibilityLabel(Some(ns_string!("Season")));
+        let seasons = Seasons::new(main_thread);
 
         let summary = label::paragraph(
             theme::FONT_HEADLINE,
@@ -938,7 +938,7 @@ impl Hero {
         column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
         column.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let season: [&NSView; 2] = [&self.seasons, &self.season_size];
+        let season: [&NSView; 3] = [&self.seasons.tabs, &self.seasons.menu, &self.season_size];
         let season = NSStackView::stackViewWithViews(&NSArray::from_slice(&season), main_thread);
         season.setSpacing(theme::SPACE_M);
         season.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -1009,7 +1009,7 @@ impl Hero {
     }
 
     fn season_bar_hidden(&self, hidden: bool) {
-        self.seasons.setHidden(hidden);
+        self.seasons.set_hidden(hidden);
         self.season_size.setHidden(hidden);
     }
 
@@ -1120,6 +1120,66 @@ impl Hero {
 
         let rows = [&self.version, &self.audio, &self.subtitles];
         self.choices.setHidden(rows.iter().all(|choice| choice.row.isHidden()));
+    }
+}
+
+/// The seasons of a show to pick one from: side by side while they are
+/// few, as the tabs of the list under them, and in a menu when they are
+/// many.
+struct Seasons {
+    tabs: Retained<NSSegmentedControl>,
+    menu: Retained<NSPopUpButton>,
+    /// How many seasons there are to pick from.
+    count: Cell<usize>,
+}
+
+impl Seasons {
+    fn new(main_thread: MainThreadMarker) -> Self {
+        let tabs = NSSegmentedControl::new(main_thread);
+        tabs.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
+        tabs.setControlSize(NSControlSize::Large);
+        tabs.setAccessibilityLabel(Some(ns_string!("Season")));
+        let menu = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(main_thread),
+            NSRect::ZERO,
+            false,
+        );
+        menu.setControlSize(NSControlSize::Large);
+        menu.setAccessibilityLabel(Some(ns_string!("Season")));
+        Self { tabs, menu, count: Cell::new(0) }
+    }
+
+    /// Offers the seasons with these titles, the one at `picked` chosen.
+    fn offer(&self, titles: &[&str], picked: usize) {
+        self.count.set(titles.len());
+        self.tabs.setSegmentCount(titles.len().cast_signed());
+        for (segment, title) in titles.iter().enumerate() {
+            self.tabs.setLabel_forSegment(&NSString::from_str(title), segment.cast_signed());
+        }
+        self.tabs.setSelectedSegment(picked.cast_signed());
+        let titles: Vec<Retained<NSString>> =
+            titles.iter().map(|title| NSString::from_str(title)).collect();
+        self.menu.removeAllItems();
+        self.menu.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+        self.menu.selectItemAtIndex(picked.cast_signed());
+    }
+
+    /// Which season is chosen, counting from zero.
+    fn chosen(&self) -> Option<usize> {
+        let chosen = match self.count.get() <= SEASON_TABS_MOST {
+            true => self.tabs.selectedSegment(),
+            false => self.menu.indexOfSelectedItem(),
+        };
+        usize::try_from(chosen).ok()
+    }
+
+    /// Shows the tabs or the menu, whichever the number of seasons calls
+    /// for, or with `hidden` neither. A single season is not a choice,
+    /// and has neither as well.
+    fn set_hidden(&self, hidden: bool) {
+        let count = self.count.get();
+        self.tabs.setHidden(hidden || !(2..=SEASON_TABS_MOST).contains(&count));
+        self.menu.setHidden(hidden || count <= SEASON_TABS_MOST);
     }
 }
 
