@@ -8,17 +8,18 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSAccessibility, NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
 
 use super::chip::{Chip, Style};
-use super::layout::{add, pin, row};
-use super::pane::{Edge, Pane};
+use super::layout::{add, cover, pin, row};
+use super::pane::Pane;
 use super::slider::{Reading, Slider};
+use super::surface::{Material, Surface};
 use super::theme;
 use super::upnext::UpNext;
 
@@ -33,9 +34,9 @@ const FOLLOWS_POINTER: f32 = 1.0;
 pub const FULL_VOLUME: f64 = 100.0;
 
 pub struct Controls {
-    /// The back button and the title. Fades when idle.
+    /// The back button and the title, in a capsule. Fades when idle.
     pub top: Retained<Pane>,
-    /// The scrubber and the buttons. Fades when idle.
+    /// The bar that holds the scrubber and the buttons. Fades when idle.
     pub bottom: Retained<Pane>,
     pub back: Retained<Chip>,
     /// The name of what is playing, and under it the line that places it.
@@ -74,15 +75,21 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// Builds the controls for `item` on top of whatever `root` holds.
-    pub fn new(main_thread: MainThreadMarker, root: &NSView, item: &Item) -> Self {
+    /// Builds the controls for `item` on top of whatever `root` holds, on
+    /// panels of `material`.
+    pub fn new(
+        main_thread: MainThreadMarker,
+        root: &NSView,
+        item: &Item,
+        material: Material,
+    ) -> Self {
         let button = |symbol, name, key| Chip::button(main_thread, symbol, name, key);
         let bubble = Chip::new(main_thread, Style::Caption);
         let scrubber =
             Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP, Reading::Time);
         let controls = Self {
-            top: Pane::new(main_thread, Edge::Top),
-            bottom: Pane::new(main_thread, Edge::Bottom),
+            top: Pane::new(main_thread),
+            bottom: Pane::new(main_thread),
             back: button("chevron.left", "Back", "Esc"),
             title: label(main_thread, theme::TITLE_FONT_SIZE, semibold(), &theme::text()),
             detail: label(main_thread, theme::FONT_SIZE, regular(), &theme::secondary_text()),
@@ -128,8 +135,8 @@ impl Controls {
         controls.next.setHidden(!is_episode);
 
         controls.set_heading(item);
-        controls.place_top(main_thread, root);
-        controls.place_bottom(main_thread, root);
+        controls.place_top(main_thread, root, material);
+        controls.place_bottom(main_thread, root, material);
         controls.place_loose(root);
         controls
     }
@@ -142,44 +149,60 @@ impl Controls {
         self.detail.setHidden(detail.is_none());
     }
 
-    fn place_top(&self, main_thread: MainThreadMarker, root: &NSView) {
+    /// The way out and the name of what is playing, in one capsule in the
+    /// top corner, under the window's own buttons.
+    fn place_top(&self, main_thread: MainThreadMarker, root: &NSView, material: Material) {
         let pane = &self.top;
+        let surface = Surface::new(main_thread, material, theme::CAPSULE_RADIUS);
+        // The title is cut short by the window's edge and by nothing less,
+        // but does not get to widen the window either.
+        self.title.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDragThatCannotResizeWindow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let holder = surface.content();
         let titles: [&NSView; 2] = [&self.title, &self.detail];
         let titles = NSStackView::stackViewWithViews(&NSArray::from_slice(&titles), main_thread);
         titles.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         titles.setAlignment(NSLayoutAttribute::Leading);
         titles.setSpacing(theme::TITLE_SPACING);
 
-        let hang = theme::MARGIN - theme::CHIP_INSET;
         // Below the title bar, which holds the window's own buttons. In
         // full screen there is none and the safe area starts at the top.
         let below_title_bar = root.safeAreaLayoutGuide().topAnchor();
         add(root, pane);
-        add(pane, &self.back);
-        add(pane, &titles);
+        add(pane, surface.view());
+        cover(pane, surface.view());
+        add(holder, &self.back);
+        add(holder, &titles);
         pin(&[
-            pane.topAnchor().constraintEqualToAnchor(&root.topAnchor()),
-            pane.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()),
-            pane.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()),
-            self.back.leadingAnchor().constraintEqualToAnchor_constant(&pane.leadingAnchor(), hang),
+            pane.topAnchor().constraintEqualToAnchor_constant(&below_title_bar, theme::TOP_GAP),
+            pane.leadingAnchor()
+                .constraintEqualToAnchor_constant(&root.leadingAnchor(), theme::MARGIN),
+            pane.trailingAnchor()
+                .constraintLessThanOrEqualToAnchor_constant(&root.trailingAnchor(), -theme::MARGIN),
+            pane.heightAnchor().constraintEqualToConstant(2.0 * theme::CAPSULE_RADIUS),
             self.back
-                .topAnchor()
-                .constraintEqualToAnchor_constant(&below_title_bar, theme::TOP_GAP),
-            pane.bottomAnchor()
-                .constraintEqualToAnchor_constant(&self.back.bottomAnchor(), theme::SHADE_RUNOUT),
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&holder.leadingAnchor(), theme::CAPSULE_INSET),
+            self.back.centerYAnchor().constraintEqualToAnchor(&holder.centerYAnchor()),
             titles.leadingAnchor().constraintEqualToAnchor_constant(
                 &self.back.trailingAnchor(),
                 theme::CONTROL_SPACING,
             ),
-            titles.centerYAnchor().constraintEqualToAnchor(&self.back.centerYAnchor()),
+            titles.centerYAnchor().constraintEqualToAnchor(&holder.centerYAnchor()),
             titles
                 .trailingAnchor()
-                .constraintLessThanOrEqualToAnchor_constant(&pane.trailingAnchor(), -theme::MARGIN),
+                .constraintEqualToAnchor_constant(&holder.trailingAnchor(), -theme::CAPSULE_RADIUS),
         ]);
     }
 
-    fn place_bottom(&self, main_thread: MainThreadMarker, root: &NSView) {
+    /// The scrubber, and under it the buttons in three groups, on one bar
+    /// that floats above the bottom edge.
+    fn place_bottom(&self, main_thread: MainThreadMarker, root: &NSView, material: Material) {
         let pane = &self.bottom;
+        let surface = Surface::new(main_thread, material, theme::BAR_RADIUS);
+        let bar = surface.content();
         let spacing = theme::CONTROL_SPACING;
         let sound: [&NSView; 2] = [&self.mute, &self.volume];
         let sound = row(&sound, spacing, main_thread);
@@ -189,43 +212,57 @@ impl Controls {
         let choices: [&NSView; 4] = [&self.speed, &self.audio, &self.subtitles, &self.full_screen];
         let choices = row(&choices, spacing, main_thread);
 
-        let (leading, trailing) = (pane.leadingAnchor(), pane.trailingAnchor());
-        let hang = theme::MARGIN - theme::CHIP_INSET;
+        let (leading, trailing) = (bar.leadingAnchor(), bar.trailingAnchor());
+        let inset = theme::BAR_INSET;
+        // The times stand in from the bar's edge as far as the symbols of
+        // the buttons under them do.
+        let text_inset = inset + theme::CHIP_INSET;
         let line = self.scrubber.centerYAnchor();
         let group = theme::GROUP_SPACING;
         add(root, pane);
-        add(pane, &transport);
-        add(pane, &sound);
-        add(pane, &choices);
-        add(pane, &self.elapsed);
-        add(pane, &self.remaining);
-        add(pane, &self.scrubber);
-        add(pane, &self.bubble);
-        // The bubble follows the pointer, but stops short of the window's
-        // edge instead of being cut off by it.
-        self.bubble_x.setPriority(FOLLOWS_POINTER);
-        self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
-        self.bubble.setHidden(true);
+        add(pane, surface.view());
+        cover(pane, surface.view());
+        add(bar, &transport);
+        add(bar, &sound);
+        add(bar, &choices);
+        add(bar, &self.elapsed);
+        add(bar, &self.remaining);
+        add(bar, &self.scrubber);
+        // As wide as the window lets it be, up to a width past which the
+        // groups of buttons would drift too far apart to be one bar. The
+        // wish to fill the window is weaker than the window's wish to keep
+        // its size, or a window wider than the bar would shrink to fit it.
+        let fills = pane
+            .widthAnchor()
+            .constraintEqualToAnchor_constant(&root.widthAnchor(), -2.0 * theme::MARGIN);
+        fills.setPriority(NSLayoutPriorityDragThatCannotResizeWindow);
         pin(&[
-            pane.bottomAnchor().constraintEqualToAnchor(&root.bottomAnchor()),
-            pane.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()),
-            pane.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()),
-            transport.centerXAnchor().constraintEqualToAnchor(&pane.centerXAnchor()),
-            transport
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&pane.bottomAnchor(), -theme::BOTTOM_MARGIN),
-            sound.leadingAnchor().constraintEqualToAnchor_constant(&leading, hang),
+            pane.bottomAnchor()
+                .constraintEqualToAnchor_constant(&root.bottomAnchor(), -theme::BOTTOM_MARGIN),
+            pane.centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
+            pane.widthAnchor().constraintLessThanOrEqualToConstant(theme::BAR_MAX_WIDTH),
+            fills,
+            self.scrubber.topAnchor().constraintEqualToAnchor_constant(&bar.topAnchor(), inset),
+            transport.centerXAnchor().constraintEqualToAnchor(&bar.centerXAnchor()),
+            transport.topAnchor().constraintEqualToAnchor_constant(
+                &self.scrubber.bottomAnchor(),
+                theme::ROW_SPACING,
+            ),
+            bar.bottomAnchor().constraintEqualToAnchor_constant(&transport.bottomAnchor(), inset),
+            sound.leadingAnchor().constraintEqualToAnchor_constant(&leading, inset),
             sound.centerYAnchor().constraintEqualToAnchor(&transport.centerYAnchor()),
             self.volume.widthAnchor().constraintEqualToConstant(theme::VOLUME_WIDTH),
             // The play symbol is wider than the pause symbol. Left to fit
             // its content, the chip would push its neighbours aside on
             // every pause.
             self.toggle.widthAnchor().constraintEqualToConstant(theme::TOGGLE_WIDTH),
-            choices.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -hang),
+            choices.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -inset),
             choices.centerYAnchor().constraintEqualToAnchor(&transport.centerYAnchor()),
-            self.elapsed.leadingAnchor().constraintEqualToAnchor_constant(&leading, theme::MARGIN),
+            self.elapsed.leadingAnchor().constraintEqualToAnchor_constant(&leading, text_inset),
             self.elapsed.centerYAnchor().constraintEqualToAnchor(&line),
-            self.remaining.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -hang),
+            self.remaining
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&trailing, -(text_inset - theme::CHIP_PADDING)),
             self.remaining.centerYAnchor().constraintEqualToAnchor(&line),
             self.scrubber
                 .leadingAnchor()
@@ -234,30 +271,18 @@ impl Controls {
                 &self.remaining.leadingAnchor(),
                 -(group - theme::CHIP_PADDING),
             ),
-            self.scrubber
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&transport.topAnchor(), -theme::ROW_SPACING),
-            pane.topAnchor()
-                .constraintEqualToAnchor_constant(&self.scrubber.topAnchor(), -theme::SHADE_RUNOUT),
-            self.bubble_x.clone(),
-            self.bubble
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&self.scrubber.topAnchor(), -theme::BUBBLE_GAP),
-            self.bubble
-                .leadingAnchor()
-                .constraintGreaterThanOrEqualToAnchor_constant(&leading, theme::MARGIN),
-            self.bubble
-                .trailingAnchor()
-                .constraintLessThanOrEqualToAnchor_constant(&trailing, -theme::MARGIN),
         ]);
     }
 
     /// Places the pieces that come and go by themselves, whether or not
     /// the panes are showing.
     fn place_loose(&self, root: &NSView) {
-        let trailing = root.trailingAnchor();
         let below_title_bar = root.safeAreaLayoutGuide().topAnchor();
+        let (leading, trailing) = (root.leadingAnchor(), root.trailingAnchor());
         self.skip.setHidden(true);
+        self.bubble.setHidden(true);
+        self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
+        self.bubble_x.setPriority(FOLLOWS_POINTER);
         self.notice.setAlphaValue(0.0);
         self.notice.limit_width(theme::NOTICE_MAX_WIDTH);
         self.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
@@ -268,14 +293,14 @@ impl Controls {
         add(root, self.up_next.view());
         add(root, &self.notice);
         add(root, &self.spinner);
+        add(root, &self.bubble);
         pin(&[
             self.spinner.centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
             self.spinner.centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()),
-            self.skip.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -theme::MARGIN),
-            self.skip.bottomAnchor().constraintEqualToAnchor_constant(
-                &self.bottom.topAnchor(),
-                theme::SHADE_RUNOUT - theme::SKIP_GAP,
-            ),
+            self.skip.trailingAnchor().constraintEqualToAnchor(&self.bottom.trailingAnchor()),
+            self.skip
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&self.bottom.topAnchor(), -theme::SKIP_GAP),
             self.up_next
                 .view()
                 .trailingAnchor()
@@ -287,6 +312,16 @@ impl Controls {
             self.notice
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&below_title_bar, theme::TOP_GAP),
+            self.bubble_x.clone(),
+            self.bubble
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&self.bottom.topAnchor(), -theme::BUBBLE_GAP),
+            self.bubble
+                .leadingAnchor()
+                .constraintGreaterThanOrEqualToAnchor_constant(&leading, theme::MARGIN),
+            self.bubble
+                .trailingAnchor()
+                .constraintLessThanOrEqualToAnchor_constant(&trailing, -theme::MARGIN),
         ]);
     }
 }

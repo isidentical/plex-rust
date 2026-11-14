@@ -6,24 +6,20 @@ use objc2_app_kit::NSColor;
 
 /// Space between the window's edge and the nearest control.
 pub const MARGIN: f64 = 20.0;
-/// Space between a pane's content and the edge where its shade runs out.
-pub const SHADE_RUNOUT: f64 = 56.0;
-/// How dark a pane's shade is at the window's edge.
-pub const SHADE_ALPHA: f64 = 0.85;
-/// How dark it is halfway to where it runs out, which is about where the
-/// scrubber and the title are. White on a white picture under this much
-/// black has a contrast of over 5 to 1, where a shade that thinned evenly
-/// from the edge left the times at about 3.5 to 1.
-pub const SHADE_ALPHA_MIDWAY: f64 = 0.6;
-/// How many steps the shade is drawn in, which is enough for its curve to
-/// show no corners.
-pub const SHADE_STOPS: u32 = 12;
+/// The bar of controls: how round its corners are, how far its buttons
+/// stand in from its edge, and how wide it gets in a very wide window.
+pub const BAR_RADIUS: f64 = 26.0;
+pub const BAR_INSET: f64 = 8.0;
+pub const BAR_MAX_WIDTH: f64 = 1400.0;
+/// The capsule that holds the back button and the title: half its height,
+/// and how far the back button stands in from its end.
+pub const CAPSULE_RADIUS: f64 = 27.0;
+pub const CAPSULE_INSET: f64 = 6.0;
 
-/// How far a symbol sits inside the edge of its chip. Rows of chips hang
-/// over the margin by this much, so that what is seen lines up with it.
+/// How far a symbol sits inside the edge of its chip.
 pub const CHIP_INSET: f64 = 10.0;
 /// Space between the controls and the bottom edge of the window.
-pub const BOTTOM_MARGIN: f64 = 12.0;
+pub const BOTTOM_MARGIN: f64 = 16.0;
 /// Space between the title bar, or the top of the screen, and the controls.
 pub const TOP_GAP: f64 = 8.0;
 
@@ -41,7 +37,7 @@ pub const CHIP_SIZE: f64 = 42.0;
 /// Width of the play and pause button, which fits the wider of its two
 /// symbols with the same padding as any chip.
 pub const TOGGLE_WIDTH: f64 = 56.0;
-pub const CHIP_RADIUS: f64 = 10.0;
+pub const CHIP_RADIUS: f64 = 12.0;
 pub const CHIP_PADDING: f64 = 12.0;
 pub const RIM_WIDTH: f64 = 1.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
@@ -83,9 +79,9 @@ pub const VOLUME_WIDTH: f64 = 84.0;
 /// volume, out of 100.
 pub const SCRUBBER_STEP: f64 = 10.0;
 pub const VOLUME_STEP: f64 = 5.0;
-pub const BUBBLE_GAP: f64 = 2.0;
-/// Space between the scrubber and the Skip Intro button above it.
-pub const SKIP_GAP: f64 = 16.0;
+pub const BUBBLE_GAP: f64 = 8.0;
+/// Space between the bar and the Skip Intro button above it.
+pub const SKIP_GAP: f64 = 12.0;
 
 pub const CARD_RADIUS: f64 = 16.0;
 pub const CARD_PADDING: f64 = 16.0;
@@ -152,8 +148,20 @@ pub fn card() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(0.0, 0.72)
 }
 
-pub fn shade(alpha: f64) -> Retained<NSColor> {
-    NSColor::colorWithWhite_alpha(0.0, alpha)
+/// Laid into the glass of a panel, so that white controls keep their
+/// contrast when the scene behind the glass is bright.
+pub fn glass_tint() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.0, 0.45)
+}
+
+/// A panel for a viewer who has asked for less transparency.
+pub fn plate() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.08, 0.92)
+}
+
+/// The edge of such a panel, which a dark scene would otherwise swallow.
+pub fn plate_rim() -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(1.0, 0.14)
 }
 
 /// The part of a slider's track that is not filled.

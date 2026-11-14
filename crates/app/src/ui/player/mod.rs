@@ -11,6 +11,7 @@ mod remote;
 mod slider;
 mod speed;
 mod stage;
+mod surface;
 mod theme;
 mod tracks;
 mod upnext;
@@ -46,6 +47,7 @@ use self::menu::Choice;
 use self::remote::{Command, Playing, Remote};
 use self::slider::{Grip, Pointed};
 use self::speed::Speed;
+use self::surface::Material;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
 use crate::images::Images;
@@ -278,7 +280,8 @@ impl PlayerScreen {
         video.setLayer(Some(&layer));
         video.setWantsLayer(true);
         crate::ui::layout::cover(&root, &video);
-        let controls = Controls::new(main_thread, &root, item);
+        let material = Material::choose(purpose == Purpose::Check);
+        let controls = Controls::new(main_thread, &root, item, material);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,

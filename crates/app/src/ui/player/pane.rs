@@ -1,29 +1,15 @@
-//! A strip of controls along the top or the bottom of the video.
-//!
-//! A pane shades the picture behind it, darkest at the window's edge, so
-//! that white controls stay readable over a bright scene. Shades and not
-//! glass: a blur of the video would have to be redone for every frame.
+//! A group of controls that comes and goes as one.
 
 use std::cell::Cell;
 
 use objc2::rc::Retained;
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSEvent, NSGradient, NSView,
-};
-use objc2_foundation::{NSArray, NSPoint, NSRect};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSAnimatablePropertyContainer, NSAnimationContext, NSView};
+use objc2_foundation::{NSPoint, NSRect};
 
 use super::theme;
 
-/// The edge of the window a pane lies along.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge {
-    Top,
-    Bottom,
-}
-
 pub struct Ivars {
-    edge: Edge,
     shown: Cell<bool>,
 }
 
@@ -45,36 +31,12 @@ define_class!(
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
             hit.filter(|_| self.ivars().shown.get())
         }
-
-        /// A click that misses a control by a little ends here and does
-        /// nothing, instead of reaching the video and pausing it.
-        #[unsafe(method(mouseDown:))]
-        fn mouse_down(&self, _event: &NSEvent) {}
-
-        #[unsafe(method(drawRect:))]
-        fn draw(&self, _dirty: NSRect) {
-            let mut stops: Vec<_> = (0..=theme::SHADE_STOPS)
-                .map(|stop| f64::from(stop) / f64::from(theme::SHADE_STOPS))
-                .map(|along| theme::shade(shade_alpha(along)))
-                .collect();
-            // A gradient is drawn from the bottom up at 90 degrees.
-            if self.ivars().edge == Edge::Top {
-                stops.reverse();
-            }
-            let gradient = NSGradient::initWithColors(
-                NSGradient::alloc(),
-                &NSArray::from_retained_slice(&stops),
-            );
-            if let Some(gradient) = gradient {
-                gradient.drawInRect_angle(self.bounds(), 90.0);
-            }
-        }
     }
 );
 
 impl Pane {
-    pub fn new(main_thread: MainThreadMarker, edge: Edge) -> Retained<Self> {
-        let this = Self::alloc(main_thread).set_ivars(Ivars { edge, shown: Cell::new(true) });
+    pub fn new(main_thread: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(main_thread).set_ivars(Ivars { shown: Cell::new(true) });
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     }
@@ -97,19 +59,4 @@ impl Pane {
         let (x, y) = (point.x - frame.origin.x, point.y - frame.origin.y);
         (0.0..frame.size.width).contains(&x) && (0.0..frame.size.height).contains(&y)
     }
-}
-
-/// How dark the shade is `along` the way from the window's edge, at 0, to
-/// where it runs out, at 1.
-///
-/// It holds most of its strength to the middle of the pane, where the
-/// controls are, and from there eases out to nothing. Thinning evenly to
-/// the end instead leaves a line across the picture where the shade stops.
-fn shade_alpha(along: f64) -> f64 {
-    let (edge, midway) = (theme::SHADE_ALPHA, theme::SHADE_ALPHA_MIDWAY);
-    if along <= 0.5 {
-        return edge + (midway - edge) * along / 0.5;
-    }
-    let left = (1.0 - along) / 0.5;
-    midway * left * left
 }
