@@ -25,8 +25,8 @@ use objc2_app_kit::{
     NSTextField, NSView,
 };
 use objc2_foundation::{
-    NSArray, NSIndexPath, NSInteger, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSet, NSString,
-    ns_string,
+    NSArray, NSIndexPath, NSInteger, NSMutableIndexSet, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSSet, NSString, ns_string,
 };
 use plex::model::Item;
 
@@ -366,19 +366,27 @@ impl Posters {
         }
     }
 
-    /// Replaces everything shown. When the new shelves hold the same items
-    /// in the same places, the cells on screen are filled again where they
-    /// are, so nothing moves and nothing flashes.
+    /// Replaces everything shown, disturbing as little as it can. When the
+    /// shelves are the same ones, only those whose items changed are laid
+    /// out again, and the cells of the others are filled where they are,
+    /// so nothing moves and nothing flashes.
     pub fn show(&self, shelves: Vec<Shelf>) {
         let ivars = self.ivars();
         ivars.awaiting_more.set(false);
         ivars.nothing.setHidden(shelves.iter().any(|shelf| !shelf.items.is_empty()));
         let new = Content::Shelves(shelves);
-        let in_place = same_places(&ivars.content.borrow(), &new);
+        let changed = changed_shelves(&ivars.content.borrow(), &new);
         *ivars.content.borrow_mut() = new;
-        if !in_place {
+        let Some(changed) = changed else {
             ivars.collection.reloadData();
             return;
+        };
+        if !changed.is_empty() {
+            let sections = NSMutableIndexSet::new();
+            for shelf in changed {
+                sections.addIndex(shelf);
+            }
+            ivars.collection.reloadSections(&sections);
         }
         for cell in ivars.collection.visibleItems() {
             if let Some(index_path) = ivars.collection.indexPathForItem(&cell) {
@@ -585,21 +593,26 @@ fn is_on_play(cell: &NSCollectionViewItem, point: NSPoint) -> bool {
     }
 }
 
-/// Whether `new` puts the same items in the same places as `old`, so that
-/// only what the cells say can have changed.
-fn same_places(old: &Content, new: &Content) -> bool {
+/// Which shelves of `new` hold other items, or the same in another order,
+/// than the shelf in that place in `old`. `None` when the shelves
+/// themselves differ, in number, title or arrangement, or when `old` was
+/// only outlines: then nothing on screen can stay.
+fn changed_shelves(old: &Content, new: &Content) -> Option<Vec<usize>> {
     let (Content::Shelves(old), Content::Shelves(new)) = (old, new) else {
-        return false;
+        return None;
     };
+    let same_shelf =
+        |(old, new): (&Shelf, &Shelf)| old.title == new.title && old.style == new.style;
+    if old.len() != new.len() || !old.iter().zip(new).all(same_shelf) {
+        return None;
+    }
     let same_items = |old: &Shelf, new: &Shelf| {
         let mut pairs = old.items.iter().zip(&new.items);
         old.items.len() == new.items.len()
             && pairs.all(|(old, new)| old.rating_key == new.rating_key)
     };
-    old.len() == new.len()
-        && old.iter().zip(new).all(|(old, new)| {
-            old.title == new.title && old.style == new.style && same_items(old, new)
-        })
+    let pairs = old.iter().zip(new).enumerate();
+    Some(pairs.filter(|(_, (old, new))| !same_items(old, new)).map(|(shelf, _)| shelf).collect())
 }
 
 /// How many cards fit across `available` points when each is at least
@@ -788,6 +801,36 @@ fn section(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shelf(title: &str, keys: &[&str]) -> Shelf {
+        let item = |key: &&str| {
+            let json = serde_json::json!({ "ratingKey": key, "type": "movie", "title": "Title" });
+            serde_json::from_value(json).unwrap()
+        };
+        Shelf {
+            title: title.to_owned(),
+            style: Style::Shelf(Shape::Poster),
+            items: keys.iter().map(item).collect(),
+        }
+    }
+
+    #[test]
+    fn only_shelves_with_other_items_are_laid_out_again() {
+        let shown = |shelves: Vec<Shelf>| Content::Shelves(shelves);
+        let old = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3"])]);
+
+        let same = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3"])]);
+        assert_eq!(changed_shelves(&old, &same), Some(vec![]));
+        let reordered = shown(vec![shelf("a", &["2", "1"]), shelf("b", &["3"])]);
+        assert_eq!(changed_shelves(&old, &reordered), Some(vec![0]));
+        let longer = shown(vec![shelf("a", &["1", "2"]), shelf("b", &["3", "4"])]);
+        assert_eq!(changed_shelves(&old, &longer), Some(vec![1]));
+
+        let renamed = shown(vec![shelf("a", &["1", "2"]), shelf("c", &["3"])]);
+        assert_eq!(changed_shelves(&old, &renamed), None);
+        assert_eq!(changed_shelves(&old, &shown(vec![shelf("a", &["1", "2"])])), None);
+        assert_eq!(changed_shelves(&Content::Outlines(Vec::new()), &same), None);
+    }
 
     #[test]
     fn a_grid_fills_its_width_with_as_many_cards_as_fit() {
