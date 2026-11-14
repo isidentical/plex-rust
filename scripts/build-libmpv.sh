@@ -35,6 +35,20 @@ fetch() {
 built() { [ -e "$prefix/.built-$1" ]; }
 done_building() { touch "$prefix/.built-$1"; }
 
+# apply <name> <patch>: applies scripts/patches/<patch> to $src/<name> and
+# has <name> built again, unless the patch is already in. A patch that is
+# added later so reaches a tree that was unpacked and built before it.
+apply() {
+    patch=$root/scripts/patches/$2
+    # It is in if it would come out cleanly. --force keeps patch from
+    # guessing that a patch which does not come out was meant forwards.
+    if patch -d "$src/$1" -p1 --reverse --force --dry-run < "$patch" > /dev/null 2>&1; then
+        return
+    fi
+    patch -d "$src/$1" -p1 --forward < "$patch"
+    rm -f "$prefix/.built-$1"
+}
+
 meson_build() {
     name=$1
     shift
@@ -125,15 +139,16 @@ if ! built libplacebo; then
     done_building libplacebo
 fi
 
+fetch mpv \
+    https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz \
+    bcfebbfa2b65a6d88dc97ea18117831072373e38b5785a2afb874ed4df5070dd
+# 0.42.0 does not compile with Vulkan disabled. This is the upstream fix,
+# https://github.com/mpv-player/mpv/pull/18818, not yet released.
+apply mpv mpv-build-without-vulkan.patch
+# Ours: the picture does not wait for the sound after a seek.
+apply mpv mpv-restart-video-before-audio.patch
+
 if ! built mpv; then
-    if [ ! -d "$src/mpv" ]; then
-        fetch mpv \
-            https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz \
-            bcfebbfa2b65a6d88dc97ea18117831072373e38b5785a2afb874ed4df5070dd
-        # 0.42.0 does not compile with Vulkan disabled. This is the upstream
-        # fix, https://github.com/mpv-player/mpv/pull/18818, not yet released.
-        patch -d "$src/mpv" -p1 < "$root/scripts/patches/mpv-build-without-vulkan.patch"
-    fi
     # macOS ships libcurl but no pkg-config file for it, and mpv's HTTP
     # backend is only found through pkg-config.
     cat > "$prefix/lib/pkgconfig/libcurl.pc" <<EOF

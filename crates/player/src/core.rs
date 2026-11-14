@@ -208,6 +208,11 @@ impl Player {
     /// [`seek`](Self::seek) to a position worked out from the current one,
     /// several of these in quick succession add up, even when an earlier
     /// one has not finished.
+    ///
+    /// The picture moves on from the target at once. The sound joins it
+    /// one output latency later, in sync, without the picture waiting:
+    /// that is `scripts/patches/mpv-restart-video-before-audio.patch`,
+    /// and without it the picture stood still for 225 ms on AirPods Pro.
     pub fn seek_by(&self, seconds: f64) -> Result<()> {
         self.command(&["seek", &seconds.to_string(), "relative+exact"])
     }

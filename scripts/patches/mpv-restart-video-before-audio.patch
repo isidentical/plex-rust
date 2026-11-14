@@ -1,0 +1,201 @@
+For mpv 0.42.0. Not from upstream.
+
+After a seek, restart the video at once and let the audio join it in sync.
+
+Audio handed to the audio output is heard one output latency later: 13 ms
+on a MacBook's speakers, 171 ms on AirPods Pro. mpv restarts the audio at
+the pts of the first video frame after the seek, and it times every later
+frame against the audio that is being heard. So the second frame waits
+until the audio of the first has come out, and the picture stands still for
+the latency after every seek.
+
+With this patch the audio restarts at the pts the video will have reached
+when it is first heard, so the audio that would have played during the
+latency is left out. The sound comes back at the same moment as before.
+The picture no longer waits for it.
+
+  audio/out/buffer.c   Remembers the latency of a pull AO from each read by
+                       the device (ao_get_latency), and has ao_get_delay()
+                       include it from the moment playback starts and not
+                       only from the device's first read after it.
+  player/audio.c       On a seek with video, moves the audio start pts by
+                       the latency and tells the A/V sync so (mpctx->delay).
+
+Only seeks with video are changed, and only on pull AOs (CoreAudio is one)
+whose device has read from mpv before, which is how the latency is known.
+A file that starts at a position starts with a seek, so this applies to it
+when the audio output is still open from the file before. Pausing and
+unpausing during playback and audio-only playback are not changed.
+
+--- a/audio/out/ao.h
++++ b/audio/out/ao.h
+@@ -96,6 +96,7 @@
+ int ao_control(struct ao *ao, enum aocontrol cmd, void *arg);
+ void ao_set_gain(struct ao *ao, float gain);
+ double ao_get_delay(struct ao *ao);
++double ao_get_latency(struct ao *ao);
+ void ao_reset(struct ao *ao);
+ void ao_start(struct ao *ao);
+ void ao_set_paused(struct ao *ao, bool paused, bool eof);
+--- a/audio/out/buffer.c
++++ b/audio/out/buffer.c
+@@ -62,6 +62,9 @@
+     bool hw_paused;             // driver->set_pause() was used successfully
+ 
+     int64_t end_time_ns;        // absolute output time of last played sample
++    int64_t latency_ns;         // pull AOs: how long after a read its first
++                                // sample is heard, as of the last read. Kept
++                                // across ao_reset(); 0 before the first read.
+     int64_t queued_time_ns;     // duration of samples that have been queued to
+                                 // the device but have not been played.
+                                 // This field is only set in ao_set_paused(),
+@@ -183,6 +186,12 @@
+ 
+     int pos = read_buffer(ao, data, samples, eof, pad_silence);
+ 
++    // The device keeps reading (silence) while nothing plays, so this is
++    // current when playback starts after a seek.
++    int64_t first_sample_ns =
++        out_time_ns - MP_TIME_S_TO_NS(samples / (double)ao->samplerate);
++    p->latency_ns = MPMAX(0, first_sample_ns - mp_time_ns());
++
+     if (pos > 0)
+         p->end_time_ns = out_time_ns;
+ 
+@@ -317,6 +326,31 @@
+     return driver_delay + pending / (double)ao->samplerate;
+ }
+ 
++// Pull AOs: how long audio takes from being read by the device until it is
++// heard, in seconds. 0 for push AOs and before the device has read anything.
++double ao_get_latency(struct ao *ao)
++{
++    struct buffer_state *p = ao->buffer_state;
++
++    mp_mutex_lock(&p->lock);
++    double latency = MP_TIME_NS_TO_S(p->latency_ns);
++    mp_mutex_unlock(&p->lock);
++    return latency;
++}
++
++// Pull AOs: until the device reads for the first time after ao_reset(),
++// end_time_ns is 0 and ao_get_delay() leaves the device's latency out. The
++// player would then time video as if the queued audio were heard at once.
++// Assume the latency of the last read until the next one replaces it.
++// Call with the lock held, when the device is about to start reading.
++static void expect_latency(struct ao *ao)
++{
++    struct buffer_state *p = ao->buffer_state;
++
++    if (!ao->driver->write && !p->end_time_ns)
++        p->end_time_ns = mp_time_ns() + p->latency_ns;
++}
++
+ // Fully stop playback; clear buffers, including queue.
+ void ao_reset(struct ao *ao)
+ {
+@@ -369,6 +403,9 @@
+ 
+     p->playing = true;
+ 
++    if (!p->paused)
++        expect_latency(ao);
++
+     if (!ao->driver->write && !p->paused && !p->streaming) {
+         p->streaming = true;
+         do_start = true;
+@@ -423,6 +460,8 @@
+                 ao->driver->set_pause(ao, false);
+             p->hw_paused = false;
+         } else {
++            // Started while paused: this is when the device starts reading.
++            expect_latency(ao);
+             if (!p->streaming)
+                 do_change_state = true;
+             p->streaming = true;
+--- a/player/audio.c
++++ b/player/audio.c
+@@ -222,6 +222,7 @@
+     ao_c->out_eof = false;
+     ao_c->start_pts_known = false;
+     ao_c->start_pts = MP_NOPTS_VALUE;
++    ao_c->start_skip = 0;
+     ao_c->untimed_throttle = false;
+     ao_c->underrun = false;
+     ao_c->delaying_audio_start = false;
+@@ -836,8 +837,10 @@
+     if (sync_to_video) {
+         if (mpctx->video_status < STATUS_READY)
+             return false; // wait until we know a video PTS
+-        if (mpctx->video_pts != MP_NOPTS_VALUE)
+-            *pts = mpctx->video_pts - opts->audio_delay;
++        if (mpctx->video_pts != MP_NOPTS_VALUE) {
++            *pts = mpctx->video_pts - opts->audio_delay +
++                   mpctx->ao_chain->start_skip;
++        }
+     } else if (mpctx->hrseek_active) {
+         *pts = mpctx->hrseek_pts;
+     } else {
+@@ -848,6 +851,28 @@
+     return true;
+ }
+ 
++// After a seek the video restarts at once and the audio joins it in sync.
++//
++// Audio handed to the AO is heard one AO latency later (171 ms on AirPods
++// Pro). Unpatched, the audio restarts at the pts of the first video frame,
++// and since video is timed against the audio that is heard, the second
++// frame waits until that audio has come out: the picture stands still for
++// the latency after every seek. Instead, start the audio at the pts the
++// video will have reached when it is first heard. The sound comes back at
++// the same moment as before, the picture does not wait for it.
++//
++// Returns how much audio to leave out, in seconds of the file. Only seeks
++// with video are changed. 0 means unpatched behavior: no seek, a push AO,
++// or an AO that has not played yet and so has no known latency.
++static double get_start_skip(struct MPContext *mpctx)
++{
++    bool with_video = mpctx->vo_chain && !mpctx->vo_chain->is_sparse &&
++                      mpctx->video_status != STATUS_EOF;
++    if (!mpctx->current_seek.type || !mpctx->ao || !with_video)
++        return 0;
++    return ao_get_latency(mpctx->ao) * mpctx->audio_speed;
++}
++
+ // Look whether audio can be started yet - if audio has to start some time
+ // after video.
+ // Caller needs to ensure mpctx->restart_complete is OK
+@@ -876,6 +901,10 @@
+     }
+ 
+     MP_VERBOSE(mpctx, "starting audio playback\n");
++    // delay is how far the written audio is ahead of the video. It was
++    // counted from the first sample, which is start_skip past the video.
++    mpctx->delay += ao_c->start_skip;
++    ao_c->start_skip = 0;
+     ao_c->delaying_audio_start = false;
+     ao_start(ao_c->ao);
+     mpctx->audio_status = STATUS_PLAYING;
+@@ -920,6 +949,10 @@
+     }
+ 
+     if (mpctx->audio_status == STATUS_SYNCING) {
++        // Fixed once the start pts is known: audio is cut to it from then on.
++        if (!ao_c->start_pts_known)
++            ao_c->start_skip = get_start_skip(mpctx);
++
+         double pts;
+         bool ok = get_sync_pts(mpctx, &pts);
+ 
+--- a/player/core.h
++++ b/player/core.h
+@@ -205,6 +205,9 @@
+ 
+     double start_pts;
+     bool start_pts_known;
++    // How much later than the video the audio starts after a seek, in
++    // seconds of the file: what would have played during the AO's latency.
++    double start_skip;
+ 
+     bool delaying_audio_start;
+ 
