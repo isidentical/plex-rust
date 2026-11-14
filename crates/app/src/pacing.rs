@@ -27,7 +27,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink, CVOptionFlags, CVReturn, CVTimeStamp};
 use objc2_foundation::{NSPoint, NSRect, NSSize, ns_string};
-use player::{EndReason, Event, FrameTiming, HostTime, Player, Source};
+use player::{EndReason, Event, FrameTiming, HostTime, Player, Source, cpu_time};
 use plex::model::RatingKey;
 use serde_json::{Value, json};
 
@@ -35,9 +35,9 @@ use crate::error::{Error, Result};
 use crate::video_layer::{self, VideoLayer};
 use crate::{USAGE, account, source};
 
-/// Playback settles for this long before frames are counted: the first
-/// second holds the seek to the resume point and the decoder starting up.
-const SETTLE: Duration = Duration::from_secs(3);
+/// Playback settles for this long before frames are counted, after the
+/// file opens and after each change of speed.
+const SETTLE: Duration = Duration::from_secs(2);
 
 /// The mpv counters whose growth over the measured stretch is reported.
 const COUNTERS: [&str; 4] = [
@@ -61,10 +61,12 @@ const READINGS: [&str; 7] = [
 /// The times the display refreshed, as the display link reported them.
 type Refreshes = Mutex<Vec<HostTime>>;
 
-/// Plays `what` at `speed` and reports on `seconds` of it.
-pub fn run(what: &str, speed: &str, seconds: &str) -> Result<()> {
-    let speed: f64 = speed.parse().map_err(|_| Error::Usage(USAGE))?;
+/// Plays `what` at each of `speeds` in turn, in one window, and reports
+/// on `seconds` of each.
+pub fn run(what: &str, seconds: &str, speeds: &[&str]) -> Result<()> {
     let seconds: u64 = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
+    let speeds: Option<Vec<f64>> = speeds.iter().map(|speed| speed.parse().ok()).collect();
+    let speeds = speeds.filter(|speeds| !speeds.is_empty()).ok_or(Error::Usage(USAGE))?;
     let source = resolve(what)?;
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
@@ -74,7 +76,6 @@ pub fn run(what: &str, speed: &str, seconds: &str) -> Result<()> {
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     let window = video_window(main_thread, &player)?;
     player.set_muted(true)?;
-    player.set_speed(speed)?;
     player.load(&source)?;
     window.orderFrontRegardless();
 
@@ -85,10 +86,12 @@ pub fn run(what: &str, speed: &str, seconds: &str) -> Result<()> {
     let events = player.clone();
     thread::spawn(move || follow_events(&events));
     thread::spawn(move || {
-        let report = measure(&player, refreshes, speed, Duration::from_secs(seconds));
-        match report {
-            Ok(report) => {
-                println!("{report}");
+        let length = Duration::from_secs(seconds);
+        let reports: player::Result<Vec<Value>> =
+            speeds.iter().map(|speed| measure(&player, refreshes, *speed, length)).collect();
+        match reports {
+            Ok(reports) => {
+                println!("{}", Value::Array(reports));
                 std::process::exit(0);
             }
             Err(error) => {
@@ -228,6 +231,7 @@ fn measure(
     speed: f64,
     length: Duration,
 ) -> player::Result<Value> {
+    player.set_speed(speed)?;
     let start = player.position()?;
     while player.position()? == start {
         thread::sleep(Duration::from_millis(50));
@@ -235,6 +239,7 @@ fn measure(
     thread::sleep(SETTLE);
 
     let before = counters(player)?;
+    let (clock, cpu) = (Instant::now(), cpu_time());
     refreshes.lock().unwrap_or_else(PoisonError::into_inner).clear();
     on_layer(|layer, _| layer.record_timings());
     // macOS does not draw a window that is covered or on another Space, so
@@ -245,6 +250,7 @@ fn measure(
         visible &= window_is_visible();
         thread::sleep(Duration::from_millis(100));
     }
+    let cpu_share = (cpu_time() - cpu).as_secs_f64() / clock.elapsed().as_secs_f64();
     let timings = on_layer(|layer, _| layer.take_timings()).unwrap_or_default();
     let refreshes = refreshes.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let after = counters(player)?;
@@ -262,6 +268,8 @@ fn measure(
         "speed": speed,
         "seconds": length.as_secs(),
         "window_visible": visible,
+        // Of one core, by the whole process: decoding, drawing, this report.
+        "cpu_percent": (cpu_share * 1000.0).round() / 10.0,
         "display": display(&refreshes),
         "frames": frames(&timings, &refreshes),
         "mpv_counters_grown": grown,
@@ -319,7 +327,6 @@ fn frames(timings: &[FrameTiming], refreshes: &[HostTime]) -> Value {
     let period = median(&gaps(refreshes.iter().copied()));
     let appeared = new.iter().filter_map(|t| first_at_or_after(refreshes, t.ended));
     let steps = gaps(appeared).into_iter().map(|gap| gap / period);
-
     json!({
         "new": new.len(),
         "redrawn": timings.len() - new.len(),

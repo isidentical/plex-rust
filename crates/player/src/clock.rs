@@ -1,5 +1,7 @@
 //! The clock that frame times are measured on.
 
+use std::time::Duration;
+
 /// A moment on the host clock: nanoseconds the machine has been awake
 /// since boot. Core Video and Core Animation stamp display refreshes on
 /// the same clock, and mpv's own clock is this one with a fixed offset.
@@ -31,6 +33,22 @@ impl HostTime {
     pub fn nanos(self) -> u64 {
         self.0
     }
+}
+
+/// The processor time this process has used so far, on all its threads.
+pub fn cpu_time() -> Duration {
+    // SAFETY: an all-zero `rusage` is a valid value for the call to
+    // overwrite, and the pointer is valid for the call.
+    let usage = unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut usage);
+        usage
+    };
+    let of = |time: libc::timeval| {
+        Duration::from_secs(time.tv_sec.cast_unsigned())
+            + Duration::from_micros(u64::from(time.tv_usec.cast_unsigned()))
+    };
+    of(usage.ru_utime) + of(usage.ru_stime)
 }
 
 /// `mach_timebase_info_data_t`: one tick lasts `numerator / denominator`
