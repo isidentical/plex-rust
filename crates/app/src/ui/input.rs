@@ -63,6 +63,7 @@ pub struct Ivars {
     on_key: OnceCell<Box<dyn Fn(Key) -> bool>>,
     on_mouse_moved: OnceCell<Box<dyn Fn()>>,
     on_click: OnceCell<Box<dyn Fn(Clicks)>>,
+    on_display_changed: OnceCell<Box<dyn Fn()>>,
 }
 
 define_class!(
@@ -100,9 +101,23 @@ define_class!(
             }
         }
 
+        /// Called when the window moves to a display with another pixel
+        /// density, among other things.
+        #[unsafe(method(viewDidChangeBackingProperties))]
+        fn backing_properties_changed(&self) {
+            if let Some(on_display_changed) = self.ivars().on_display_changed.get() {
+                on_display_changed();
+            }
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            let clicks = if event.clickCount() >= 2 { Clicks::Double } else { Clicks::Single };
+            // A third click of a triple click is nothing new.
+            let clicks = match event.clickCount() {
+                1 => Clicks::Single,
+                2 => Clicks::Double,
+                _ => return,
+            };
             if let Some(on_click) = self.ivars().on_click.get() {
                 on_click(clicks);
             }
@@ -144,17 +159,20 @@ impl InputView {
 
     /// Sets what happens on input. `on_key` returns whether it acted on the
     /// key. `on_click` hears clicks on the view itself, not on the controls
-    /// in front of it. Can be called once.
+    /// in front of it. `on_display_changed` hears the window moving to a
+    /// display of another kind. Can be called once.
     pub fn listen(
         &self,
         on_key: impl Fn(Key) -> bool + 'static,
         on_mouse_moved: impl Fn() + 'static,
         on_click: impl Fn(Clicks) + 'static,
+        on_display_changed: impl Fn() + 'static,
     ) {
         // Cannot fail the first time, which is the only time by contract.
         let _ = self.ivars().on_key.set(Box::new(on_key));
         let _ = self.ivars().on_mouse_moved.set(Box::new(on_mouse_moved));
         let _ = self.ivars().on_click.set(Box::new(on_click));
+        let _ = self.ivars().on_display_changed.set(Box::new(on_display_changed));
     }
 }
 

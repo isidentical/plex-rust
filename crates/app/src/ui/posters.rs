@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
+};
 use objc2_app_kit::{
     NSCollectionElementKindSectionHeader, NSCollectionLayoutBoundarySupplementaryItem,
     NSCollectionLayoutDimension, NSCollectionLayoutGroup, NSCollectionLayoutItem,
@@ -116,6 +118,9 @@ define_class!(
     unsafe impl NSCollectionViewDelegate for Posters {
         #[unsafe(method(collectionView:didSelectItemsAtIndexPaths:))]
         fn selected(&self, collection: &NSCollectionView, index_paths: &NSSet<NSIndexPath>) {
+            // Opening an item replaces this collection, which would free it
+            // while this method is still running.
+            let _alive = self.retain();
             // A click is an action here, not a selection to keep.
             // SAFETY: the sender is optional.
             unsafe { collection.deselectAll(None) };

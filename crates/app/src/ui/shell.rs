@@ -67,6 +67,8 @@ struct Shell {
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
+    /// Set while an item is being fetched in order to play it.
+    opening_player: Cell<bool>,
     /// Speed and volume, kept from one item to the next and across launches.
     settings: Cell<Settings>,
 }
@@ -173,6 +175,7 @@ impl Shell {
             destination: RefCell::new(Destination::Home),
             split: NSSplitViewController::new(main_thread),
             playing: RefCell::new(None),
+            opening_player: Cell::new(false),
             settings: Cell::new(settings),
         });
 
@@ -373,7 +376,25 @@ impl Shell {
     /// Plays `item`, first fetching it in full: a listing leaves out the
     /// intro and credits markers that the player offers to skip.
     fn play(self: &Rc<Self>, item: &Item, purpose: Purpose) {
-        self.fetch(item.rating_key.clone(), move |shell, item| shell.open_player(item, purpose));
+        // A second click on Play while the first is still fetching must
+        // not open a second player behind the first.
+        if self.playing.borrow().is_some() || self.opening_player.replace(true) {
+            return;
+        }
+        let Some(session) = self.session.get() else {
+            self.opening_player.set(false);
+            return;
+        };
+        let (server, key) = (session.server.clone(), item.rating_key.clone());
+        let load = async move { server.item(&key).await };
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, load, move |item| {
+            shell.opening_player.set(false);
+            match item {
+                Ok(item) => shell.open_player(&item, purpose),
+                Err(error) => shell.show_message(&with_causes(&error)),
+            }
+        });
     }
 
     /// Replaces the whole window content with the player, playing `item`.
@@ -381,6 +402,11 @@ impl Shell {
         let Some(session) = self.session.get() else {
             return;
         };
+        // Replacing a player without closing it would leave it running
+        // unseen, with nothing left that could stop it.
+        if self.playing.borrow().is_some() {
+            return;
+        }
         let closed = Rc::downgrade(self);
         let screen = PlayerScreen::open(
             self.main_thread,
@@ -445,7 +471,10 @@ impl Shell {
         let shell = Rc::clone(self);
         self.background.run(self.main_thread, load, move |episodes| match episodes {
             Ok(episodes) => {
-                let next = episodes.iter().find(|episode| episode.index == Some(number + 1));
+                // The lowest number above this one, not this one plus one: a
+                // season can have a gap, and one file can hold two episodes.
+                let later = episodes.iter().filter(|episode| episode.index > Some(number));
+                let next = later.min_by_key(|episode| episode.index);
                 if let Some(next) = next {
                     shell.play(next, purpose);
                 }

@@ -5,6 +5,7 @@
     reason = "Apple deprecated OpenGL, but it is the only API mpv can render through when embedded"
 )]
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
@@ -33,6 +34,8 @@ pub struct Renderer {
     mpv: NonNull<sys::mpv_render_context>,
     gl: CGLContextObj,
     pixel_format: CGLPixelFormatObj,
+    /// Width and height in pixels of the last frame drawn.
+    drawn_size: Cell<(i32, i32)>,
     // Boxed twice so that mpv can hold a thin pointer to it.
     _on_frame: Box<FrameCallback>,
     // Keeps mpv alive for as long as the render context exists.
@@ -96,7 +99,20 @@ impl Renderer {
             );
         }
 
-        Ok(Self { mpv, gl, pixel_format, _on_frame: on_frame, _player: player.clone() })
+        Ok(Self {
+            mpv,
+            gl,
+            pixel_format,
+            drawn_size: Cell::new((0, 0)),
+            _on_frame: on_frame,
+            _player: player.clone(),
+        })
+    }
+
+    /// Width and height in pixels of the last frame drawn, which is the
+    /// resolution the picture is really rendered at.
+    pub fn drawn_size(&self) -> (i32, i32) {
+        self.drawn_size.get()
     }
 
     /// The OpenGL context frames are drawn with. Valid while `self` lives.
@@ -128,6 +144,7 @@ impl Renderer {
         // SAFETY: the render context is valid.
         unsafe { sys::mpv_render_context_update(self.mpv.as_ptr()) };
 
+        self.drawn_size.set((viewport[2], viewport[3]));
         let mut fbo = sys::mpv_opengl_fbo {
             fbo: framebuffer,
             w: viewport[2],

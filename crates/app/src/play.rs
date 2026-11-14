@@ -132,11 +132,11 @@ fn video_window(
     window.center();
 
     let layer = VideoLayer::new(player, main_thread)?;
-    layer.setContentsScale(window.backingScaleFactor());
     let view = NSView::initWithFrame(NSView::alloc(main_thread), frame);
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
     window.setContentView(Some(&view));
+    video_layer::fit_to_display(&view, player)?;
     Ok(window)
 }
 
@@ -162,7 +162,7 @@ fn match_video(player: &Player) {
     let matched = dispatch2::run_on_main(|main_thread| {
         let windows = NSApplication::sharedApplication(main_thread).windows();
         let view = windows.firstObject().and_then(|window| window.contentView());
-        view.map_or(Ok(()), |view| video_layer::match_video_in(&view, player))
+        view.map_or(Ok(()), |view| video_layer::fit_to_display(&view, player))
     });
     if let Err(error) = matched {
         eprintln!("plex-rust: {error}");
@@ -204,6 +204,7 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         "colors": player.video_colors()?.map(|colors| format!("{colors:?}")),
         // Whether the layer asked the display for more than SDR brightness.
         "hdr_output": shows_hdr(),
+        "drawn_size": drawn_size(),
         "volume": player.volume()?,
         "tracks": player.tracks()?.iter().map(track).collect::<Vec<_>>(),
         // macOS does not draw windows that are covered or on another Space,
@@ -222,16 +223,22 @@ fn track(track: &player::Track) -> serde_json::Value {
     })
 }
 
+/// The window's video layer, if the window is up.
+fn video_layer(main_thread: MainThreadMarker) -> Option<Retained<VideoLayer>> {
+    let windows = NSApplication::sharedApplication(main_thread).windows();
+    let view = windows.firstObject().and_then(|window| window.contentView())?;
+    view.layer()?.downcast::<VideoLayer>().ok()
+}
+
 fn shows_hdr() -> bool {
     dispatch2::run_on_main(|main_thread| {
-        let windows = NSApplication::sharedApplication(main_thread).windows();
-        let layer = windows
-            .firstObject()
-            .and_then(|window| window.contentView())
-            .and_then(|view| view.layer())
-            .and_then(|layer| layer.downcast::<VideoLayer>().ok());
-        layer.is_some_and(|layer| layer.wantsExtendedDynamicRangeContent())
+        video_layer(main_thread).is_some_and(|layer| layer.wantsExtendedDynamicRangeContent())
     })
+}
+
+/// The resolution frames are rendered at, as `[width, height]` in pixels.
+fn drawn_size() -> Option<(i32, i32)> {
+    dispatch2::run_on_main(|main_thread| video_layer(main_thread).map(|layer| layer.drawn_size()))
 }
 
 fn window_is_visible() -> bool {

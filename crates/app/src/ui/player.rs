@@ -104,6 +104,8 @@ pub struct Ivars {
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
+    /// The file's length, kept for when mpv no longer knows it.
+    duration: Cell<Option<Duration>>,
     background: Rc<Background>,
     server: MediaServer,
     /// Lets the server tell this playback from another of the same item.
@@ -164,14 +166,14 @@ define_class!(
         #[unsafe(method(audioChosen:))]
         fn audio_chosen(&self, item: &NSMenuItem) {
             self.or_log(self.ivars().player.select_audio(item.tag() as i64));
-            self.remember_tracks();
+            self.remember_track(TrackKind::Audio);
         }
 
         #[unsafe(method(subtitlesChosen:))]
         fn subtitles_chosen(&self, item: &NSMenuItem) {
             let id = item.tag() as i64;
             self.or_log(self.ivars().player.select_subtitles((id != 0).then_some(id)));
-            self.remember_tracks();
+            self.remember_track(TrackKind::Subtitles);
         }
 
         #[unsafe(method(tick:))]
@@ -233,6 +235,7 @@ impl PlayerScreen {
             ticks_idle: Cell::new(0),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
+            duration: Cell::new(None),
             background,
             server,
             session: NSUUID::UUID().UUIDString().to_string(),
@@ -243,6 +246,9 @@ impl PlayerScreen {
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
         screen.build_controls(main_thread);
         screen.listen();
+        // Loaded before the timer and the event thread exist: both keep the
+        // screen and its player alive, so a failure after them would leak.
+        screen.ivars().player.load(&source)?;
 
         // SAFETY: `tick:` is defined above. The timer retains the screen
         // until `close` invalidates it.
@@ -256,9 +262,7 @@ impl PlayerScreen {
             )
         };
         *screen.ivars().timer.borrow_mut() = Some(timer);
-
         screen.follow_events(main_thread);
-        screen.ivars().player.load(&source)?;
         Ok(screen)
     }
 
@@ -292,6 +296,12 @@ impl PlayerScreen {
         if let Some(window) = root.window() {
             window.makeFirstResponder(Some(root));
         }
+        self.fit_to_display();
+    }
+
+    fn fit_to_display(&self) {
+        let ivars = self.ivars();
+        self.or_log(video_layer::fit_to_display(&ivars.video, &ivars.player));
     }
 
     /// Stops playback and gives the screen up. Safe to call more than once.
@@ -408,7 +418,8 @@ impl PlayerScreen {
 
     /// Connects the keyboard and the mouse to the screen.
     fn listen(&self) {
-        let (keys, mouse, clicks) = (Weak::new(self), Weak::new(self), Weak::new(self));
+        let (keys, mouse, clicks, display) =
+            (Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self));
         self.ivars().root.listen(
             move |key| keys.load().is_some_and(|screen| screen.press(key)),
             move || {
@@ -428,6 +439,11 @@ impl PlayerScreen {
                         screen.or_log(screen.toggle_pause());
                         screen.toggle_full_screen();
                     }
+                }
+            },
+            move || {
+                if let Some(screen) = display.load() {
+                    screen.fit_to_display();
                 }
             },
         );
@@ -569,16 +585,17 @@ impl PlayerScreen {
             (_, track) => player.select_subtitles(track.map(|track| track.id))?,
         }
         let name = next.or(tracks.first().filter(|_| kind == TrackKind::Audio)).map(track_name);
-        self.remember_tracks();
+        self.remember_track(kind);
         let label = if kind == TrackKind::Audio { "Audio" } else { "Subtitles" };
         self.notify(&format!("{label}: {}", name.as_deref().unwrap_or("Off")));
         Ok(())
     }
 
-    /// Saves the audio and subtitle tracks now in use to the server, so the
-    /// same choice is made the next time this file is played, here or in
-    /// any other Plex app.
-    fn remember_tracks(&self) {
+    /// Saves the track of `kind` now in use to the server, so the same
+    /// choice is made the next time this file is played, here or in any
+    /// other Plex app. Only that kind is touched: changing the audio must
+    /// not disturb the subtitles the server remembers.
+    fn remember_track(&self, kind: TrackKind) {
         let ivars = self.ivars();
         let part = ivars.item.media.first().and_then(|media| media.parts.first());
         let (Some(part), Purpose::Watching) = (part, ivars.purpose) else {
@@ -588,18 +605,30 @@ impl PlayerScreen {
             Ok(tracks) => tracks,
             Err(error) => return eprintln!("plex-rust: {error}"),
         };
+        let stream_kind = match kind {
+            TrackKind::Audio => StreamKind::Audio,
+            TrackKind::Subtitles => StreamKind::Subtitle,
+            TrackKind::Video => return,
+        };
         // The player's id for a track is its position among the tracks of
         // its kind, which is also the order the server lists them in.
-        let stream_id = |track_kind, stream_kind| {
-            let track = tracks.iter().find(|track| track.kind == track_kind && track.selected)?;
+        let selected = tracks.iter().find(|track| track.kind == kind && track.selected);
+        let stream = selected.and_then(|track| {
             let position = usize::try_from(track.id).ok()?.checked_sub(1)?;
             part.embedded(stream_kind).nth(position).map(|stream| stream.id)
+        });
+        let (audio, subtitles) = match (kind, selected, stream) {
+            (TrackKind::Audio, _, Some(stream)) => (Some(stream), None),
+            (TrackKind::Subtitles, _, Some(stream)) => (None, Some(Some(stream))),
+            // No subtitle track is selected: the viewer turned them off.
+            (TrackKind::Subtitles, None, None) => (None, Some(None)),
+            // A track the server does not list at that position. Saving a
+            // guess would be worse than saving nothing.
+            _ => return,
         };
-        let audio = stream_id(TrackKind::Audio, StreamKind::Audio);
-        let subtitles = stream_id(TrackKind::Subtitles, StreamKind::Subtitle);
 
         let (server, part) = (ivars.server.clone(), part.clone());
-        let save = async move { server.choose_streams(&part, audio, Some(subtitles)).await };
+        let save = async move { server.choose_streams(&part, audio, subtitles).await };
         ivars.background.run(self.mtm(), save, |saved| {
             if let Err(error) = saved {
                 eprintln!("plex-rust: track choice was not saved: {}", with_causes(&error));
@@ -609,6 +638,9 @@ impl PlayerScreen {
 
     /// Pops up a menu of the tracks of `kind` under `button`.
     fn offer_tracks(&self, kind: TrackKind, button: &NSButton) -> player::Result<()> {
+        // The menu runs its own event loop. The file can end inside it,
+        // which closes the screen and would otherwise free it under us.
+        let _alive = self.retain();
         let main_thread = self.mtm();
         let tracks = self.ivars().player.tracks()?;
         let tracks: Vec<&Track> = tracks.iter().filter(|track| track.kind == kind).collect();
@@ -628,8 +660,8 @@ impl PlayerScreen {
                     ns_string!(""),
                 )
             };
-            // SAFETY: the menu is gone before this method returns, well
-            // within the screen's lifetime.
+            // SAFETY: a menu item does not retain its target, and the
+            // screen is kept alive above for as long as the menu is up.
             unsafe { entry.setTarget(Some(self)) };
             entry.setTag(tag);
             if selected {
@@ -646,7 +678,9 @@ impl PlayerScreen {
 
         // Blocks until the menu is dismissed.
         menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::ZERO, Some(button));
-        self.show_controls(true);
+        if self.ivars().timer.borrow().is_some() {
+            self.show_controls(true);
+        }
         Ok(())
     }
 
@@ -752,7 +786,7 @@ impl PlayerScreen {
             Event::Loaded => self.report(PlaybackState::Playing),
             Event::VideoChanged => {
                 let ivars = self.ivars();
-                self.or_log(video_layer::match_video_in(&ivars.video, &ivars.player));
+                self.or_log(video_layer::fit_to_display(&ivars.video, &ivars.player));
             }
             Event::Ended(EndReason::Failed(error)) => {
                 eprintln!("plex-rust: playback failed: {error}");
@@ -816,10 +850,13 @@ impl PlayerScreen {
             return None;
         }
         let times = ivars.player.duration().and_then(|duration| {
-            let Some(duration) = duration else {
+            // Once a file has played to its end mpv has closed it and knows
+            // neither its length nor a position in it. The length is then
+            // the last one seen, and the position is the end.
+            let Some(duration) = duration.or(ivars.duration.get()) else {
                 return Ok(None);
             };
-            // mpv has no position once a file has played to its end.
+            ivars.duration.set(Some(duration));
             Ok(Some((ivars.player.position()?.unwrap_or(duration), duration)))
         });
         match times {

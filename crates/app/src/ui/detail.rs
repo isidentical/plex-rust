@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont, NSFontWeightBold, NSImage,
     NSImageScaling, NSImageView, NSLayoutAttribute, NSStackView, NSTextField,
@@ -44,11 +44,16 @@ define_class!(
     impl Detail {
         #[unsafe(method(play:))]
         fn play(&self, _sender: Option<&AnyObject>) {
+            // What the handler shows next may replace this page, which would
+            // free it while this method is still running.
+            let _alive = self.retain();
             (self.ivars().on_play)(&self.ivars().item);
         }
 
         #[unsafe(method(back:))]
         fn back(&self, _sender: Option<&AnyObject>) {
+            // As in `play`: going back replaces this page.
+            let _alive = self.retain();
             (self.ivars().on_back)();
         }
     }

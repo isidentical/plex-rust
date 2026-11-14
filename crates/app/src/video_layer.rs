@@ -106,6 +106,11 @@ impl VideoLayer {
 }
 
 impl VideoLayer {
+    /// Width and height in pixels of the last frame drawn.
+    pub fn drawn_size(&self) -> (i32, i32) {
+        self.ivars().renderer.drawn_size()
+    }
+
     /// Sets up the layer and the player for the colours of the video that
     /// is playing. Call it whenever the player reports a change of picture.
     ///
@@ -136,17 +141,24 @@ impl VideoLayer {
     }
 }
 
-/// Does [`VideoLayer::match_video`] for the video layer that `view` hosts,
-/// on the display the view's window is on. Does nothing while the view is
-/// in no window.
-pub fn match_video_in(view: &NSView, player: &Player) -> player::Result<()> {
+/// Fits the video layer that `view` hosts to the display its window is on:
+/// the display's pixel density, and [`VideoLayer::match_video`] for its
+/// brightness range. Call it when the view enters a window, when the window
+/// changes display, and when the player reports a change of picture. Does
+/// nothing while the view is in no window.
+pub fn fit_to_display(view: &NSView, player: &Player) -> player::Result<()> {
     let layer = view.layer().and_then(|layer| layer.downcast::<VideoLayer>().ok());
-    let screen = view.window().and_then(|window| window.screen());
-    let (Some(layer), Some(screen)) = (layer, screen) else {
+    let (Some(layer), Some(window)) = (layer, view.window()) else {
         return Ok(());
     };
+    // AppKit leaves the scale of a layer that a view was handed alone. At
+    // the default of 1.0 a Retina display would get a picture rendered at
+    // half its resolution and stretched.
+    layer.setContentsScale(window.backingScaleFactor());
     // Above 1.0, the display can show brighter than SDR white.
-    let headroom = screen.maximumPotentialExtendedDynamicRangeColorComponentValue() > 1.0;
+    let headroom = window.screen().is_some_and(|screen| {
+        screen.maximumPotentialExtendedDynamicRangeColorComponentValue() > 1.0
+    });
     layer.match_video(player, headroom)
 }
 
