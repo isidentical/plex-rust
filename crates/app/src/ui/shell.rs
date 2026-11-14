@@ -34,6 +34,7 @@ use super::notice::{Mark, Notice};
 use super::player::input::Key;
 use super::player::{Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
+pub use super::posters::Press;
 use super::posters::{Action, Header, Outline, Posters, Shelf, Style};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
@@ -238,6 +239,10 @@ pub enum Subject {
 pub struct Tweaks {
     /// The window at its smallest size.
     pub narrow: bool,
+    /// The window as large as a big display lets it be.
+    pub wide: bool,
+    /// These keys pressed among the cards, in order.
+    pub presses: Vec<Press>,
     /// The pointer over the first item.
     pub hover: bool,
     /// On an episode's page, this link followed.
@@ -287,6 +292,9 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
+        }
+        Some(snapshot) if snapshot.tweaks.wide => {
+            shell.window.setContentSize(theme::WINDOW_WIDE_SIZE);
         }
         Some(_) => {}
         None => {
@@ -1578,6 +1586,9 @@ impl Shell {
                 }
                 if let (true, Screen::Posters(posters)) = (snapshot.tweaks.across > 0.0, screen) {
                     posters.scroll_first_shelf_to(snapshot.tweaks.across);
+                }
+                if let Screen::Posters(posters) = screen {
+                    snapshot.tweaks.presses.iter().for_each(|press| posters.press(*press));
                 }
                 if let (Some(link), Screen::Detail(detail)) = (snapshot.tweaks.follow, screen) {
                     detail.follow_link(link);

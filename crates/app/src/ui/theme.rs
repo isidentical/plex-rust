@@ -6,6 +6,8 @@ use objc2_foundation::NSSize;
 
 pub const WINDOW_SIZE: NSSize = NSSize { width: 1280.0, height: 800.0 };
 pub const WINDOW_MIN_SIZE: NSSize = NSSize { width: 880.0, height: 560.0 };
+/// A window filling a large display, for a snapshot.
+pub const WINDOW_WIDE_SIZE: NSSize = NSSize { width: 2200.0, height: 1200.0 };
 
 // The type scale. Every label uses one of these sizes.
 pub const FONT_LARGE_TITLE: f64 = 34.0;

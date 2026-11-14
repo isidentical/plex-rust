@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
 use crate::ui::player::input::Key;
-use crate::ui::shell::{Failure, Link, Snapshot, Subject, Tweaks};
+use crate::ui::shell::{Failure, Link, Press, Snapshot, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
@@ -37,8 +37,9 @@ usage: plex-rust
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
          keys: space, left, d, ..., and idle, end, hover, drag, bright,
                small, wide, marker
-         tweaks: narrow, hover, link, season, scroll=<points>,
+         tweaks: narrow, wide, hover, link, season, scroll=<points>,
                  across=<points>, unwatched,
+                 keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
                  unanswered, looking
@@ -116,6 +117,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
     for tweak in tweaks {
         match tweak.split_once('=') {
             None if *tweak == "narrow" => parsed.narrow = true,
+            None if *tweak == "wide" => parsed.wide = true,
             None if *tweak == "hover" => parsed.hover = true,
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
@@ -128,6 +130,10 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             }
             Some(("across", points)) => {
                 parsed.across = points.parse().map_err(|_| Error::Usage(USAGE))?;
+            }
+            Some(("keys", names)) => {
+                let presses: Option<Vec<Press>> = names.split(',').map(Press::named).collect();
+                parsed.presses = presses.ok_or(Error::Usage(USAGE))?;
             }
             Some(("sort", "title")) => parsed.listing.sort = Sort::Title,
             Some(("sort", "added")) => parsed.listing.sort = Sort::DateAdded,

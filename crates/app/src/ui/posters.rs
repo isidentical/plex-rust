@@ -14,7 +14,7 @@ use objc2::{
     define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSCollectionElementKindSectionHeader,
+    NSApplication, NSCarriageReturnCharacter, NSCollectionElementKindSectionHeader,
     NSCollectionLayoutBoundarySupplementaryItem, NSCollectionLayoutContainer,
     NSCollectionLayoutDimension, NSCollectionLayoutEnvironment, NSCollectionLayoutGroup,
     NSCollectionLayoutItem, NSCollectionLayoutSection,
@@ -22,9 +22,10 @@ use objc2_app_kit::{
     NSCollectionLayoutSpacing, NSCollectionView, NSCollectionViewCompositionalLayout,
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
     NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewScrollPosition,
-    NSCollectionViewSupplementaryElementKind, NSColor, NSEvent, NSEventType,
-    NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem, NSRectAlignment, NSScrollView,
-    NSView, NSViewBoundsDidChangeNotification,
+    NSCollectionViewSupplementaryElementKind, NSColor, NSDownArrowFunctionKey, NSEvent,
+    NSEventModifierFlags, NSEventType, NSIndexPathNSCollectionViewAdditions,
+    NSLeftArrowFunctionKey, NSMenu, NSMenuItem, NSRectAlignment, NSRightArrowFunctionKey,
+    NSScrollView, NSUpArrowFunctionKey, NSView, NSViewBoundsDidChangeNotification,
 };
 use objc2_foundation::{
     NSArray, NSIndexPath, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
@@ -99,6 +100,40 @@ pub enum Action {
         title: String,
         path: String,
     },
+}
+
+/// A key the viewer moves through the cards with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    Left,
+    Right,
+    Up,
+    Down,
+    Return,
+}
+
+impl Press {
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            "return" => Some(Self::Return),
+            _ => None,
+        }
+    }
+
+    /// The key as an event carries it: its code and the character it types.
+    fn code_and_character(self) -> (u16, u32) {
+        match self {
+            Self::Left => (KEY_LEFT, NSLeftArrowFunctionKey),
+            Self::Right => (KEY_RIGHT, NSRightArrowFunctionKey),
+            Self::Up => (KEY_UP, NSUpArrowFunctionKey),
+            Self::Down => (KEY_DOWN, NSDownArrowFunctionKey),
+            Self::Return => (KEY_RETURN, NSCarriageReturnCharacter),
+        }
+    }
 }
 
 /// Hears what the viewer asked for.
@@ -179,6 +214,10 @@ const PAGE_HEADER: &str = "page-header";
 /// The Return and Space keys, as `NSEvent::keyCode` reports them.
 const KEY_RETURN: u16 = 36;
 const KEY_SPACE: u16 = 49;
+const KEY_LEFT: u16 = 123;
+const KEY_RIGHT: u16 = 124;
+const KEY_DOWN: u16 = 125;
+const KEY_UP: u16 = 126;
 
 pub struct Ivars {
     /// Holds the scroll view and, over it, the words for an empty list.
@@ -566,6 +605,29 @@ impl Posters {
             && let Some(view) = cell.view().downcast_ref::<HoverView>()
         {
             view.hovered(true);
+        }
+    }
+
+    /// Presses `press` in the collection as the keyboard would, for a
+    /// snapshot.
+    pub fn press(&self, press: Press) {
+        let (code, character) = press.code_and_character();
+        let characters: String = char::from_u32(character).into_iter().collect();
+        let characters = NSString::from_str(&characters);
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::ZERO,
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            &characters,
+            &characters,
+            false,
+            code,
+        );
+        if let Some(event) = event {
+            self.ivars().collection.keyDown(&event);
         }
     }
 
