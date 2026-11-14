@@ -28,4 +28,5 @@ mod snapshot;
 mod stale;
 mod text;
 mod theme;
+mod toast;
 mod toolbar;

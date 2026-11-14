@@ -47,6 +47,7 @@ use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::stale::{Reason, Stale};
 use super::theme;
+use super::toast::Toast;
 use super::toolbar::Toolbar;
 use crate::account;
 use crate::background::{Background, Task};
@@ -107,6 +108,9 @@ const SAVED_SERVER_PATIENCE: Duration = Duration::from_secs(3);
 /// screen's worth is some tens of kilobytes.
 const RESPONSES_LIMIT: u64 = 64 * 1024 * 1024;
 
+/// How long the line that says a change did not reach the server stays.
+const TOAST_STAYS: Duration = Duration::from_secs(8);
+
 const UNREACHABLE: &str = "Could not reach your server";
 const NOT_LOADED: &str = "This could not be loaded";
 
@@ -147,6 +151,11 @@ struct Shell {
     /// Says, over the current entry, that it shows what was saved and not
     /// what the server has now.
     stale: Stale,
+    /// Says, over the current entry, that a change the viewer asked for
+    /// did not reach the server, and counts how often it has, so that an
+    /// earlier one's time running out does not hide a later one.
+    toast: Toast,
+    toasts: Cell<u64>,
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
@@ -368,6 +377,9 @@ pub struct Tweaks {
     pub version: Option<u64>,
     /// The server not answering, whether or not it would.
     pub away: bool,
+    /// A change the viewer made on the page having failed to reach the
+    /// server.
+    pub refused: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -517,6 +529,8 @@ impl Shell {
             toolbar.install(&window);
             let stale = Stale::new(main_thread, Self::command(shell, Self::retry));
             stale.float_in(&pane);
+            let toast = Toast::new(main_thread);
+            toast.float_in(&pane);
 
             let menu = |act: fn(&Rc<Self>)| {
                 let act = Self::command(shell, act);
@@ -567,6 +581,8 @@ impl Shell {
                 asked_ahead: RefCell::new(None),
                 notice: RefCell::new(None),
                 stale,
+                toast,
+                toasts: Cell::new(0),
                 split,
                 playing: RefCell::new(None),
                 opening_player: Cell::new(false),
@@ -1110,6 +1126,7 @@ impl Shell {
     /// and would replace it.
     fn leave(&self) {
         self.moves.set(self.moves.get() + 1);
+        self.toast.hide();
         for task in self.asked.borrow_mut().drain(..) {
             task.cancel();
         }
@@ -1912,9 +1929,11 @@ impl Shell {
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
                 Action::ToggleDownload(item) => shell.toggle_download(&item),
                 Action::ChooseStreams { part, audio, subtitles } => {
-                    shell.change(move |server| async move {
-                        server.choose_streams(&part, audio, subtitles).await
-                    });
+                    let choose = move |server: MediaServer| {
+                        let part = part.clone();
+                        async move { server.choose_streams(&part, audio, subtitles).await }
+                    };
+                    shell.change("The server did not take that choice", Rc::new(choose));
                 }
                 Action::OpenShow(episode) => {
                     let season = episode.parent_rating_key.clone();
@@ -2046,12 +2065,22 @@ impl Shell {
     /// Marks `item` as watched or not on the server.
     fn mark(self: &Rc<Self>, item: &Item, watched: bool) {
         let key = item.rating_key.clone();
-        self.change(move |server| async move { server.set_watched(&key, watched).await });
+        let mark = move |server: MediaServer| {
+            let key = key.clone();
+            async move { server.set_watched(&key, watched).await }
+        };
+        let failed = match watched {
+            true => "Could not mark as watched",
+            false => "Could not mark as unwatched",
+        };
+        self.change(failed, Rc::new(mark));
     }
 
     /// Makes a change on the server, then brings the screen up to date
-    /// with what that changed. A snapshot changes nothing.
-    fn change<F>(self: &Rc<Self>, change: impl FnOnce(MediaServer) -> F)
+    /// with what that changed. If the server does not take it the screen
+    /// stays, and a line over it says that `failed`. A snapshot changes
+    /// nothing.
+    fn change<F>(self: &Rc<Self>, failed: &'static str, change: Rc<dyn Fn(MediaServer) -> F>)
     where
         F: Future<Output = plex::Result<()>> + Send + 'static,
     {
@@ -2059,18 +2088,53 @@ impl Shell {
             return;
         };
         let (shell, moves, asked) = (Rc::clone(self), self.moves.get(), Instant::now());
-        let change = change(session.server.clone());
-        self.background.run(self.main_thread, change, move |changed| {
+        let changing = change(session.server.clone());
+        self.background.run(self.main_thread, changing, move |changed| {
             shell.heard(asked, &changed);
             match changed {
                 Ok(()) => shell.refresh(),
-                // The page is as good as it was. The line says why it
-                // is not as the viewer just set it.
-                Err(error) if error.is_unanswered() => {
+                // Nothing will reach the server until the viewer has
+                // signed in again, which the screen that says so leads to.
+                Err(error) if error.is_unauthorized() => shell.fail(moves, &error),
+                Err(error) => {
                     eprintln!("plex-rust: {}", with_causes(&error));
-                    shell.mark_stale(&error);
+                    // A server that did not answer is also why the page
+                    // is from an earlier time, which its own line says.
+                    if error.is_unanswered() {
+                        shell.mark_stale(&error);
+                    }
+                    if moves == shell.moves.get() {
+                        let again = Rc::clone(&change);
+                        shell.not_changed(failed, move |shell| {
+                            shell.change(failed, Rc::clone(&again));
+                        });
+                    }
                 }
-                Err(error) => shell.fail(moves, &error),
+            }
+        });
+    }
+
+    /// Says on a line over the screen that `failed`, with a button that
+    /// does `again`, for a while. The page goes back to showing what the
+    /// server has, which is not what the viewer just set it to.
+    fn not_changed(self: &Rc<Self>, failed: &str, again: impl Fn(&Rc<Self>) + 'static) {
+        if let Some(Screen::Detail(detail)) = self.current(|entry| entry.screen.clone()) {
+            detail.revert();
+        }
+        let retried = Rc::downgrade(self);
+        self.toast.show(failed, move || {
+            if let Some(shell) = retried.upgrade() {
+                shell.toast.hide();
+                again(&shell);
+            }
+        });
+        let shown = self.toasts.get() + 1;
+        self.toasts.set(shown);
+        let wait = async { tokio::time::sleep(TOAST_STAYS).await };
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, wait, move |()| {
+            if shell.toasts.get() == shown {
+                shell.toast.hide();
             }
         });
     }
@@ -2543,6 +2607,9 @@ impl Shell {
             if let Some(failure) = snapshot.tweaks.fault {
                 let small_print = "error sending request for url (https://192.168.0.2:32400/hubs)";
                 shell.show_failure_of(failure, NOT_LOADED, small_print, Self::reload);
+            }
+            if snapshot.tweaks.refused {
+                shell.not_changed("Could not mark as watched", |_| {});
             }
             if snapshot.tweaks.offline {
                 shell.stale.show(Some(Reason::Offline));

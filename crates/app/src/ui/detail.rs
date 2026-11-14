@@ -430,7 +430,20 @@ impl Detail {
         let item = self.item.borrow().clone();
         if let Some(item) = item {
             let watched = !item.is_watched();
+            // One episode is marked at once, and the button says so before
+            // the server has. A show is asked about first.
+            if !matches!(item.kind, Kind::Show | Kind::Season) {
+                self.hero.show_watched(watched);
+            }
             (self.on_action)(Action::SetWatched(item, watched));
+        }
+    }
+
+    /// Puts the buttons and menus back to what the server last said, after
+    /// a change the viewer made with them did not reach it.
+    pub fn revert(&self) {
+        if let Some(item) = &*self.item.borrow() {
+            self.hero.show(item, self.version.get(), &self.images);
         }
     }
 
