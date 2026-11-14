@@ -15,6 +15,9 @@ pub const SHADE_ALPHA: f64 = 0.85;
 /// black has a contrast of over 5 to 1, where a shade that thinned evenly
 /// from the edge left the times at about 3.5 to 1.
 pub const SHADE_ALPHA_MIDWAY: f64 = 0.6;
+/// How many steps the shade is drawn in, which is enough for its curve to
+/// show no corners.
+pub const SHADE_STOPS: u32 = 12;
 
 /// How far a symbol sits inside the edge of its chip. Rows of chips hang
 /// over the margin by this much, so that what is seen lines up with it.

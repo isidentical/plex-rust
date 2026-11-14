@@ -53,14 +53,10 @@ define_class!(
 
         #[unsafe(method(drawRect:))]
         fn draw(&self, _dirty: NSRect) {
-            // Three stops, evenly spaced: the shade holds most of its
-            // strength to the middle of the pane, where the controls are,
-            // and only then runs out.
-            let mut stops = [
-                theme::shade(theme::SHADE_ALPHA),
-                theme::shade(theme::SHADE_ALPHA_MIDWAY),
-                theme::shade(0.0),
-            ];
+            let mut stops: Vec<_> = (0..=theme::SHADE_STOPS)
+                .map(|stop| f64::from(stop) / f64::from(theme::SHADE_STOPS))
+                .map(|along| theme::shade(shade_alpha(along)))
+                .collect();
             // A gradient is drawn from the bottom up at 90 degrees.
             if self.ivars().edge == Edge::Top {
                 stops.reverse();
@@ -101,4 +97,19 @@ impl Pane {
         let (x, y) = (point.x - frame.origin.x, point.y - frame.origin.y);
         (0.0..frame.size.width).contains(&x) && (0.0..frame.size.height).contains(&y)
     }
+}
+
+/// How dark the shade is `along` the way from the window's edge, at 0, to
+/// where it runs out, at 1.
+///
+/// It holds most of its strength to the middle of the pane, where the
+/// controls are, and from there eases out to nothing. Thinning evenly to
+/// the end instead leaves a line across the picture where the shade stops.
+fn shade_alpha(along: f64) -> f64 {
+    let (edge, midway) = (theme::SHADE_ALPHA, theme::SHADE_ALPHA_MIDWAY);
+    if along <= 0.5 {
+        return edge + (midway - edge) * along / 0.5;
+    }
+    let left = (1.0 - along) / 0.5;
+    midway * left * left
 }
