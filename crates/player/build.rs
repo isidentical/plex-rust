@@ -7,6 +7,10 @@ fn main() {
     if let Err(error) = pkg_config::Config::new().statik(true).probe("mpv") {
         panic!("libmpv not found, run scripts/build-libmpv.sh first: {error}");
     }
+    // Cargo does not look inside the libraries it links. Without this, a
+    // rebuilt libmpv would not make it into the next build.
+    println!("cargo:rerun-if-changed=../../vendor/libmpv/lib/libmpv.a");
+
     // FreeType names zlib by file path, which the pkg-config crate skips.
     println!("cargo:rustc-link-lib=z");
     // libplacebo has C++ sources but its pkg-config file does not say so.
