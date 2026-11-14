@@ -6,6 +6,7 @@ mod error;
 mod images;
 mod play;
 mod progress;
+mod settings;
 mod source;
 mod ui;
 mod video_layer;

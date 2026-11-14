@@ -29,6 +29,9 @@ pub enum Error {
     #[error("the server sent artwork that is not an image")]
     NotAnImage,
 
+    #[error("{path} is not a valid settings file: {source}")]
+    Settings { path: std::path::PathBuf, source: serde_json::Error },
+
     #[error("not signed in, run `plex-rust login` first")]
     SignedOut,
 

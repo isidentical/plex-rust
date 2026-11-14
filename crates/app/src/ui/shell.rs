@@ -22,7 +22,7 @@ use plex::model::{Item, Kind, RatingKey, Section};
 use super::detail::Detail;
 use super::input::Key;
 use super::layout;
-use super::player::{NORMAL_SPEED, Outcome, PlayerScreen, Purpose};
+use super::player::{Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
 use super::sidebar::{Destination, Sidebar};
@@ -32,6 +32,7 @@ use crate::account;
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
+use crate::settings::Settings;
 
 /// How many items each shelf of the home screen starts with.
 const SHELF_LENGTH: u32 = 20;
@@ -66,8 +67,8 @@ struct Shell {
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
-    /// Playback speed in tenths of normal, kept from one item to the next.
-    speed: Cell<u32>,
+    /// Speed and volume, kept from one item to the next and across launches.
+    settings: Cell<Settings>,
 }
 
 /// What exists only while connected to a server.
@@ -115,7 +116,7 @@ pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
     let dark = unsafe { NSAppearanceNameDarkAqua };
     app.setAppearance(NSAppearance::appearanceNamed(dark).as_deref());
 
-    let shell = Shell::new(main_thread, Rc::clone(&background));
+    let shell = Shell::new(main_thread, Rc::clone(&background), Settings::load()?);
     if snapshot.is_none() {
         shell.window.makeKeyAndOrderFront(None);
         #[allow(deprecated)]
@@ -153,7 +154,11 @@ pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
 }
 
 impl Shell {
-    fn new(main_thread: MainThreadMarker, background: Rc<Background>) -> Rc<Self> {
+    fn new(
+        main_thread: MainThreadMarker,
+        background: Rc<Background>,
+        settings: Settings,
+    ) -> Rc<Self> {
         let content = NSView::new(main_thread);
         let content_controller = view_controller(main_thread);
         content_controller.setView(&content);
@@ -168,7 +173,7 @@ impl Shell {
             destination: RefCell::new(Destination::Home),
             split: NSSplitViewController::new(main_thread),
             playing: RefCell::new(None),
-            speed: Cell::new(NORMAL_SPEED),
+            settings: Cell::new(settings),
         });
 
         let selected = Rc::downgrade(&shell);
@@ -382,7 +387,7 @@ impl Shell {
             Rc::clone(&self.background),
             session.server.clone(),
             item,
-            self.speed.get(),
+            self.settings.get(),
             purpose,
             move |outcome| {
                 if let Some(shell) = closed.upgrade() {
@@ -406,11 +411,24 @@ impl Shell {
         let Some(screen) = self.playing.borrow_mut().take() else {
             return;
         };
-        // The chosen speed carries over to whatever is played next.
-        self.speed.set(screen.speed());
+        self.keep_settings(&screen);
         self.set_window_content(&self.split);
         if outcome == Outcome::Finished && screen.item().kind == Kind::Episode {
             self.play_episode_after(screen.item(), purpose);
+        }
+    }
+
+    /// Takes over the speed and volume the viewer set in `screen`, for
+    /// whatever is played next and for the next launch.
+    fn keep_settings(&self, screen: &PlayerScreen) {
+        let settings = match screen.settings() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => return,
+            Err(error) => return eprintln!("plex-rust: {error}"),
+        };
+        self.settings.set(settings);
+        if let Err(error) = settings.save() {
+            eprintln!("plex-rust: {}", with_causes(&error));
         }
     }
 
@@ -561,6 +579,7 @@ define_class!(
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
             if let Some(screen) = self.ivars().playing.borrow_mut().take() {
+                self.ivars().keep_settings(&screen);
                 screen.close_for_quit();
             }
         }

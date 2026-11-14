@@ -51,7 +51,8 @@ fn identity() -> Result<Identity> {
     Ok(Identity { client_identifier, device_name })
 }
 
-fn support_directory() -> Result<PathBuf> {
+/// The folder for the app's own files, created if it is not there.
+pub fn support_directory() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
     let path = PathBuf::from(home).join("Library/Application Support/plex-rust");
     fs::create_dir_all(&path).map_err(|source| Error::File { path: path.clone(), source })?;

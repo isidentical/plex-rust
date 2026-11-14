@@ -29,6 +29,7 @@ use super::layout;
 use super::theme;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
+use crate::settings::Settings;
 use crate::source;
 use crate::video_layer::{self, VideoLayer};
 
@@ -51,7 +52,7 @@ const SKIP: Duration = Duration::from_secs(10);
 const VOLUME_STEP: f64 = 5.0;
 
 /// Playback speed is kept in tenths so that steps of 0.1 stay exact.
-pub const NORMAL_SPEED: u32 = 10;
+const NORMAL_SPEED: u32 = 10;
 const SLOWEST_SPEED: u32 = 1;
 const FASTEST_SPEED: u32 = 40;
 
@@ -181,8 +182,8 @@ define_class!(
 );
 
 impl PlayerScreen {
-    /// Starts playing `item` from where it was left, at `speed` tenths of
-    /// normal speed. `on_close` is called once, when the screen is done.
+    /// Starts playing `item` from where it was left, at the speed and
+    /// volume in `settings`. `on_close` is called once, when the screen is done.
     ///
     /// `item` should be the full item from [`MediaServer::item`], which is
     /// the one that knows its intro and credits.
@@ -191,7 +192,7 @@ impl PlayerScreen {
         background: Rc<Background>,
         server: MediaServer,
         item: &Item,
-        speed: u32,
+        settings: Settings,
         purpose: Purpose,
         on_close: impl Fn(Outcome) + 'static,
     ) -> Result<Retained<Self>> {
@@ -199,8 +200,9 @@ impl PlayerScreen {
 
         let player = Player::new()?;
         player.set_muted(purpose == Purpose::Check)?;
-        let speed = speed.clamp(SLOWEST_SPEED, FASTEST_SPEED);
+        let speed = settings.speed.clamp(SLOWEST_SPEED, FASTEST_SPEED);
         player.set_speed(f64::from(speed) / 10.0)?;
+        player.set_volume(settings.volume.clamp(0.0, 100.0))?;
 
         let root = InputView::new(main_thread);
         let video = NSView::new(main_thread);
@@ -269,8 +271,17 @@ impl PlayerScreen {
         &self.ivars().item
     }
 
+    /// The speed and volume the viewer has set, to be used again next time.
+    /// `None` for a check, which must leave no trace.
+    pub fn settings(&self) -> player::Result<Option<Settings>> {
+        if self.ivars().purpose == Purpose::Check {
+            return Ok(None);
+        }
+        Ok(Some(Settings { speed: self.speed(), volume: self.ivars().player.volume()? }))
+    }
+
     /// The playback speed in tenths of normal speed.
-    pub fn speed(&self) -> u32 {
+    fn speed(&self) -> u32 {
         self.ivars().speed.get()
     }
 
