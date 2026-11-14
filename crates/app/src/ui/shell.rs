@@ -1336,7 +1336,7 @@ impl Shell {
         if self.playing.borrow().is_some() {
             return;
         }
-        let closed = Rc::downgrade(self);
+        let (closed, opened_with) = (Rc::downgrade(self), item.rating_key.clone());
         let screen = PlayerScreen::open(
             self.main_thread,
             Rc::clone(&self.background),
@@ -1347,7 +1347,7 @@ impl Shell {
             purpose,
             move |outcome| {
                 if let Some(shell) = closed.upgrade() {
-                    shell.player_closed(outcome, purpose);
+                    shell.player_closed(outcome, purpose, &opened_with);
                 }
             },
         );
@@ -1364,17 +1364,37 @@ impl Shell {
         }
     }
 
-    fn player_closed(self: &Rc<Self>, outcome: Outcome, purpose: Purpose) {
+    /// Puts the browsing screens back in the window. `opened_with` is the
+    /// item the player started on, which an episode may have moved on from.
+    fn player_closed(self: &Rc<Self>, outcome: Outcome, purpose: Purpose, opened_with: &RatingKey) {
         let Some(screen) = self.playing.borrow_mut().take() else {
             return;
         };
         self.keep_settings(&screen);
         self.set_window_content(&self.split);
         self.set_toolbar_visible(true);
-        // The screen behind the player still says where the item was left
-        // before it was played.
-        if purpose == Purpose::Watching {
-            self.refresh();
+
+        let played = screen.item();
+        let behind = self.current(|entry| (entry.route.clone(), entry.screen.clone()));
+        match behind {
+            // The page of the episode the player started on would be a
+            // step behind the viewer, who went on to another in the player.
+            Some((Route::Item(page, _), _))
+                if page.rating_key == *opened_with && played.rating_key != *opened_with =>
+            {
+                self.replace(Route::Item(Box::new((*played).clone()), Opening::default()));
+            }
+            Some((_, behind)) => {
+                // The keyboard was the player's, and the window does not
+                // hand it back to the screen that had it before.
+                behind.focus();
+                // That screen still says where the item was left before it
+                // was played.
+                if purpose == Purpose::Watching {
+                    self.refresh();
+                }
+            }
+            None => {}
         }
         if let Outcome::Failed(reason) = outcome {
             let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
