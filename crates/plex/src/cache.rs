@@ -13,6 +13,11 @@ use std::time::SystemTime;
 /// A cache answers for one scope: one server as seen by one account. Two
 /// scopes can share a folder and its size and never read each other's
 /// files. Every call does its disk work off the calling thread.
+///
+/// A file is named by a hash of its scope and question, and two of those
+/// can share a hash. So each file starts with the scope and question it
+/// answers, and one found under the hash of another is not read as its
+/// answer.
 #[derive(Debug, Clone)]
 pub struct Cache(Arc<Inner>);
 
@@ -50,15 +55,14 @@ impl Cache {
     /// The answer kept for `key`, if there is one. Reading it counts as
     /// using it.
     pub async fn read(&self, key: &str) -> Option<Vec<u8>> {
-        let path = self.path(key);
-        blocking(move || {
-            let contents = fs::read(&path)?;
+        let (name, path) = (self.name(key), self.path(key));
+        let file = blocking(move || {
+            let file = fs::read(&path)?;
             // A file whose time cannot be set is only deleted sooner.
             let _ = File::open(&path).and_then(|file| file.set_modified(SystemTime::now()));
-            Ok(contents)
-        })
-        .await
-        .ok()
+            Ok(file)
+        });
+        opened(&name, file.await.ok()?)
     }
 
     /// Keeps `contents` as the answer for `key`. A reader sees the old
@@ -66,11 +70,12 @@ impl Cache {
     /// under another name and then renamed.
     pub async fn write(&self, key: &str, contents: Vec<u8>) -> io::Result<()> {
         let (path, inner) = (self.path(key), Arc::clone(&self.0));
+        let file = sealed(&self.name(key), &contents);
         blocking(move || {
-            let written = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+            let written = u64::try_from(file.len()).unwrap_or(u64::MAX);
             let unique = WRITES.fetch_add(1, Ordering::Relaxed);
             let temporary = path.with_extension(format!("{}-{unique}.part", std::process::id()));
-            fs::write(&temporary, contents)?;
+            fs::write(&temporary, file)?;
             fs::rename(&temporary, &path)?;
 
             let unswept = inner.unswept.fetch_add(written, Ordering::Relaxed) + written;
@@ -89,10 +94,45 @@ impl Cache {
         blocking(move || fs::remove_file(path)).await
     }
 
-    fn path(&self, key: &str) -> PathBuf {
-        let name = stable_hash(&format!("{}\n{key}", self.0.scope));
-        self.0.directory.join(format!("{name:016x}"))
+    /// What sets the answer for `key` apart from every other in the
+    /// folder: the scope and the question.
+    fn name(&self, key: &str) -> String {
+        format!("{}\n{key}", self.0.scope)
     }
+
+    fn path(&self, key: &str) -> PathBuf {
+        self.0.directory.join(format!("{:016x}", stable_hash(&self.name(key))))
+    }
+}
+
+/// How many bytes at the start of a file say how long the name after
+/// them is.
+const NAME_LENGTH_BYTES: usize = 4;
+
+/// `contents` as a file holds them: after the name they are kept under
+/// and, before that, how many bytes long the name is.
+fn sealed(name: &str, contents: &[u8]) -> Vec<u8> {
+    // A name is a few hundred bytes. One too long to count is cut short
+    // here and so never matches when read, which only costs the answer.
+    let length = u32::try_from(name.len()).unwrap_or(u32::MAX);
+    let mut file = Vec::with_capacity(NAME_LENGTH_BYTES + name.len() + contents.len());
+    file.extend_from_slice(&length.to_le_bytes());
+    file.extend_from_slice(name.as_bytes());
+    file.extend_from_slice(contents);
+    file
+}
+
+/// The contents of `file` if it is the one kept under `name`. `None` for
+/// the file of another name with the same hash, and for one that does not
+/// start with a name at all, as those of earlier versions did not.
+fn opened(name: &str, mut file: Vec<u8>) -> Option<Vec<u8>> {
+    let length = file.first_chunk::<NAME_LENGTH_BYTES>().copied().map(u32::from_le_bytes)?;
+    let start = NAME_LENGTH_BYTES.checked_add(usize::try_from(length).ok()?)?;
+    if file.get(NAME_LENGTH_BYTES..start)? != name.as_bytes() {
+        return None;
+    }
+    file.drain(..start);
+    Some(file)
 }
 
 /// The folder is swept this many times for each limit's worth of bytes
@@ -203,9 +243,30 @@ mod tests {
     }
 
     #[test]
+    fn a_file_found_under_the_hash_of_another_question_is_not_its_answer() {
+        let folder = tempfile::tempdir().unwrap();
+        let cache = Cache::new(folder.path().to_owned(), "scope", 1 << 20);
+        run(async {
+            cache.write("/library/metadata/1", b"one".to_vec()).await.unwrap();
+            // As if the two questions had the same hash.
+            fs::copy(cache.path("/library/metadata/1"), cache.path("/library/metadata/2")).unwrap();
+            assert_eq!(cache.read("/library/metadata/1").await.as_deref(), Some(&b"one"[..]));
+            assert_eq!(cache.read("/library/metadata/2").await, None);
+
+            // What an earlier version kept has no name in front of it.
+            fs::write(cache.path("/hubs"), br#"{"MediaContainer":{}}"#).unwrap();
+            assert_eq!(cache.read("/hubs").await, None);
+            fs::write(cache.path("/hubs"), b"").unwrap();
+            assert_eq!(cache.read("/hubs").await, None);
+        });
+    }
+
+    #[test]
     fn a_full_folder_loses_what_was_not_read_lately() {
         let folder = tempfile::tempdir().unwrap();
-        let cache = Cache::new(folder.path().to_owned(), "scope", 1000);
+        // Each file is its 300 bytes and, before them, 4 for the length
+        // of its name and 7 for the name: 311.
+        let cache = Cache::new(folder.path().to_owned(), "scope", 1040);
         let long_ago = |key: &str, seconds: u64| {
             let file = File::options().write(true).open(cache.path(key)).unwrap();
             file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)).unwrap();
@@ -220,7 +281,7 @@ mod tests {
             // Reading the oldest makes it the most recently used.
             assert!(cache.read("a").await.is_some());
 
-            // 1200 bytes are over the limit: down to 750, oldest first.
+            // 1244 bytes are over the limit: down to 780, oldest first.
             cache.write("d", vec![0; 300]).await.unwrap();
             assert!(cache.read("a").await.is_some());
             assert!(cache.read("b").await.is_none());
