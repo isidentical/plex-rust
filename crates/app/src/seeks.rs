@@ -1,0 +1,211 @@
+//! Timing jumps in a playing file: the measurement behind `play --seeks`.
+//!
+//! A script is a comma-separated list of steps. `3x20` presses "3 seconds
+//! forward" 20 times, letting playback pick up again after each press, and
+//! times every one. `-3x30@80` holds "3 seconds back" down: 30 presses, 80 ms
+//! apart, whether or not the one before has finished.
+
+use std::time::{Duration, Instant};
+
+use player::{Moment, Player, Probe};
+use serde_json::{Value, json};
+
+/// How long playback runs between two timed presses, so that each one
+/// interrupts a picture that is moving and a sound that is playing.
+const SETTLE: Duration = Duration::from_millis(700);
+
+/// When a press that has not finished counts as failed.
+const GIVE_UP: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Step {
+    /// What the script called it.
+    name: String,
+    /// The jump, backwards if negative.
+    seconds: f64,
+    presses: u32,
+    /// The time between presses of a held key. `None` waits for each press
+    /// to finish instead.
+    every: Option<Duration>,
+}
+
+/// Reads a script, or returns `None` if it is not one.
+pub fn parse(script: &str) -> Option<Vec<Step>> {
+    script.split(',').map(step).collect()
+}
+
+fn step(name: &str) -> Option<Step> {
+    let (jump, every) = match name.split_once('@') {
+        Some((jump, ms)) => (jump, Some(Duration::from_millis(ms.parse().ok()?))),
+        None => (name, None),
+    };
+    let (seconds, presses) = jump.split_once('x')?;
+    Some(Step {
+        name: name.to_owned(),
+        seconds: seconds.parse().ok()?,
+        presses: presses.parse().ok()?,
+        every,
+    })
+}
+
+/// How one jump went, as times since the key press.
+#[derive(Default)]
+struct Stall {
+    /// Until mpv had the first picture at the new position.
+    restarted: Option<Duration>,
+    /// Until sound was handed to the audio device.
+    audio: Option<Duration>,
+    /// Until the position moved on from where the jump landed.
+    moving: Option<Duration>,
+    /// Where the jump landed.
+    landed: Option<f64>,
+}
+
+impl Stall {
+    fn is_over(&self) -> bool {
+        self.restarted.is_some() && self.audio.is_some() && self.moving.is_some()
+    }
+
+    fn note(&mut self, moment: Moment, pressed: Instant, player: &Player) -> player::Result<()> {
+        let now = Some(pressed.elapsed());
+        match moment {
+            Moment::Restarted => {
+                self.restarted = now;
+                self.landed = player.position()?.map(|position| position.as_secs_f64());
+            }
+            // A press that interrupts an unfinished jump restarts the sound
+            // it had not started yet. Only the last start counts.
+            Moment::AudioStarted => self.audio = now,
+            Moment::Position(position) => {
+                if self.moving.is_none() && self.landed.is_some_and(|landed| position > landed) {
+                    self.moving = now;
+                }
+            }
+            // Whatever finished before mpv took up this press belongs to
+            // an earlier one.
+            Moment::Seeking => *self = Self::default(),
+            Moment::Shutdown => {}
+        }
+        Ok(())
+    }
+}
+
+/// Waits for the playback that `player` was just told to load and returns
+/// how long it took from `loading` to the first picture.
+pub fn started(probe: &mut Probe, loading: Instant) -> Option<Duration> {
+    loop {
+        match probe.wait(GIVE_UP.saturating_sub(loading.elapsed()))? {
+            Moment::Restarted => return Some(loading.elapsed()),
+            Moment::Shutdown => return None,
+            _ => {}
+        }
+    }
+}
+
+/// Lets playback run for `time`, returning how many jumps finished in it.
+pub fn idle(probe: &mut Probe, time: Duration) -> u32 {
+    let until = Instant::now() + time;
+    let mut restarts = 0;
+    while let Some(moment) = probe.wait(until.saturating_duration_since(Instant::now())) {
+        restarts += u32::from(moment == Moment::Restarted);
+    }
+    restarts
+}
+
+/// Runs the script and reports each step.
+pub fn run(player: &Player, probe: &mut Probe, steps: &[Step]) -> player::Result<Value> {
+    idle(probe, SETTLE);
+    steps
+        .iter()
+        .map(|step| match step.every {
+            Some(every) => held(player, probe, step, every),
+            None => pressed(player, probe, step),
+        })
+        .collect()
+}
+
+/// Separate presses: every one is timed.
+fn pressed(player: &Player, probe: &mut Probe, step: &Step) -> player::Result<Value> {
+    let dropped = player.dropped_frames()?;
+    let mut stalls = Vec::new();
+    let mut off_target: f64 = 0.0;
+    for _ in 0..step.presses {
+        let from = player.position()?.map(|position| position.as_secs_f64());
+        let stall = jump(player, probe, step.seconds)?;
+        if let (Some(from), Some(landed)) = (from, stall.landed) {
+            off_target = off_target.max((landed - from - step.seconds).abs());
+        }
+        stalls.push(stall);
+        idle(probe, SETTLE);
+    }
+    Ok(json!({
+        "step": step.name,
+        "restarted_ms": spread(stalls.iter().map(|stall| stall.restarted)),
+        "audio_ms": spread(stalls.iter().map(|stall| stall.audio)),
+        "moving_ms": spread(stalls.iter().map(|stall| stall.moving)),
+        // The furthest a jump landed from where it was aimed, in seconds.
+        "off_target": off_target,
+        "unfinished": stalls.iter().filter(|stall| !stall.is_over()).count(),
+        "dropped_frames": player.dropped_frames()? - dropped,
+    }))
+}
+
+/// A held key: what matters is how many pictures show while it is down and
+/// how long playback takes to pick up after the last press.
+fn held(player: &Player, probe: &mut Probe, step: &Step, every: Duration) -> player::Result<Value> {
+    let from = player.position()?.map(|position| position.as_secs_f64());
+    let mut pictures = 0;
+    for _ in 1..step.presses {
+        player.seek_by(step.seconds)?;
+        pictures += idle(probe, every);
+    }
+    let release = jump(player, probe, step.seconds)?;
+    idle(probe, SETTLE);
+    let ms = |time: Option<Duration>| time.map(|time| time.as_secs_f64() * 1000.0);
+    Ok(json!({
+        "step": step.name,
+        "pictures_while_held": pictures,
+        "restarted_ms": ms(release.restarted),
+        "audio_ms": ms(release.audio),
+        "moving_ms": ms(release.moving),
+        "travelled": from.zip(release.landed).map(|(from, landed)| landed - from),
+    }))
+}
+
+/// Presses once and watches until playback has fully picked up again.
+fn jump(player: &Player, probe: &mut Probe, seconds: f64) -> player::Result<Stall> {
+    let mut stall = Stall::default();
+    let pressed = Instant::now();
+    player.seek_by(seconds)?;
+    while !stall.is_over() {
+        let Some(moment) = probe.wait(GIVE_UP.saturating_sub(pressed.elapsed())) else {
+            break;
+        };
+        stall.note(moment, pressed, player)?;
+    }
+    Ok(stall)
+}
+
+/// The median, 90th percentile and maximum of `times` in milliseconds,
+/// leaving out the ones that never happened.
+fn spread(times: impl Iterator<Item = Option<Duration>>) -> Value {
+    let mut ms: Vec<f64> = times.flatten().map(|time| time.as_secs_f64() * 1000.0).collect();
+    ms.sort_by(f64::total_cmp);
+    let at = |percent: usize| ms.get((ms.len() * percent).div_ceil(100).saturating_sub(1));
+    json!({ "p50": at(50), "p90": at(90), "max": ms.last(), "n": ms.len() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_has_pressed_and_held_steps() {
+        let steps = parse("3x20,-10x5@80").unwrap();
+        assert_eq!(steps[0], Step { name: "3x20".into(), seconds: 3.0, presses: 20, every: None });
+        assert_eq!(steps[1].seconds, -10.0);
+        assert_eq!(steps[1].every, Some(Duration::from_millis(80)));
+        assert_eq!(parse("3"), None);
+        assert_eq!(parse("3x2,"), None);
+    }
+}

@@ -6,6 +6,7 @@ mod error;
 mod images;
 mod play;
 mod progress;
+mod seeks;
 mod settings;
 mod source;
 mod ui;
@@ -18,6 +19,7 @@ use player::Source;
 use plex::model::RatingKey;
 
 use crate::error::{Error, Result};
+use crate::play::Check;
 use crate::progress::Progress;
 use crate::ui::player::input::Key;
 use crate::ui::shell::Subject;
@@ -32,7 +34,8 @@ usage: plex-rust
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
        plex-rust play <file-or-url> [--unattended <seconds>]
-       plex-rust play item:<rating-key> [--unattended <seconds>]";
+       plex-rust play item:<rating-key> [--unattended <seconds>]
+       plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -71,7 +74,11 @@ fn run(args: &[&str]) -> Result<()> {
         ["play", what] => play(what, None),
         ["play", what, "--unattended", seconds] => {
             let seconds = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
-            play(what, Some(Duration::from_secs(seconds)))
+            play(what, Some(Check::State(Duration::from_secs(seconds))))
+        }
+        ["play", what, "--seeks", script] => {
+            let steps = seeks::parse(script).ok_or(Error::Usage(USAGE))?;
+            play(what, Some(Check::Seeks(steps)))
         }
         _ => Err(Error::Usage(USAGE)),
     }
@@ -79,9 +86,9 @@ fn run(args: &[&str]) -> Result<()> {
 
 /// Plays a file, a URL, or with `item:<rating-key>` an item from the first
 /// server, resuming where it was left and reporting progress.
-fn play(what: &str, unattended: Option<Duration>) -> Result<()> {
+fn play(what: &str, check: Option<Check>) -> Result<()> {
     let Some(key) = what.strip_prefix("item:") else {
-        return Ok(play::run(&Source::new(what), None, unattended)?);
+        return Ok(play::run(&Source::new(what), None, check)?);
     };
 
     let (client, token) = account::signed_in()?;
@@ -95,10 +102,10 @@ fn play(what: &str, unattended: Option<Duration>) -> Result<()> {
     })?;
 
     let source = source::of(&server, &item)?;
-    // An unattended run is a check. It must not move anyone's place in a
-    // film, so it tells the server nothing.
-    let progress = unattended.is_none().then(|| Progress::new(runtime, server, item.rating_key));
-    Ok(play::run(&source, progress, unattended)?)
+    // A check must not move anyone's place in a film, so it tells the
+    // server nothing.
+    let progress = check.is_none().then(|| Progress::new(runtime, server, item.rating_key));
+    Ok(play::run(&source, progress, check)?)
 }
 
 /// Lists the account's servers and the address each one answers at.

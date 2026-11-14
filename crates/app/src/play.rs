@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -15,11 +15,12 @@ use objc2_foundation::{
     NSActivityOptions, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
     NSSize, ns_string,
 };
-use player::{EndReason, Event, Player, Source};
+use player::{EndReason, Event, Player, Probe, Source};
 use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
 use crate::progress::Progress;
+use crate::seeks::{self, Step};
 use crate::video_layer::{self, VideoLayer};
 
 /// How often the server hears from a running playback. Plex asks for 10 s.
@@ -50,17 +51,24 @@ impl Playback {
     }
 }
 
+/// What a run that is a check, and not a viewing, looks at.
+pub enum Check {
+    /// The playback state after this long.
+    State(Duration),
+    /// How long these jumps stall playback, and then the playback state.
+    Seeks(Vec<Step>),
+}
+
 /// Plays `source` in a window until it ends or the window is closed.
 ///
 /// With `progress`, the server is kept up to date on the position.
 ///
-/// With `unattended`, the run is a check and not a viewing: it is muted,
-/// leaves the keyboard focus where it is, prints the playback state after
-/// that long, and exits.
+/// With `check`, the run is muted, leaves the keyboard focus where it is,
+/// prints what it measured as one line of JSON, and exits.
 pub fn run(
     source: &Source,
     progress: Option<Progress>,
-    unattended: Option<Duration>,
+    check: Option<Check>,
 ) -> player::Result<()> {
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
@@ -80,15 +88,20 @@ pub fn run(
     );
 
     let window = video_window(main_thread, player)?;
-    player.set_muted(unattended.is_some())?;
+    player.set_muted(check.is_some())?;
+    // Made before loading, so that it sees the playback start.
+    let probe = check.is_some().then(|| Probe::new(player)).transpose()?;
+    let loading = Instant::now();
     player.load(source)?;
 
     spawn(&playback, exit_when_playback_ends);
     spawn(&playback, report_periodically);
-    match unattended {
-        Some(delay) => {
+    match check.zip(probe) {
+        Some((check, probe)) => {
             window.orderFrontRegardless();
-            spawn(&playback, move |playback| print_state_and_exit(playback, delay));
+            spawn(&playback, move |playback| {
+                print_check_and_exit(&playback.player, probe, loading, &check);
+            });
         }
         None => {
             window.makeKeyAndOrderFront(None);
@@ -177,14 +190,11 @@ fn report_periodically(playback: &Playback) {
     }
 }
 
-/// Prints the playback state as one line of JSON, then exits.
-fn print_state_and_exit(playback: &Playback, delay: Duration) {
-    thread::sleep(delay);
-    let state = state(&playback.player);
-    playback.report(PlaybackState::Stopped);
-    match state {
-        Ok(state) => {
-            println!("{state}");
+/// Prints the result of `check` as one line of JSON, then exits.
+fn print_check_and_exit(player: &Player, probe: Probe, loading: Instant, check: &Check) {
+    match checked(player, probe, loading, check) {
+        Ok(report) => {
+            println!("{report}");
             std::process::exit(0);
         }
         Err(error) => {
@@ -192,6 +202,27 @@ fn print_state_and_exit(playback: &Playback, delay: Duration) {
             std::process::exit(1);
         }
     }
+}
+
+fn checked(
+    player: &Player,
+    mut probe: Probe,
+    loading: Instant,
+    check: &Check,
+) -> player::Result<serde_json::Value> {
+    let started = seeks::started(&mut probe, loading);
+    let seeks = match check {
+        Check::State(delay) => {
+            seeks::idle(&mut probe, delay.saturating_sub(loading.elapsed()));
+            None
+        }
+        Check::Seeks(steps) => Some(seeks::run(player, &mut probe, steps)?),
+    };
+    let mut report = state(player)?;
+    // Seconds from asking for the file to its first picture being ready.
+    report["started_in"] = started.map(|time| time.as_secs_f64()).into();
+    report["seeks"] = seeks.into();
+    Ok(report)
 }
 
 fn state(player: &Player) -> player::Result<serde_json::Value> {
