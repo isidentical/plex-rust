@@ -156,10 +156,14 @@ pub const BACKDROP_SCRIM_OPACITY: f64 = 0.5;
 pub const TINT_BRIGHTNESS: f64 = 0.45;
 
 /// The top of the home screen: one item on its backdrop. How tall it is
-/// in the default window, and for each point of the page's width, so that
-/// the backdrop is cut the same way in a window of any size.
-pub const HOME_HERO_HEIGHT: f64 = 392.0;
+/// until the page has a size to go by.
+pub const HOME_HERO_HEIGHT: f64 = 360.0;
+/// How tall it then is for each point of the page's width, so that the
+/// backdrop is cut much the same way as the window grows.
 pub const HOME_HERO_HEIGHT_PER_WIDTH: f64 = 0.37;
+/// The most of the window's height it takes, so that the first shelf
+/// stays in view under it on a large display.
+pub const HOME_HERO_MOST: f64 = 0.45;
 /// The size the home screen's backdrop is requested at, in points.
 pub const HOME_HERO_REQUEST: (u32, u32) = (960, 540);
 /// How dark the left edge of that backdrop is made, where the text is,

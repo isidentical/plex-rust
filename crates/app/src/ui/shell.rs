@@ -869,7 +869,7 @@ impl Shell {
         let hero = Hero::new(self.main_thread, Rc::clone(&session.images), self.actions());
         let header = Header { view: hero.view().retain(), height: theme::HOME_HERO_HEIGHT };
         let posters = self.posters(session, Some(header), outlines, nothing, || {});
-        posters.set_header_height_per_width(theme::HOME_HERO_HEIGHT_PER_WIDTH);
+        posters.fit_header_to_page(theme::HOME_HERO_HEIGHT_PER_WIDTH, theme::HOME_HERO_MOST);
         let shown = posters.clone();
         let reload = self.loader(
             session,

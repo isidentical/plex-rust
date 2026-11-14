@@ -145,6 +145,15 @@ pub struct Header {
     pub height: f64,
 }
 
+/// How the height of a header follows the page.
+#[derive(Debug, Clone, Copy)]
+struct HeaderFit {
+    /// Points of height for each point of the page's width.
+    per_width: f64,
+    /// The most of the height in view the header may take, from 0 to 1.
+    most: f64,
+}
+
 /// What the collection shows: grey outlines until the first answer, then
 /// the shelves.
 enum Content {
@@ -237,6 +246,10 @@ pub struct Ivars {
     awaiting_more: Cell<bool>,
     /// The item a context menu is open on.
     menu_item: RefCell<Option<Item>>,
+    /// Set for a header whose height follows the page, with the height it
+    /// was last given.
+    header_fit: Cell<Option<HeaderFit>>,
+    header_height: Cell<f64>,
 }
 
 define_class!(
@@ -434,6 +447,8 @@ impl Posters {
             on_near_end: Box::new(on_near_end),
             awaiting_more: Cell::new(false),
             menu_item: RefCell::new(None),
+            header_fit: Cell::new(None),
+            header_height: Cell::new(0.0),
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let posters: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -451,22 +466,51 @@ impl Posters {
         &self.ivars().root
     }
 
-    /// Makes the header this many points tall for each point of the
-    /// page's width from now on, in place of the fixed height it was made
-    /// with. For a header that holds a picture, which then keeps its
-    /// proportions in a window of any size.
-    pub fn set_header_height_per_width(&self, fraction: f64) {
-        let layout = self.ivars().collection.collectionViewLayout();
+    /// Makes the header follow the size of the page from now on, in place
+    /// of the fixed height it was made with: `per_width` points tall for
+    /// each point of the page's width, but no more than `most` of the
+    /// height in view. For a header that holds a picture, which then keeps
+    /// its proportions as the window grows without taking the page over.
+    pub fn fit_header_to_page(&self, per_width: f64, most: f64) {
+        self.ivars().header_fit.set(Some(HeaderFit { per_width, most }));
+    }
+
+    /// Gives a header that follows the page the height the page now calls
+    /// for. Does nothing while that is the height it has, so it can be
+    /// asked on every layout. Says whether the height changed under a page
+    /// that was scrolled to its top, which then has to be
+    /// [put back there](Self::scroll_to_top).
+    fn fit_header(&self) -> bool {
+        let ivars = self.ivars();
+        let (Some(fit), in_view) = (ivars.header_fit.get(), ivars.scroll.bounds().size) else {
+            return false;
+        };
+        let height = (in_view.width * fit.per_width).min(in_view.height * fit.most).round();
+        if height <= 0.0 || ivars.header_height.replace(height) == height {
+            return false;
+        }
+        let layout = ivars.collection.collectionViewLayout();
         let Some(Ok(layout)) =
             layout.map(|layout| layout.downcast::<NSCollectionViewCompositionalLayout>())
         else {
-            return;
+            return false;
         };
-        let height = NSCollectionLayoutDimension::fractionalWidthDimension(fraction, self.mtm());
+        let top = -ivars.scroll.contentInsets().top;
+        let was_at_top = ivars.scroll.contentView().bounds().origin.y <= top;
+        let height = NSCollectionLayoutDimension::absoluteDimension(height, self.mtm());
         let header = boundary_item(PAGE_HEADER, &height, self.mtm());
         let configuration = layout.configuration();
         configuration.setBoundarySupplementaryItems(&NSArray::from_retained_slice(&[header]));
         layout.setConfiguration(&configuration);
+        was_at_top
+    }
+
+    /// Scrolls to the very top, which is under the toolbar. A header that
+    /// grows moves the page down by as much as it grew, as if the viewer
+    /// had been reading what is under it.
+    fn scroll_to_top(&self) {
+        let top = -self.ivars().scroll.contentInsets().top;
+        self.ivars().collection.scrollPoint(NSPoint { x: 0.0, y: top });
     }
 
     /// Gives the keyboard to the collection, so the arrow keys move in it.
@@ -952,8 +996,15 @@ define_class!(
         /// cards: a dark band across a page that has colours of its own.
         #[unsafe(method(layout))]
         fn layout(&self) {
+            // First, so that the cards are placed under a header of the
+            // height the window now calls for.
+            let owner = self.ivars().get().and_then(Weak::load);
+            let moved_top = owner.as_ref().is_some_and(|posters| posters.fit_header());
             // SAFETY: forwards the call unchanged.
             let () = unsafe { msg_send![super(self), layout] };
+            if let (true, Some(posters)) = (moved_top, owner) {
+                posters.scroll_to_top();
+            }
             for view in self.subviews() {
                 if let Ok(shelf) = view.downcast::<NSScrollView>() {
                     shelf.setDrawsBackground(false);
