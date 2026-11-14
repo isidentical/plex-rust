@@ -44,6 +44,15 @@ impl Speed {
         f64::from(self.0) / 100.0
     }
 
+    /// Where the speed lies between the slowest and the fastest, from 0
+    /// to 1, counted in doublings: twice as fast is as far from normal
+    /// as half as fast.
+    pub fn level(self) -> f64 {
+        let doublings = |percent: u32| f64::from(percent).log2();
+        (doublings(self.0) - doublings(Self::SLOWEST))
+            / (doublings(Self::FASTEST) - doublings(Self::SLOWEST))
+    }
+
     pub fn slower(self) -> Self {
         Self::from_percent(self.0.saturating_sub(Self::STEP))
     }

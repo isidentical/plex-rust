@@ -4,20 +4,17 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityAnnouncementKey,
-    NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityButtonRole,
-    NSAccessibilityPostNotificationWithUserInfo, NSBezierPath, NSColor, NSEvent, NSFont,
-    NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
-    NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
+    NSImageView, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSLineBreakMode, NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
+use objc2_foundation::{NSArray, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
 
+use super::controls::{medium, symbol};
 use super::theme;
 
 /// What a chip looks like and whether it can be clicked.
@@ -32,9 +29,6 @@ pub enum Style {
     Quiet,
     /// Text on a dark fill that cannot be clicked: clicks pass through it.
     Caption,
-    /// A caption that has to be read in a glance from across the room,
-    /// such as what a key press just did.
-    Notice,
 }
 
 pub struct Ivars {
@@ -143,14 +137,14 @@ define_class!(
 
 impl Style {
     fn is_button(self) -> bool {
-        !matches!(self, Self::Caption | Self::Notice)
+        self != Self::Caption
     }
 }
 
 impl Chip {
     pub fn new(main_thread: MainThreadMarker, style: Style) -> Retained<Self> {
         let color = match style {
-            Style::Plain | Style::Quiet | Style::Caption | Style::Notice => theme::text(),
+            Style::Plain | Style::Quiet | Style::Caption => theme::text(),
             Style::Solid => theme::text_on_solid(),
         };
         let icon = NSImageView::new(main_thread);
@@ -158,15 +152,12 @@ impl Chip {
         icon.setHidden(true);
         let label = NSTextField::labelWithString(ns_string!(""), main_thread);
         label.setTextColor(Some(&color));
-        // SAFETY: the weights are constants that AppKit provides.
-        let (medium, semibold) = unsafe { (NSFontWeightMedium, NSFontWeightSemibold) };
-        let (size, weight) = match style {
-            Style::Notice => (theme::NOTICE_FONT_SIZE, semibold),
-            _ => (theme::FONT_SIZE, medium),
-        };
         // Digits of equal width keep a time or a speed from changing the
         // chip's width as it counts.
-        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(size, weight)));
+        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+            theme::FONT_SIZE,
+            medium(),
+        )));
         label.setHidden(true);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
@@ -251,15 +242,7 @@ impl Chip {
         if ivars.symbol.replace(name) == name {
             return;
         }
-        // SAFETY: the weight is a constant that AppKit provides.
-        let weight = unsafe { NSFontWeightMedium };
-        let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(size, weight);
-        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str(name),
-            None,
-        );
-        let image = image.and_then(|image| image.imageWithSymbolConfiguration(&size));
-        ivars.icon.setImage(image.as_deref());
+        ivars.icon.setImage(symbol(name, size).as_deref());
         ivars.icon.setHidden(false);
     }
 
@@ -280,33 +263,6 @@ impl Chip {
         label.setStringValue(&NSString::from_str(title));
         label.setHidden(title.is_empty());
         self.describe();
-        if self.ivars().style == Style::Notice {
-            self.announce(title);
-        }
-    }
-
-    /// Has VoiceOver say `text`, as a notice is of no use to a viewer who
-    /// has to go looking for it before it is gone.
-    fn announce(&self, text: &str) {
-        // An announcement is only heard if it comes from a window.
-        let Some(window) = self.window() else {
-            return;
-        };
-        let text = NSString::from_str(text);
-        let said: &AnyObject = &text;
-        // SAFETY: the key is a constant that AppKit provides.
-        let key = unsafe { NSAccessibilityAnnouncementKey };
-        let info = NSDictionary::from_slices(&[key], &[said]);
-        // SAFETY: a window is an accessibility element, the notification
-        // is a constant that AppKit provides, and the announcement key
-        // takes a string.
-        unsafe {
-            NSAccessibilityPostNotificationWithUserInfo(
-                &window,
-                NSAccessibilityAnnouncementRequestedNotification,
-                Some(&info),
-            );
-        }
     }
 
     /// Keeps the chip from growing wider than `width`. Text that does not
@@ -339,7 +295,6 @@ impl Chip {
         let height = match ivars.style {
             Style::Plain | Style::Solid | Style::Quiet => theme::CHIP_SIZE,
             Style::Caption => theme::CAPTION_HEIGHT,
-            Style::Notice => theme::NOTICE_HEIGHT,
         };
         let padded = content.widthAnchor();
         let square = self.widthAnchor().constraintEqualToConstant(height);
@@ -392,7 +347,7 @@ impl Chip {
         let ivars = self.ivars();
         let lit = ivars.enabled.get();
         match (ivars.style, lit && ivars.pressed.get(), lit && ivars.hovered.get()) {
-            (Style::Caption | Style::Notice, ..) => Some(theme::backdrop()),
+            (Style::Caption, ..) => Some(theme::backdrop()),
             (Style::Solid, true, _) => Some(theme::solid_pressed()),
             (Style::Solid, false, true) => Some(theme::solid_hovered()),
             (Style::Solid, false, false) => Some(theme::solid()),

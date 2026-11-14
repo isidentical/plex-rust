@@ -7,14 +7,16 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSAccessibility, NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
-    NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
-    NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
+    NSImageSymbolConfiguration, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultLow, NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
 
+use super::badge::Badge;
 use super::chip::{Chip, Style};
 use super::layout::{add, cover, pin, row};
 use super::pane::Pane;
@@ -71,7 +73,7 @@ pub struct Controls {
     /// playback stalls waiting for the network.
     pub spinner: Retained<NSProgressIndicator>,
     /// Briefly says what a key press did.
-    pub notice: Retained<Chip>,
+    pub badge: Badge,
 }
 
 impl Controls {
@@ -118,7 +120,7 @@ impl Controls {
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread),
             spinner: NSProgressIndicator::new(main_thread),
-            notice: Chip::new(main_thread, Style::Notice),
+            badge: Badge::new(main_thread, material),
         };
         controls.back.set_symbol("chevron.left", theme::BACK_SYMBOL_SIZE);
         controls.toggle.set_symbol("pause.fill", theme::MAIN_SYMBOL_SIZE);
@@ -283,15 +285,13 @@ impl Controls {
         self.bubble.setHidden(true);
         self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
         self.bubble_x.setPriority(FOLLOWS_POINTER);
-        self.notice.setAlphaValue(0.0);
-        self.notice.limit_width(theme::NOTICE_MAX_WIDTH);
         self.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
         self.spinner.setIndeterminate(true);
         self.spinner.setDisplayedWhenStopped(false);
         self.spinner.setAccessibilityLabel(Some(&NSString::from_str("Loading")));
         add(root, &self.skip);
         add(root, self.up_next.view());
-        add(root, &self.notice);
+        add(root, self.badge.view());
         add(root, &self.spinner);
         add(root, &self.bubble);
         pin(&[
@@ -306,10 +306,11 @@ impl Controls {
                 .trailingAnchor()
                 .constraintEqualToAnchor(&self.skip.trailingAnchor()),
             self.up_next.view().bottomAnchor().constraintEqualToAnchor(&self.skip.bottomAnchor()),
-            self.notice
-                .trailingAnchor()
-                .constraintEqualToAnchor_constant(&trailing, -theme::MARGIN),
-            self.notice
+            // In the middle, where the eyes are, and at the top, where it
+            // covers the least of the picture.
+            self.badge.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
+            self.badge
+                .view()
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&below_title_bar, theme::TOP_GAP),
             self.bubble_x.clone(),
@@ -336,6 +337,13 @@ fn heading(item: &Item) -> (String, Option<String>) {
         _ => item.year.map(|year| year.to_string()),
     };
     (item.title.clone(), detail)
+}
+
+/// The SF Symbol called `name`, `size` points high.
+pub fn symbol(name: &str, size: f64) -> Option<Retained<NSImage>> {
+    let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(size, medium());
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
+        .and_then(|image| image.imageWithSymbolConfiguration(&size))
 }
 
 /// A line of text that gives way, by ending in an ellipsis, when there is

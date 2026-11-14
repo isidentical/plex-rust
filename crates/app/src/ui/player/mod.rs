@@ -1,5 +1,6 @@
 //! The screen that plays one item: video with controls on top.
 
+mod badge;
 mod chip;
 mod chrome;
 mod controls;
@@ -26,9 +27,7 @@ use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSCursor, NSMenuItem, NSView, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSCursor, NSMenuItem, NSView, NSWindowStyleMask};
 use objc2_foundation::{
     NSActivityOptions, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
@@ -39,6 +38,7 @@ use plex::library::{self, Neighbours};
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
 
+use self::badge::Notice;
 use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
@@ -74,7 +74,7 @@ const TICKS_OF_WARNING: u32 = 8 * TICKS_PER_SECOND;
 
 /// What the viewer is told about a file that
 /// [`player::DolbyVision::is_shown_in_wrong_colors`].
-const WRONG_COLORS: &str = "Dolby Vision profile 5: this player shows it in the wrong colours";
+const WRONG_COLORS: &str = "Dolby Vision profile 5 plays in the wrong colours here";
 
 /// For this many ticks after the scrubber's knob is let go, the knob and
 /// the times stay where the viewer put them. The player needs a moment to
@@ -163,7 +163,6 @@ pub struct Ivars {
     /// until the screen is in a window, and again once it has closed.
     chrome: RefCell<Option<Chrome>>,
     ticks_of_notice_left: Cell<u32>,
-    notice_shown: Cell<bool>,
     speed: Cell<Speed>,
     low_power: Cell<bool>,
     controls_shown: Cell<bool>,
@@ -292,7 +291,6 @@ impl PlayerScreen {
             controls,
             chrome: RefCell::new(None),
             ticks_of_notice_left: Cell::new(0),
-            notice_shown: Cell::new(false),
             speed: Cell::new(speed),
             low_power: Cell::new(settings.low_power),
             controls_shown: Cell::new(true),
@@ -397,7 +395,8 @@ impl PlayerScreen {
         let ivars = self.ivars();
         self.or_log(ivars.player.set_low_power(low_power));
         ivars.low_power.set(low_power);
-        self.notify(if low_power { "Low power on" } else { "Low power off" });
+        let text = if low_power { "Low power on" } else { "Low power off" };
+        self.notify(&Notice { symbol: "leaf.fill", text, level: None });
     }
 
     fn speed(&self) -> Speed {
@@ -794,7 +793,7 @@ impl PlayerScreen {
         if notice_left > 0 {
             ivars.ticks_of_notice_left.set(notice_left - 1);
             if notice_left == 1 {
-                self.set_notice_shown(false);
+                ivars.controls.badge.hide();
             }
         }
 
@@ -899,7 +898,11 @@ impl PlayerScreen {
             Some(previous) if position <= RESTART_AFTER => self.switch_to(previous),
             _ => {
                 ivars.player.seek(Duration::ZERO)?;
-                self.notify("From the start");
+                self.notify(&Notice {
+                    symbol: "backward.end.fill",
+                    text: "From the start",
+                    level: None,
+                });
             }
         }
         Ok(())
@@ -914,7 +917,11 @@ impl PlayerScreen {
         match next {
             Some(next) => self.switch_to(next),
             None => {
-                self.notify("Last episode");
+                self.notify(&Notice {
+                    symbol: "forward.end.fill",
+                    text: "Last episode",
+                    level: None,
+                });
                 self.show_controls(true);
             }
         }
@@ -997,9 +1004,9 @@ impl PlayerScreen {
         match press {
             Press::First => {
                 player.seek_by(seconds)?;
-                // U+2212 is the minus sign, as wide as the plus.
-                let sign = if seconds < 0.0 { '\u{2212}' } else { '+' };
-                self.notify(&format!("{sign}{} s", seconds.abs()));
+                let symbol = if seconds < 0.0 { "gobackward" } else { "goforward" };
+                let text = format!("{} s", seconds.abs());
+                self.notify(&Notice { symbol, text: &text, level: None });
             }
             // An exact jump takes longer than the gap between repeats, so a
             // held key would stand still. Keyframe to keyframe keeps up.
@@ -1008,7 +1015,8 @@ impl PlayerScreen {
                 // Where a held key has got to says more than the size of
                 // one step, repeated for as long as the key is down.
                 if let Some(position) = player.position()? {
-                    self.notify(&clock(position));
+                    let symbol = if seconds < 0.0 { "backward.fill" } else { "forward.fill" };
+                    self.notify(&Notice { symbol, text: &clock(position), level: None });
                     self.show_progress(position, self.length_shown());
                 }
             }
@@ -1067,7 +1075,7 @@ impl PlayerScreen {
         let player = &self.ivars().player;
         let volume = (player.volume()? + by).clamp(0.0, controls::FULL_VOLUME);
         player.set_volume(volume)?;
-        self.notify(&format!("Volume {volume:.0}%"));
+        self.notify_of_volume(volume, player.is_muted()?);
         Ok(())
     }
 
@@ -1079,15 +1087,35 @@ impl PlayerScreen {
         let player = &self.ivars().player;
         let muted = !player.is_muted()?;
         player.set_muted(muted)?;
-        self.notify(if muted { "Muted" } else { "Sound on" });
+        self.notify_of_volume(player.volume()?, muted);
         Ok(())
+    }
+
+    /// Says how loud the sound now is, in a number and as a level.
+    fn notify_of_volume(&self, volume: f64, muted: bool) {
+        let level = volume / controls::FULL_VOLUME;
+        if muted {
+            let symbol = "speaker.slash.fill";
+            return self.notify(&Notice { symbol, text: "Muted", level: Some(0.0) });
+        }
+        let symbol = match level {
+            level if level <= 0.0 => "speaker.fill",
+            level if level < 0.34 => "speaker.wave.1.fill",
+            level if level < 0.67 => "speaker.wave.2.fill",
+            _ => "speaker.wave.3.fill",
+        };
+        self.notify(&Notice { symbol, text: &format!("{volume:.0}%"), level: Some(level) });
     }
 
     fn set_speed(&self, speed: Speed) -> player::Result<()> {
         self.ivars().player.set_speed(speed.factor())?;
         self.ivars().speed.set(speed);
         self.show_speed();
-        self.notify(&format!("Speed {speed}"));
+        self.notify(&Notice {
+            symbol: "gauge.with.needle",
+            text: &speed.to_string(),
+            level: Some(speed.level()),
+        });
         self.show_now_playing()
     }
 
@@ -1119,8 +1147,8 @@ impl PlayerScreen {
         let item = self.item();
         let name = chosen.map(|track| tracks::described(track, part(&item)));
         self.remember_track(kind);
-        let label = if kind == TrackKind::Audio { "Audio" } else { "Subtitles" };
-        self.notify(&format!("{label}: {}", name.as_deref().unwrap_or("Off")));
+        let symbol = if kind == TrackKind::Audio { "waveform" } else { "captions.bubble" };
+        self.notify(&Notice { symbol, text: name.as_deref().unwrap_or("Off"), level: None });
         Ok(())
     }
 
@@ -1334,16 +1362,15 @@ impl PlayerScreen {
         }
     }
 
-    /// Says `text` in the corner for a moment.
-    fn notify(&self, text: &str) {
-        self.notify_for(text, TICKS_OF_NOTICE);
+    /// Says what just changed in the badge for a moment.
+    fn notify(&self, notice: &Notice) {
+        self.notify_for(notice, TICKS_OF_NOTICE);
     }
 
-    fn notify_for(&self, text: &str, ticks: u32) {
+    fn notify_for(&self, notice: &Notice, ticks: u32) {
         let ivars = self.ivars();
-        ivars.controls.notice.set_title(text);
+        ivars.controls.badge.show(notice);
         ivars.ticks_of_notice_left.set(ticks);
-        self.set_notice_shown(true);
     }
 
     /// Tells the viewer if the file is one this player cannot show in its
@@ -1352,18 +1379,10 @@ impl PlayerScreen {
     fn warn_of_wrong_colors(&self) -> player::Result<()> {
         let dolby_vision = self.ivars().player.dolby_vision()?;
         if dolby_vision.is_some_and(DolbyVision::is_shown_in_wrong_colors) {
-            self.notify_for(WRONG_COLORS, TICKS_OF_WARNING);
+            let symbol = "exclamationmark.triangle.fill";
+            self.notify_for(&Notice { symbol, text: WRONG_COLORS, level: None }, TICKS_OF_WARNING);
         }
         Ok(())
-    }
-
-    fn set_notice_shown(&self, shown: bool) {
-        // A notice that is renewed while it is up is not faded in again.
-        if self.ivars().notice_shown.replace(shown) == shown {
-            return;
-        }
-        let notice = &self.ivars().controls.notice;
-        notice.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
     }
 
     /// Fades the controls, the window's own buttons and the cursor in or

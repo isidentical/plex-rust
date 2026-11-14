@@ -43,13 +43,20 @@ pub const RIM_WIDTH: f64 = 1.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
 /// The height of a chip that only says something.
 pub const CAPTION_HEIGHT: f64 = 28.0;
-/// The notice of what a key press did is read at a glance, often from
-/// the sofa and with nothing else on screen, so it is larger than a label.
-pub const NOTICE_HEIGHT: f64 = 40.0;
-pub const NOTICE_FONT_SIZE: f64 = 17.0;
+/// The badge that says what a key press did is read at a glance, often
+/// from the sofa and with nothing else on screen, so it is larger than a
+/// label.
+pub const BADGE_HEIGHT: f64 = 48.0;
+pub const BADGE_FONT_SIZE: f64 = 17.0;
+pub const BADGE_SYMBOL_SIZE: f64 = 19.0;
+pub const BADGE_PADDING: f64 = 18.0;
+pub const BADGE_SPACING: f64 = 10.0;
+/// The bar in the badge that shows how loud or how fast.
+pub const METER_WIDTH: f64 = 96.0;
+pub const METER_HEIGHT: f64 = 5.0;
 /// A longer notice than this, such as a track with a long name, ends in
 /// an ellipsis.
-pub const NOTICE_MAX_WIDTH: f64 = 440.0;
+pub const NOTICE_MAX_WIDTH: f64 = 480.0;
 pub const SYMBOL_SIZE: f64 = 18.0;
 /// The play and pause symbol, which is the control used most.
 pub const MAIN_SYMBOL_SIZE: f64 = 28.0;
