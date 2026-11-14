@@ -101,12 +101,16 @@ pub struct Item {
     /// How many times it was watched to the end.
     #[serde(default)]
     pub view_count: u32,
+    /// When it was last played, in seconds since 1970.
+    pub last_viewed_at: Option<u64>,
     /// Episode number within the season, or season number within the show.
     pub index: Option<u32>,
     /// For an episode, its season number.
     pub parent_index: Option<u32>,
     /// For an episode, its season. For a season, its show.
     pub parent_rating_key: Option<RatingKey>,
+    /// For an episode, its season's title. For a season, its show's.
+    pub parent_title: Option<String>,
     /// For an episode, its show.
     pub grandparent_rating_key: Option<RatingKey>,
     /// For an episode, the show's title.

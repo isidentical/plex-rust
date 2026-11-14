@@ -166,6 +166,28 @@ impl MediaServer {
         let Items { items, .. } = self.get("/library/metadata/", &rest, &[]).await?;
         Ok(items)
     }
+
+    /// Every episode of a show, in order, across all its seasons.
+    pub async fn episodes(&self, show: &RatingKey) -> Result<Vec<Item>> {
+        let rest = format!("{show}/allLeaves");
+        let Items { items, .. } = self.get("/library/metadata/", &rest, &[]).await?;
+        Ok(items)
+    }
+}
+
+/// The episode to offer when the viewer asks to play a show, given all its
+/// episodes in order: the one they stopped in the middle of, else the first
+/// unwatched one after the last they finished, else the first unwatched
+/// one, else the first.
+pub fn next_up(episodes: &[Item]) -> Option<&Item> {
+    let in_progress = episodes.iter().filter(|episode| episode.view_offset.is_some());
+    if let Some(episode) = in_progress.max_by_key(|episode| episode.last_viewed_at) {
+        return Some(episode);
+    }
+    let unwatched = |episode: &&Item| episode.view_count == 0;
+    let after_last_watched = episodes.iter().rposition(|episode| episode.view_count > 0);
+    let later = after_last_watched.and_then(|last| episodes[last + 1..].iter().find(unwatched));
+    later.or_else(|| episodes.iter().find(unwatched)).or(episodes.first())
 }
 
 /// Keeps the rows that hold movies, shows or episodes and decodes them.
@@ -265,6 +287,41 @@ mod tests {
         assert!(episode.marker_at(start).is_some());
         assert!(episode.marker_at(end - Duration::from_millis(1)).is_some());
         assert!(episode.marker_at(end).is_none());
+    }
+
+    /// Episodes numbered from 1, each given as (times watched, offset).
+    fn episodes(states: &[(u32, Option<u64>)]) -> Vec<Item> {
+        let episode = |(number, (views, offset)): (usize, &(u32, Option<u64>))| {
+            serde_json::from_value(serde_json::json!({
+                "ratingKey": number.to_string(), "type": "episode", "title": "Title",
+                "index": number + 1, "viewCount": views, "viewOffset": offset,
+                "lastViewedAt": offset,
+            }))
+            .unwrap()
+        };
+        states.iter().enumerate().map(episode).collect()
+    }
+
+    fn next_number(states: &[(u32, Option<u64>)]) -> Option<u32> {
+        next_up(&episodes(states)).and_then(|episode| episode.index)
+    }
+
+    #[test]
+    fn the_next_episode_is_the_one_left_unfinished() {
+        assert_eq!(next_number(&[(1, None), (0, Some(5)), (0, None)]), Some(2));
+        // Of two unfinished ones, the one played last.
+        assert_eq!(next_number(&[(0, Some(9)), (0, Some(5)), (0, None)]), Some(1));
+    }
+
+    #[test]
+    fn the_next_episode_follows_the_last_one_watched() {
+        assert_eq!(next_number(&[(0, None), (1, None), (0, None)]), Some(3));
+        // Nothing after the last watched one: back to the first gap.
+        assert_eq!(next_number(&[(0, None), (1, None)]), Some(1));
+        assert_eq!(next_number(&[(0, None), (0, None)]), Some(1));
+        // All watched: start again.
+        assert_eq!(next_number(&[(1, None), (1, None)]), Some(1));
+        assert_eq!(next_number(&[]), None);
     }
 
     #[test]
