@@ -109,10 +109,14 @@ if ! built libass; then
     done_building libass
 fi
 
+fetch ffmpeg \
+    https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
+    8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+# Ours: the hardware decoder is not waited for after every frame, which
+# halves the time an exact seek takes to decode up to its target.
+apply ffmpeg ffmpeg-decode-videotoolbox-asynchronously.patch
+
 if ! built ffmpeg; then
-    fetch ffmpeg \
-        https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
-        8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
     (
         cd "$src/ffmpeg"
         # Playback only: no encoders, muxers, devices or command line tools.

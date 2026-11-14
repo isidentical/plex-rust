@@ -259,13 +259,16 @@ impl Player {
     /// that is `scripts/patches/mpv-restart-video-before-audio.patch`,
     /// and without it the picture stood still for 225 ms on AirPods Pro.
     ///
-    /// Getting to the target means decoding up to it: 2.4 ms a frame for
-    /// 4K HEVC, which is as fast as VideoToolbox takes frames. A jump
-    /// forward that meets no keyframe decodes on from the current position
+    /// Getting to the target means decoding up to it: 1.2 ms a frame for
+    /// 4K HEVC, which is as fast as VideoToolbox takes frames when it is
+    /// not waited for after each one
+    /// (`scripts/patches/ffmpeg-decode-videotoolbox-asynchronously.patch`;
+    /// it was 2.35 ms). A jump forward that meets no keyframe decodes on
+    /// from the current position
     /// (`scripts/patches/mpv-decode-on-for-short-seeks-forward.patch`),
-    /// so 3 seconds forward in the 4K film take about 180 ms. Any other
-    /// jump decodes from the keyframe before its target, which is 250 ms
-    /// on average there and up to 600 ms.
+    /// so 3 seconds forward in the 4K film take about 100 ms. Any other
+    /// jump decodes from the keyframe before its target, which is 170 ms
+    /// on average there and up to 340 ms.
     pub fn seek_by(&self, seconds: f64) -> Result<()> {
         self.command(&["seek", &seconds.to_string(), "relative+exact"])
     }
@@ -277,11 +280,11 @@ impl Player {
     ///
     /// [`seek_by`](Self::seek_by) decodes from the keyframe before its
     /// target, which for a 4K film with a keyframe every 10 seconds takes
-    /// 270 ms on average. mpv gives up on a seek that takes over 300 ms
-    /// when the next one arrives (`execute_queued_seek` in mpv's
-    /// player/playloop.c), so a held key showed 1 to 3 pictures a second
-    /// there. Going from keyframe to keyframe takes about 20 ms and shows
-    /// one for nearly every repeat.
+    /// 170 ms on average and up to 340 ms: longer than a held key waits
+    /// between two repeats. mpv also gives up on a seek that takes over
+    /// 300 ms when the next one arrives (`execute_queued_seek` in mpv's
+    /// player/playloop.c). Going from keyframe to keyframe takes about
+    /// 20 ms and shows a picture for nearly every repeat.
     pub fn scan_by(&self, seconds: f64) -> Result<()> {
         self.command(&["seek", &seconds.to_string(), "relative+keyframes"])
     }
@@ -289,7 +292,7 @@ impl Player {
     /// Goes to the nearest picture at or before `position` that can be
     /// shown without decoding the ones before it. This is for the scrubber
     /// while its knob is held: each move of the pointer shows a picture
-    /// within about 20 ms, where [`seek`](Self::seek) would take the 270 ms
+    /// within about 20 ms, where [`seek`](Self::seek) would take the 170 ms
     /// described at [`scan_by`](Self::scan_by) and be given up on when the
     /// next move arrives. Finish with one `seek` when the knob is let go.
     pub fn scan_to(&self, position: Duration) -> Result<()> {

@@ -279,11 +279,14 @@ and `framedrop=vo` stay at defaults. No interpolation.
 **Seeking:** a first press of an arrow key is an exact relative seek. While
 the key is held, and while the scrubber's knob is held, seeks go keyframe to
 keyframe, because an exact seek takes longer than the gap between repeats.
-Resume starts on the keyframe before the saved position. Two patches to mpv
-0.42.0 in `scripts/patches/` cut the stall after a jump: the picture restarts
-before the sound, which joins in sync once it can be heard, and a short jump
-forward decodes on from the current frame without going back to the
-keyframe. `plex-rust play item:<key> --seeks 3x10,-3x10` measures all of it.
+Resume starts on the keyframe before the saved position. Three patches in
+`scripts/patches/` cut the stall after a jump. Two are to mpv 0.42.0: the
+picture restarts before the sound, which joins in sync once it can be heard,
+and a short jump forward decodes on from the current frame without going
+back to the keyframe. One is to FFmpeg 9.0.2: the hardware decoder is handed
+the next frame without a wait for the one before, which halves the time it
+takes to decode from a keyframe up to the target.
+`plex-rust play item:<key> --seeks 3x10,-3x10` measures all of it.
 
 **Subtitles and audio:** mpv renders embedded text and image subtitles
 itself. Plex sidecar subtitles are added by URL with `sub-add`. Track menus

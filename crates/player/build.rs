@@ -8,8 +8,9 @@ fn main() {
         panic!("libmpv not found, run scripts/build-libmpv.sh first: {error}");
     }
     // Cargo does not look inside the libraries it links. Without this, a
-    // rebuilt libmpv would not make it into the next build.
+    // rebuilt libmpv or FFmpeg decoder would not make it into the next build.
     println!("cargo:rerun-if-changed=../../vendor/libmpv/lib/libmpv.a");
+    println!("cargo:rerun-if-changed=../../vendor/libmpv/lib/libavcodec.a");
 
     // FreeType names zlib by file path, which the pkg-config crate skips.
     println!("cargo:rustc-link-lib=z");
