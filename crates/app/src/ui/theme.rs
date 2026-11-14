@@ -102,6 +102,9 @@ pub const PORTRAIT_REQUEST: (u32, u32) = (112, 112);
 /// The glyph that stands in for a missing photo.
 pub const PORTRAIT_GLYPH_SIZE: f64 = 44.0;
 pub const PLACEHOLDER_GLYPH_OPACITY: f64 = 0.25;
+/// The disc and the initials that stand in for a person's missing photo.
+pub const MONOGRAM_DISC_OPACITY: f64 = 0.12;
+pub const MONOGRAM_INK_OPACITY: f64 = 0.7;
 
 /// The two lines of text under a card's artwork, with the gaps around them.
 pub const CAPTIONS_HEIGHT: f64 = 46.0;

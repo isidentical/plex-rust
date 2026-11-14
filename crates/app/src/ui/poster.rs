@@ -9,13 +9,15 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
     NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
+    NSView,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
 use plex::model::{Item, Kind, Role};
 
-use super::artwork::{ArtView, Badge};
+use super::artwork::{self, ArtView, Badge};
 use super::hover::HoverView;
 use super::label::{self, Weight};
+use super::layout;
 use super::text;
 use super::theme;
 use crate::images::Images;
@@ -118,6 +120,10 @@ pub struct Views {
     art: ArtView,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
+    /// Stands in for the photo of a person there is none of: a disc with
+    /// their initials on it.
+    monogram: Retained<NSView>,
+    initials: Retained<NSTextField>,
     /// What the card shows, to tell a new look at the same thing from
     /// another thing taking the card over.
     shown: RefCell<Option<Card>>,
@@ -204,6 +210,8 @@ impl PosterItem {
         }
         views.art.set_radius(shape.radius());
         views.art.set_current(is_current);
+        let faceless = matches!(card, Card::Person(person) if person.thumb.is_none());
+        views.monogram.setHidden(!faceless);
         let (title, subtitle) = match card {
             Card::Item(item) => {
                 views.art.set_playable(is_playable(item));
@@ -216,8 +224,8 @@ impl PosterItem {
                 views.art.set_playable(false);
                 views.art.set_progress(0.0);
                 views.art.set_badge(Badge::None);
-                let photo = person.thumb.as_deref();
-                views.art.show(photo, shape.request(), Some("person.fill"), images);
+                views.art.show(person.thumb.as_deref(), shape.request(), None, images);
+                label::set(&views.initials, &initials(&person.tag));
                 (person.tag.clone(), person.role.clone().unwrap_or_default())
             }
         };
@@ -293,6 +301,13 @@ pub fn spoken(card: &Card, title: &str, subtitle: &str, is_current: bool) -> Str
     parts.join(", ")
 }
 
+/// The first letters of the first two words of `name`, as a person
+/// without a photo is drawn.
+fn initials(name: &str) -> String {
+    let letters = name.split_whitespace().take(2).filter_map(|word| word.chars().next());
+    letters.flat_map(char::to_uppercase).collect()
+}
+
 /// On a poster, an episode stands for its show, since its own artwork is a
 /// wide frame. A wide card shows that frame, or a film's backdrop.
 fn artwork_path(item: &Item, shape: Shape) -> Option<&str> {
@@ -343,7 +358,24 @@ fn captions(item: &Item, shape: Shape) -> (String, String) {
 impl Views {
     fn new(main_thread: MainThreadMarker) -> Self {
         let secondary = NSColor::secondaryLabelColor();
+        let monogram = artwork::layered(main_thread);
+        artwork::fill_with(&monogram, &theme::white(theme::MONOGRAM_DISC_OPACITY));
+        if let Some(layer) = monogram.layer() {
+            layer.setCornerRadius(theme::PORTRAIT_WIDTH / 2.0);
+        }
+        monogram.setHidden(true);
+        let initials = label::line(
+            theme::FONT_LARGE_TITLE,
+            Weight::Medium,
+            &theme::white(theme::MONOGRAM_INK_OPACITY),
+            main_thread,
+        );
+        // The name is right under it.
+        initials.setAccessibilityElement(false);
+        layout::float(&monogram, &initials);
         Self {
+            monogram,
+            initials,
             art: ArtView::new(main_thread, theme::RADIUS_M),
             title: label::line(
                 theme::FONT_BODY,
@@ -360,6 +392,8 @@ impl Views {
     fn place_in(&self, card: &HoverView) {
         let (art, title, subtitle) = (self.art.view(), &self.title, &self.subtitle);
         card.addSubview(art);
+        // On the artwork, to grow with it under the pointer.
+        layout::cover(art, &self.monogram);
         card.addSubview(title);
         card.addSubview(subtitle);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
@@ -398,6 +432,13 @@ mod tests {
         assert_eq!(captions(&episode, Shape::Poster), (show.clone(), code));
         assert_eq!(captions(&episode, Shape::Landscape), (show, "S2 · E6 · 11 min left".into()));
         assert_eq!(captions(&episode, Shape::Still), ("6. Pilot".into(), "11 min left".into()));
+    }
+
+    #[test]
+    fn a_person_without_a_photo_is_drawn_as_two_initials() {
+        assert_eq!(initials("Reggie Dees II"), "RD");
+        assert_eq!(initials("e.j. holowicki"), "EH");
+        assert_eq!(initials("Zendaya"), "Z");
     }
 
     #[test]
