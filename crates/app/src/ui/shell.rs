@@ -12,8 +12,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSBackingStoreType, NSMenuItem, NSSplitViewController, NSSplitViewItem,
-    NSView, NSViewController, NSWindow, NSWindowStyleMask,
+    NSApplicationDelegate, NSBackingStoreType, NSMenu, NSMenuItem, NSSplitViewController,
+    NSSplitViewItem, NSView, NSViewController, NSWindow, NSWindowStyleMask, NSWindowTabbingMode,
 };
 use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
@@ -1671,6 +1671,9 @@ fn window(main_thread: MainThreadMarker) -> Retained<NSWindow> {
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(ns_string!("plex-rust"));
     window.setContentMinSize(theme::WINDOW_MIN_SIZE);
+    // One window is all there is. Left to itself the system offers a tab
+    // bar and "Merge All Windows" for it in the menus.
+    window.setTabbingMode(NSWindowTabbingMode::Disallowed);
     window
 }
 
@@ -1693,6 +1696,12 @@ define_class!(
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             true
+        }
+
+        #[unsafe(method_id(applicationDockMenu:))]
+        fn dock_menu(&self, _app: &NSApplication) -> Option<Retained<NSMenu>> {
+            let shell = self.ivars();
+            Some(menus::dock(shell.main_thread, &shell.places.borrow()))
         }
 
         /// Quitting mid-film must still leave the server with the place

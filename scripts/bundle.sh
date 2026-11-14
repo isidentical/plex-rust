@@ -43,6 +43,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>A personal client for Plex. Not affiliated with Plex.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>plex-rust connects to the Plex Media Server on your network.</string>
 </dict>

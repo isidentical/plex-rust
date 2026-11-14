@@ -63,12 +63,23 @@ pub fn install(
     let low_power_entry = own("Low Power", &commands.toggle_low_power, "", COMMAND);
     check(&low_power_entry, low_power);
 
+    // The system fills this one in with what other apps offer to do with
+    // the selected text.
+    let services =
+        NSMenu::initWithTitle(NSMenu::alloc(main_thread), &NSString::from_str("Services"));
+    let services_holder = NSMenuItem::new(main_thread);
+    services_holder.setTitle(&services.title());
+    services_holder.setSubmenu(Some(&services));
+    app.setServicesMenu(Some(&services));
+
     add(
         "plex-rust",
         vec![
             system("About plex-rust", sel!(orderFrontStandardAboutPanel:), "", COMMAND),
             line(),
             low_power_entry,
+            line(),
+            services_holder,
             line(),
             system("Hide plex-rust", sel!(hide:), "h", COMMAND),
             system("Hide Others", sel!(hideOtherApplications:), "h", with_option),
@@ -124,15 +135,37 @@ pub fn install(
         vec![
             system("Minimize", sel!(performMiniaturize:), "m", COMMAND),
             system("Zoom", sel!(performZoom:), "", COMMAND),
+            line(),
+            system("Bring All to Front", sel!(arrangeInFront:), "", COMMAND),
         ],
     );
     app.setWindowsMenu(Some(&window));
+    // Empty but for the field the system puts in it, which searches every
+    // menu above.
+    app.setHelpMenu(Some(&add("Help", Vec::new())));
     app.setMainMenu(Some(&bar));
 }
 
 /// Gives `entry` its check mark, or takes it away.
 pub fn check(entry: &NSMenuItem, checked: bool) {
     entry.setState(if checked { NSControlStateValueOn } else { NSControlStateValueOff });
+}
+
+/// The menu under the app's icon in the Dock: `places`, one click away
+/// from anywhere.
+pub fn dock(main_thread: MainThreadMarker, places: &[Place]) -> Retained<NSMenu> {
+    let menu = NSMenu::new(main_thread);
+    for (title, target) in places {
+        menu.addItem(&entry(
+            title,
+            Callback::action(),
+            Some(target),
+            "",
+            NSEventModifierFlags::empty(),
+            main_thread,
+        ));
+    }
+    menu
 }
 
 /// One menu item. Without a target the action goes to whatever in the
