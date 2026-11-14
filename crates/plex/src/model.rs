@@ -173,10 +173,14 @@ pub struct Item {
     pub markers: Vec<Marker>,
     #[serde(rename = "UltraBlurColors")]
     pub colors: Option<Colors>,
+    /// Its artwork by kind. An episode lists that of its show.
+    #[serde(rename = "Image", default)]
+    pub images: Vec<Image>,
     #[serde(rename = "Genre", default)]
     pub genres: Vec<Tag>,
+    /// Who directed it. A show has none: its episodes have their own.
     #[serde(rename = "Director", default)]
-    pub directors: Vec<Tag>,
+    pub directors: Vec<Role>,
     /// The cast, most prominent first.
     #[serde(rename = "Role", default)]
     pub roles: Vec<Role>,
@@ -212,6 +216,13 @@ impl Item {
             }
             _ => 0.0,
         }
+    }
+
+    /// Server path of the title drawn as it is on the poster, on nothing.
+    /// For an episode it is the title of its show.
+    pub fn logo(&self) -> Option<&str> {
+        let logo = self.images.iter().find(|image| image.kind == ImageKind::ClearLogo)?;
+        Some(&logo.url)
     }
 
     /// The marker that covers `position`, if any.
@@ -355,7 +366,27 @@ pub enum MarkerKind {
     Other,
 }
 
-/// A name attached to an item: a genre, a director.
+/// One picture of an item.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Image {
+    #[serde(rename = "type")]
+    pub kind: ImageKind,
+    /// Server path of the picture.
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageKind {
+    /// The title as a logo, clear around its letters.
+    ClearLogo,
+    /// The poster, the backdrop and the others, which an item also has
+    /// under names of their own.
+    #[serde(other)]
+    Other,
+}
+
+/// A name attached to an item, such as a genre.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tag {
     /// The server's number for the name, which its filters take. Only
@@ -364,15 +395,16 @@ pub struct Tag {
     pub tag: String,
 }
 
-/// A member of the cast.
+/// A member of the cast, or a director.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Role {
-    /// The server's number for the person, which its `actor` filter takes.
-    /// Only present when the item was fetched in full.
+    /// The server's number for the person in this line of work, which its
+    /// `actor` and `director` filters take. Only present when the item
+    /// was fetched in full.
     pub id: Option<u64>,
     /// The person's name.
     pub tag: String,
-    /// Who they play.
+    /// Who they play. A director plays nobody.
     pub role: Option<String>,
     /// Address of a photo. Unlike other artwork this is a whole URL, on
     /// plex.tv, which the server's image endpoint fetches and scales too.
@@ -443,6 +475,26 @@ mod tests {
         assert_eq!(part.chosen(StreamKind::Video), None);
         let sidecars: Vec<u64> = part.sidecars().map(|stream| stream.id).collect();
         assert_eq!(sidecars, [12]);
+    }
+
+    #[test]
+    fn the_logo_is_the_picture_the_server_calls_a_clear_logo() {
+        let item = |images: serde_json::Value| -> Item {
+            serde_json::from_value(serde_json::json!({
+                "ratingKey": "1", "type": "movie", "title": "Title", "Image": images,
+            }))
+            .unwrap()
+        };
+        let with_logo = item(serde_json::json!([
+            { "alt": "Title", "type": "coverPoster", "url": "/library/metadata/1/thumb/2" },
+            { "alt": "Title", "type": "clearLogo", "url": "/library/metadata/1/clearLogo/2" },
+            { "alt": "Title", "type": "backgroundSquare", "url": "/library/metadata/1/squareArt/2" },
+        ]));
+        assert_eq!(with_logo.logo(), Some("/library/metadata/1/clearLogo/2"));
+        let without = item(serde_json::json!([
+            { "alt": "Title", "type": "coverPoster", "url": "/library/metadata/1/thumb/2" },
+        ]));
+        assert_eq!(without.logo(), None);
     }
 
     #[test]
