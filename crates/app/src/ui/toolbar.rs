@@ -4,7 +4,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
+    NSControl, NSControlTextEditingDelegate, NSImage, NSSearchField, NSSearchFieldDelegate,
     NSSearchToolbarItem, NSTextFieldDelegate, NSTextView, NSToolbar, NSToolbarDelegate,
     NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier,
@@ -12,9 +12,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, ns_string};
 
-use super::artwork;
 use super::callback::Callback;
-use super::theme;
 
 const BACK: &str = "back";
 const FORWARD: &str = "forward";
@@ -209,7 +207,12 @@ fn arrow(
         NSToolbarItem::alloc(main_thread),
         &NSString::from_str(identifier),
     );
-    item.setImage(artwork::symbol(symbol, theme::FONT_HEADLINE).as_deref());
+    // Without a size or weight of its own, so that the toolbar draws it
+    // as it draws its own symbols, such as the sidebar's next to it.
+    let symbol = NSString::from_str(symbol);
+    item.setImage(
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol, None).as_deref(),
+    );
     item.setLabel(&NSString::from_str(label));
     item.setToolTip(Some(&NSString::from_str(label)));
     item.setBordered(true);
