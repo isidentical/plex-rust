@@ -1010,10 +1010,7 @@ impl Shell {
     }
 
     fn home(self: &Rc<Self>, session: &Session) -> (Screen, Rc<dyn Fn()>) {
-        let outlines = vec![
-            Outline { title: "Continue Watching", style: Style::Shelf(Shape::Landscape), count: 6 },
-            Outline { title: "Recently Added", style: Style::Shelf(Shape::Poster), count: 10 },
-        ];
+        let outlines = home_outlines(&session.sections);
         let nothing = self.nothing(
             "play.rectangle.on.rectangle",
             "Nothing to watch yet",
@@ -1948,6 +1945,23 @@ fn home_shelves(hubs: &[Hub]) -> Vec<Shelf> {
             shelf
         })
         .collect()
+}
+
+/// The shelves the home screen is drawn with until the server names its
+/// own: what is being watched, then what was added of each kind the
+/// libraries hold, under the titles the server gives those shelves. With
+/// the same headings before and after, nothing moves when the answer lands.
+fn home_outlines(sections: &[Section]) -> Vec<Outline> {
+    let holds = |kind| sections.iter().any(|section| section.kind == kind);
+    let added = |title| Outline { title, style: Style::Shelf(Shape::Poster), count: 10 };
+    let mut outlines = vec![Outline {
+        title: "Continue Watching",
+        style: Style::Shelf(Shape::Landscape),
+        count: 6,
+    }];
+    outlines.extend(holds(Kind::Movie).then(|| added("Recently Added Movies")));
+    outlines.extend(holds(Kind::Show).then(|| added("Recently Added TV")));
+    outlines
 }
 
 /// The shelves of a search: one per kind of result, episodes as frames.
