@@ -115,7 +115,7 @@ define_class!(
                     let corner = NSPoint::new(x - width / 2.0, self.middle() - height / 2.0);
                     NSRect::new(corner, NSSize::new(width, height))
                 };
-                theme::knob_rim().setFill();
+                theme::rim().setFill();
                 NSBezierPath::fillRect(line(theme::POINTER_WIDTH + 2.0));
                 theme::track_filled().setFill();
                 NSBezierPath::fillRect(line(theme::POINTER_WIDTH));
@@ -124,7 +124,7 @@ define_class!(
             let center = NSPoint::new(self.x_of(value), self.middle());
             // A dark rim keeps the knob apart from the filled track it
             // sits on and from a white picture behind it.
-            theme::knob_rim().setFill();
+            theme::rim().setFill();
             NSBezierPath::bezierPathWithOvalInRect(disc(center, self.knob_radius() + 1.0)).fill();
             theme::track_filled().setFill();
             NSBezierPath::bezierPathWithOvalInRect(disc(center, self.knob_radius())).fill();

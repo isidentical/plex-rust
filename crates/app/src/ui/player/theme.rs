@@ -43,6 +43,7 @@ pub const CHIP_SIZE: f64 = 42.0;
 pub const TOGGLE_WIDTH: f64 = 56.0;
 pub const CHIP_RADIUS: f64 = 10.0;
 pub const CHIP_PADDING: f64 = 12.0;
+pub const RIM_WIDTH: f64 = 1.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
 /// The height of a chip that only says something.
 pub const CAPTION_HEIGHT: f64 = 28.0;
@@ -180,8 +181,9 @@ pub fn track_pointed() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(1.0, 0.3)
 }
 
-/// Around the knob and the pointer's line, which are white on white where
-/// they cross the filled track.
-pub fn knob_rim() -> Retained<NSColor> {
+/// Around what is white and may have white behind it: the knob and the
+/// pointer's line where they cross the filled track, and a light button
+/// over a white picture.
+pub fn rim() -> Retained<NSColor> {
     NSColor::colorWithWhite_alpha(0.0, 0.35)
 }

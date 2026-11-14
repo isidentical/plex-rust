@@ -16,7 +16,7 @@ use objc2_app_kit::{
     NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
     NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSPoint, NSRect, NSString, ns_string};
+use objc2_foundation::{NSArray, NSDictionary, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
 
 use super::theme;
 
@@ -80,6 +80,21 @@ define_class!(
             let radius = theme::CHIP_RADIUS;
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), radius, radius)
                 .fill();
+            if self.ivars().style != Style::Solid {
+                return;
+            }
+            // A light button on a white picture is white on white. A dark
+            // line just inside its edge gives it an outline there, and is a
+            // soft edge anywhere else.
+            let inset = theme::RIM_WIDTH / 2.0;
+            let rim = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                NSInsetRect(self.bounds(), inset, inset),
+                radius - inset,
+                radius - inset,
+            );
+            rim.setLineWidth(theme::RIM_WIDTH);
+            theme::rim().setStroke();
+            rim.stroke();
         }
 
         #[unsafe(method(mouseEntered:))]
