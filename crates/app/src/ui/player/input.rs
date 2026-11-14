@@ -22,11 +22,19 @@ pub enum Key {
     Down,
     /// A key that types a character, in lower case.
     Character(char),
+    /// Not a key: the viewer doing nothing for long enough that the
+    /// controls go away. Only the key script of a snapshot can press it,
+    /// because a snapshot cannot wait that long.
+    Idle,
+    /// Not a key either: the pointer coming to rest halfway along the
+    /// scrubber, which a snapshot has no pointer to do with.
+    Hover,
 }
 
 impl Key {
     /// Reads a key from its name, as written on a command line: `space`,
-    /// `left`, or a single character such as `d`.
+    /// `left`, or a single character such as `d`. `idle` and `hover` stand
+    /// for what a script cannot do by itself.
     pub fn named(name: &str) -> Option<Self> {
         let mut characters = name.chars();
         match (name, characters.next(), characters.next()) {
@@ -39,6 +47,8 @@ impl Key {
             ("shift-right", ..) => Some(Self::ShiftRight),
             ("up", ..) => Some(Self::Up),
             ("down", ..) => Some(Self::Down),
+            ("idle", ..) => Some(Self::Idle),
+            ("hover", ..) => Some(Self::Hover),
             (_, Some(character), None) => Some(Self::Character(character)),
             _ => None,
         }

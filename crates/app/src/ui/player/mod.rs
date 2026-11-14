@@ -484,6 +484,15 @@ impl PlayerScreen {
                 }
                 return true;
             }
+            Key::Idle => {
+                self.show_controls(false);
+                return true;
+            }
+            Key::Hover => {
+                let scrubber = &self.ivars().controls.scrubber;
+                scrubber.point_at(scrubber.bounds().size.width / 2.0);
+                Ok(())
+            }
             Key::Character(_) => return false,
         };
         self.or_log(result);
