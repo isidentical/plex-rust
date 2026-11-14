@@ -66,6 +66,11 @@ pub const CELL_SPACING: f64 = SPACE_L;
 /// Between the last row of one shelf and the heading of the next.
 pub const SHELF_SPACING: f64 = SPACE_XL;
 pub const SHELF_HEADING_HEIGHT: f64 = 44.0;
+/// The round arrows at the end of a heading that page its shelf sideways.
+pub const SHELF_ARROW_SIZE: f64 = SPACE_XL;
+pub const SHELF_ARROW_WASH_OPACITY: f64 = 0.1;
+/// How strong an arrow is that has nowhere left to go.
+pub const SHELF_ARROW_SPENT_OPACITY: f64 = 0.35;
 
 pub const SIDEBAR_WIDTH: f64 = 220.0;
 /// The column the rows' symbols are centred in, so that titles line up

@@ -35,7 +35,7 @@ use objc2_foundation::{
 use plex::model::{Item, Kind, RatingKey, Role};
 
 use super::episode::EpisodeItem;
-use super::heading;
+use super::heading::{self, Paging};
 use super::hover::HoverView;
 use super::layout;
 use super::notice::Notice;
@@ -724,6 +724,60 @@ impl Posters {
         }
     }
 
+    /// The sideways scroller of each shelf that has a card in view.
+    fn shelf_scrollers(&self) -> Vec<(usize, Retained<NSScrollView>)> {
+        let ivars = self.ivars();
+        let mut scrollers: Vec<(usize, Retained<NSScrollView>)> = Vec::new();
+        for cell in ivars.collection.visibleItems() {
+            let Some(index_path) = ivars.collection.indexPathForItem(&cell) else {
+                continue;
+            };
+            let (shelf, _) = position(&index_path);
+            // A card of a grid or a list is in no scroller but the page's.
+            let scroller = cell.view().enclosingScrollView().filter(|it| *it != ivars.scroll);
+            let is_new = !scrollers.iter().any(|(at, _)| *at == shelf);
+            if let (Some(scroller), true) = (scroller, is_new) {
+                scrollers.push((shelf, scroller));
+            }
+        }
+        scrollers
+    }
+
+    /// Scrolls shelf number `shelf` sideways by nearly what is in view of
+    /// it, so that the card cut off at one edge is whole at the other.
+    fn page_shelf(&self, shelf: usize, forward: bool) {
+        let scrollers = self.shelf_scrollers();
+        let Some((_, scroller)) = scrollers.iter().find(|(at, _)| *at == shelf) else {
+            return;
+        };
+        let (clip, length) = (scroller.contentView(), shelf_length(scroller));
+        let seen = clip.bounds();
+        let step = (seen.size.width - 2.0 * theme::PAGE_MARGIN).max(theme::PAGE_MARGIN);
+        let x = seen.origin.x + if forward { step } else { -step };
+        let x = x.min(length - seen.size.width).max(0.0);
+        clip.scrollToPoint(NSPoint { x, y: seen.origin.y });
+        scroller.reflectScrolledClipView(&clip);
+        self.fill_scrolled_shelves();
+    }
+
+    /// Tells the heading of each shelf in view which way its shelf can
+    /// still be paged.
+    fn update_paging(&self) {
+        let collection = &self.ivars().collection;
+        for (shelf, scroller) in self.shelf_scrollers() {
+            // SAFETY: the element kind is a constant that AppKit provides.
+            let kind = unsafe { NSCollectionElementKindSectionHeader };
+            let at = NSIndexPath::indexPathForItem_inSection(0, shelf.cast_signed());
+            let Some(strip) = collection.supplementaryViewForElementKind_atIndexPath(kind, &at)
+            else {
+                continue;
+            };
+            let seen = scroller.contentView().bounds();
+            let (near, far) = (seen.origin.x, seen.origin.x + seen.size.width);
+            heading::set_paging(&strip, near > 0.5, far < shelf_length(&scroller) - 0.5);
+        }
+    }
+
     /// A shelf scrolled by the program, not by the viewer, does not fetch
     /// the cards that came into view by itself. Laying the collection out
     /// again does.
@@ -865,6 +919,7 @@ impl Posters {
         let content = self.ivars().content.borrow();
         let title = content.title(shelf).to_owned();
         let more = content.shelf(shelf).and_then(|shelf| shelf.more.clone());
+        let pages = matches!(content.shelf(shelf).map(|shelf| shelf.style), Some(Style::Shelf(_)));
         drop(content);
         let on_more = more.map(|path| -> Box<dyn Fn()> {
             let (posters, title) = (Weak::new(self), title.clone());
@@ -874,7 +929,18 @@ impl Posters {
                 }
             })
         });
-        heading::fill(strip, &title, on_more, self.mtm());
+        let paging = pages.then(|| {
+            let page = |forward: bool| -> Box<dyn Fn()> {
+                let posters = Weak::new(self);
+                Box::new(move || {
+                    if let Some(posters) = posters.load() {
+                        posters.page_shelf(shelf, forward);
+                    }
+                })
+            };
+            Paging { back: page(false), on: page(true) }
+        });
+        heading::fill(strip, &title, on_more, paging, self.mtm());
     }
 
     /// Return and Space open the card the keyboard is on. An arrow key
@@ -1025,6 +1091,11 @@ fn index_range(range: &Range<usize>) -> Retained<NSIndexSet> {
     NSIndexSet::indexSetWithIndexesInRange(NSRange::new(range.start, range.len()))
 }
 
+/// How long the row of cards in `scroller` is, margins included.
+fn shelf_length(scroller: &NSScrollView) -> f64 {
+    scroller.documentView().map_or(0.0, |cards| cards.frame().size.width)
+}
+
 /// The first scroll view inside `view`, searching depth first. Inside a
 /// collection those are the shelves that scroll sideways.
 fn first_scroller_in(view: &NSView) -> Option<Retained<NSScrollView>> {
@@ -1146,6 +1217,9 @@ define_class!(
                     shelf.contentView().setClipsToBounds(false);
                 }
             }
+            if let Some(posters) = self.ivars().get().and_then(Weak::load) {
+                posters.update_paging();
+            }
         }
 
         /// Some view scrolled. If it was this collection, up and down, or
@@ -1161,6 +1235,9 @@ define_class!(
             let (true, Some(window)) = (is_ours, self.window()) else {
                 return;
             };
+            if let Some(posters) = self.ivars().get().and_then(Weak::load) {
+                posters.update_paging();
+            }
             let pointer = window.mouseLocationOutsideOfEventStream();
             for cell in self.visibleItems() {
                 if let Some(view) = cell.view().downcast_ref::<HoverView>() {

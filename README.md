@@ -50,7 +50,9 @@ open target/plex-rust.app
 A secondary click on an item offers to play it or mark it, and on an
 episode to go to its show or its season.
 
-A shelf's heading with a chevron after it leads to the whole list. On an
+A shelf's heading with a chevron after it leads to the whole list. The two
+arrows at the other end of a heading bring the next cards of its shelf
+into view, and are there only while the shelf has more than fit across. On an
 episode's page the show's name leads to the show and the season's name to
 that season's episodes. A member of the cast leads to everything else of
 theirs in the library. Each library keeps the order and the filter it was
