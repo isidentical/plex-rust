@@ -176,6 +176,11 @@ pub const HERO_SHADOW_OPACITY: f32 = 0.5;
 pub const HERO_SHADOW_RADIUS: f64 = 24.0;
 pub const HERO_SHADOW_DROP: f64 = 12.0;
 pub const FACT_BADGE_BORDER_OPACITY: f64 = 0.4;
+/// A genre on a detail page: a capsule that leads to the others like it.
+pub const CHIP_HEIGHT: f64 = 24.0;
+pub const CHIP_PADDING: f64 = 10.0;
+pub const CHIP_WASH_OPACITY: f64 = 0.10;
+pub const CHIP_HOVER_OPACITY: f64 = 0.22;
 
 /// The backdrop behind a detail page, in pixels. One size for every window.
 pub const BACKDROP_REQUEST: (u32, u32) = (1920, 1080);

@@ -120,8 +120,15 @@ pub struct Item {
     pub content_rating: Option<String>,
     /// What critics gave it, out of 10.
     pub rating: Option<f32>,
+    /// Whose critics, as the name of a picture the server's own apps draw:
+    /// `rottentomatoes://image.rating.ripe`, `imdb://image.rating`.
+    pub rating_image: Option<String>,
     /// What viewers gave it, out of 10.
     pub audience_rating: Option<f32>,
+    /// Whose viewers, named as for the critics.
+    pub audience_rating_image: Option<String>,
+    /// Who made it, such as "Lucasfilm Ltd.".
+    pub studio: Option<String>,
     /// Server path of the poster.
     pub thumb: Option<String>,
     /// Server path of the backdrop.
@@ -343,6 +350,9 @@ pub enum MarkerKind {
 /// A name attached to an item: a genre, a director.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tag {
+    /// The server's number for the name, which its filters take. Only
+    /// present when the item was fetched in full.
+    pub id: Option<u64>,
     pub tag: String,
 }
 

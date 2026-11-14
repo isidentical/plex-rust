@@ -18,8 +18,8 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, ns_string};
-use plex::library::{appearances, next_up};
-use plex::model::{Hub, Item, Kind, RatingKey, Role};
+use plex::library::{appearances, next_up, of_genre};
+use plex::model::{Hub, Item, Kind, RatingKey, Role, Tag};
 
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
@@ -58,6 +58,16 @@ pub struct Opening {
 pub enum Link {
     Show,
     Season,
+}
+
+/// What the header tells the page.
+enum Event {
+    /// A link from an episode was clicked.
+    Follow(Link),
+    /// A genre was clicked.
+    OpenGenre(Tag),
+    /// The header was laid out, and its content takes this many points.
+    Resized(f64),
 }
 
 pub struct Detail {
@@ -103,7 +113,8 @@ struct Hero {
     title: Retained<NSTextField>,
     facts: Retained<NSTextField>,
     badges: Retained<NSStackView>,
-    genres: Retained<NSTextField>,
+    /// One capsule for each genre, which leads to the others of it.
+    genres: Retained<NSStackView>,
     play: Pill,
     watched: Pill,
     download: Pill,
@@ -118,9 +129,11 @@ struct Hero {
     summary: Retained<NSTextField>,
     /// Under a summary that is cut short. Leads to all of it.
     more: Retained<HoverView>,
-    directors: Retained<NSTextField>,
+    /// Who directed it and who made it.
+    credits: Retained<NSTextField>,
     seasons: Retained<NSPopUpButton>,
     season_size: Retained<NSTextField>,
+    on_event: Rc<dyn Fn(Event)>,
 }
 
 impl Detail {
@@ -137,17 +150,13 @@ impl Detail {
     ) -> Rc<Self> {
         let on_action: Rc<OnAction> = Rc::new(on_action);
         Rc::new_cyclic(|page: &Weak<Self>| {
-            let on = |act: fn(&Self)| {
+            let target = |act: fn(&Self)| {
                 let page = Weak::clone(page);
-                move || {
+                Callback::new(main_thread, move |_| {
                     if let Some(page) = page.upgrade() {
                         act(&page);
                     }
-                }
-            };
-            let target = |act: fn(&Self)| {
-                let act = on(act);
-                Callback::new(main_thread, move |_| act())
+                })
             };
             let targets = [
                 target(Self::press_play),
@@ -155,18 +164,12 @@ impl Detail {
                 target(Self::press_download),
                 target(Self::season_chosen),
             ];
-            let sized = Weak::clone(page);
-            let hero = Hero::new(
-                main_thread,
-                kind == Kind::Show,
-                on(|page| page.follow_link(Link::Show)),
-                on(|page| page.follow_link(Link::Season)),
-                move |height| {
-                    if let Some(page) = sized.upgrade() {
-                        page.fit_header(height);
-                    }
-                },
-            );
+            let heard = Weak::clone(page);
+            let hero = Hero::new(main_thread, kind == Kind::Show, move |event| {
+                if let Some(page) = heard.upgrade() {
+                    page.hear(event);
+                }
+            });
             let [play, watched, download, season] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
@@ -241,6 +244,14 @@ impl Detail {
     /// Scrolls the page so that the content `y` points down is at the top.
     pub fn scroll_to(&self, y: f64) {
         self.list.scroll_to(y);
+    }
+
+    fn hear(&self, event: Event) {
+        match event {
+            Event::Follow(link) => self.follow_link(link),
+            Event::OpenGenre(genre) => self.open_genre(&genre),
+            Event::Resized(height) => self.fit_header(height),
+        }
     }
 
     /// Gives the header the height its content takes.
@@ -407,6 +418,15 @@ impl Detail {
         }
     }
 
+    /// Asks for the list of everything of `genre` in the library the item
+    /// on the page is in.
+    fn open_genre(&self, genre: &Tag) {
+        let library = self.item.borrow().as_ref().and_then(|item| item.library_section_id);
+        if let Some(path) = library.and_then(|library| of_genre(library, genre)) {
+            (self.on_action)(Action::OpenList { title: genre.tag.clone(), path });
+        }
+    }
+
     /// Everything under the header, from what is known so far.
     fn shelves(&self) -> Vec<Shelf> {
         let item = self.item.borrow();
@@ -527,25 +547,26 @@ fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
 }
 
 impl Hero {
-    /// `has_seasons` leaves room for the season picker. `open_show` and
-    /// `open_season` are called when the links from an episode to its show
-    /// and to its season are clicked, and `on_height` each time the header
-    /// is laid out, with the height its content takes.
+    /// `has_seasons` leaves room for the season picker. `on_event` is
+    /// called when a link in the header is clicked and each time the
+    /// header is laid out.
     fn new(
         main_thread: MainThreadMarker,
         has_seasons: bool,
-        open_show: impl Fn() + 'static,
-        open_season: impl Fn() + 'static,
-        on_height: impl Fn(f64) + 'static,
+        on_event: impl Fn(Event) + 'static,
     ) -> Self {
-        let open_show: Rc<dyn Fn()> = Rc::new(open_show);
+        let on_event: Rc<dyn Fn(Event)> = Rc::new(on_event);
+        let follow = |link| {
+            let on_event = Rc::clone(&on_event);
+            move || on_event(Event::Follow(link))
+        };
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
         let line = |size, weight, color| label::line(size, weight, color, main_thread);
 
         let poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
-        let (lifted, follow) = (Rc::clone(&poster), Rc::clone(&open_show));
+        let lifted = Rc::clone(&poster);
         let poster_link =
-            HoverView::link(main_thread, move |over| lifted.set_hovered(over), move || follow());
+            HoverView::link(main_thread, move |over| lifted.set_hovered(over), follow(Link::Show));
         poster_link.setTranslatesAutoresizingMaskIntoConstraints(false);
         layout::cover(&poster_link, poster.view());
         // The shadow sits on the link, since the poster's own layer swaps
@@ -556,8 +577,8 @@ impl Hero {
             layer.setShadowRadius(theme::HERO_SHADOW_RADIUS);
             layer.setShadowOffset(CGSize { width: 0.0, height: -theme::HERO_SHADOW_DROP });
         }
-        let (show_link, show_name) = text_link(move || open_show(), main_thread);
-        let (season_link, season_name) = text_link(open_season, main_thread);
+        let (show_link, show_name) = text_link(follow(Link::Show), main_thread);
+        let (season_link, season_name) = text_link(follow(Link::Season), main_thread);
         let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
         let step = || {
             let step = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
@@ -580,6 +601,8 @@ impl Hero {
         );
         let badges = NSStackView::new(main_thread);
         badges.setSpacing(theme::SPACE_S);
+        let genres = NSStackView::new(main_thread);
+        genres.setSpacing(theme::SPACE_S);
 
         let play = Pill::new("Play", "play.fill", true, main_thread);
         // The default action of the page, which Return triggers.
@@ -659,7 +682,7 @@ impl Hero {
                 main_thread,
             ),
             badges,
-            genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            genres,
             play,
             watched,
             download,
@@ -669,29 +692,31 @@ impl Hero {
             remaining,
             summary,
             more,
-            directors: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            credits: line(theme::FONT_BODY, Weight::Regular, &secondary),
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            on_event,
         };
         hero.season_bar_hidden(true);
-        hero.place(&buttons, has_seasons, on_height);
+        hero.place(&buttons, has_seasons);
         hero
     }
 
     /// The poster on the left, the text in a column beside it, and for a
     /// show the season picker in a strip along the bottom, where the
     /// episode list begins.
-    fn place(&self, buttons: &NSStackView, has_seasons: bool, on_height: impl Fn(f64) + 'static) {
+    fn place(&self, buttons: &NSStackView, has_seasons: bool) {
         let main_thread = self.view.mtm();
         let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
         let season_bar = if has_seasons { theme::SEASON_BAR_HEIGHT } else { 0.0 };
         let (summary, more) = (self.summary.clone(), self.more.clone());
+        let on_event = Rc::clone(&self.on_event);
         let column = Column::new(main_thread, move |column| {
             offer_more(&summary, &more);
             // The text may run past the poster: a long title in a narrow
             // window takes three lines and leaves the rest no less room.
             let content = column.frame().size.height.max(poster_height).ceil();
-            on_height(2.0 * theme::SPACE_L + content + season_bar);
+            on_event(Event::Resized(2.0 * theme::SPACE_L + content + season_bar));
         });
         let lines: [&NSView; 9] = [
             &self.eyebrow,
@@ -702,7 +727,7 @@ impl Hero {
             &self.summary,
             &self.more,
             &self.genres,
-            &self.directors,
+            &self.credits,
         ];
         for line in lines {
             column.addArrangedSubview(line);
@@ -715,7 +740,6 @@ impl Hero {
         column.setCustomSpacing_afterView(theme::SPACE_L, &self.badges);
         column.setCustomSpacing_afterView(theme::SPACE_L, buttons);
         column.setCustomSpacing_afterView(theme::SPACE_S, &self.summary);
-        column.setCustomSpacing_afterView(theme::SPACE_XS, &self.genres);
         column.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         let season: [&NSView; 2] = [&self.seasons, &self.season_size];
@@ -782,15 +806,23 @@ impl Hero {
         // A line may break after a dot between two facts, never before it.
         set(&self.facts, &facts(item).replace(" · ", "\u{a0}· "));
         set(&self.summary, item.summary.as_deref().unwrap_or_default());
-        set(&self.genres, &names(&item.genres, GENRES_SHOWN).join(", "));
-        let directors = names(&item.directors, DIRECTORS_SHOWN);
-        let directed = match directors.is_empty() {
-            true => String::new(),
-            false => format!("Directed by {}", directors.join(", ")),
-        };
-        set(&self.directors, &directed);
+        set(&self.credits, &credits(item));
 
         let main_thread = self.view.mtm();
+        let genres: Vec<Retained<NSView>> = item
+            .genres
+            .iter()
+            .take(GENRES_SHOWN)
+            .map(|genre| {
+                let (on_event, opened) = (Rc::clone(&self.on_event), genre.clone());
+                chip(genre, move || on_event(Event::OpenGenre(opened.clone())), main_thread)
+            })
+            .collect();
+        self.genres.setViews_inGravity(
+            &NSArray::from_retained_slice(&genres),
+            NSStackViewGravity::Leading,
+        );
+        self.genres.setHidden(genres.is_empty());
         let media = item.media.first();
         let mut badges: Vec<Retained<NSView>> = media
             .map(formats::badges)
@@ -1080,12 +1112,48 @@ fn facts(item: &Item) -> String {
         _ => facts.extend(item.duration.map(|duration| text::length(duration.into()))),
     }
     facts.extend(item.content_rating.clone());
-    facts.extend(item.audience_rating.or(item.rating).map(|rating| format!("★ {rating:.1}")));
+    facts.extend(ratings(item));
     facts.join(" · ")
 }
 
-fn names(tags: &[plex::model::Tag], limit: usize) -> Vec<&str> {
-    tags.iter().take(limit).map(|tag| tag.tag.as_str()).collect()
+/// What critics and viewers gave `item`, each under the name of who asked
+/// them: "RT 93%", "Audience 84%", "IMDb 7.7".
+fn ratings(item: &Item) -> Vec<String> {
+    // The server names the source by a picture of its own apps, such as
+    // `rottentomatoes://image.rating.ripe`.
+    fn source(image: Option<&str>) -> Option<&str> {
+        image?.split_once("://").map(|(source, _)| source)
+    }
+    let critics = source(item.rating_image.as_deref());
+    let viewers = source(item.audience_rating_image.as_deref());
+    let percent = |rating: f32| format!("{:.0}%", rating * 10.0);
+    let by = |source: Option<&str>, whose: &str, rating: f32| match source {
+        Some("rottentomatoes") => format!("{whose} {}", percent(rating)),
+        Some("imdb") => format!("IMDb {rating:.1}"),
+        Some("themoviedb") => format!("TMDB {rating:.1}"),
+        _ => format!("★ {rating:.1}"),
+    };
+    // Said once, when both numbers are from the same place.
+    let viewers_of = match critics == viewers && item.rating.is_some() {
+        true => "Audience",
+        false => "RT Audience",
+    };
+    let mut ratings: Vec<String> = Vec::new();
+    ratings.extend(item.rating.map(|rating| by(critics, "RT", rating)));
+    ratings.extend(item.audience_rating.map(|rating| by(viewers, viewers_of, rating)));
+    ratings
+}
+
+/// Who directed `item` and who made it: "Directed by A, B · Studio".
+fn credits(item: &Item) -> String {
+    let directors: Vec<&str> =
+        item.directors.iter().take(DIRECTORS_SHOWN).map(|director| director.tag.as_str()).collect();
+    let mut credits: Vec<String> = Vec::new();
+    if !directors.is_empty() {
+        credits.push(format!("Directed by {}", directors.join(", ")));
+    }
+    credits.extend(item.studio.clone());
+    credits.join(" · ")
 }
 
 /// A few words in an outlined box.
@@ -1110,6 +1178,60 @@ fn badge(words: &str, main_thread: MainThreadMarker) -> Retained<NSView> {
     frame
 }
 
+/// The name of `genre` in a capsule that leads, by `on_click`, to the
+/// others of it. A genre from a listing has no number to look it up by,
+/// and is a plain capsule until the item is known in full.
+fn chip(
+    genre: &Tag,
+    on_click: impl Fn() + 'static,
+    main_thread: MainThreadMarker,
+) -> Retained<NSView> {
+    let secondary = NSColor::secondaryLabelColor();
+    let label = label::line(theme::FONT_CAPTION, Weight::Medium, &secondary, main_thread);
+    label::set(&label, &genre.tag);
+    let (lit, washed) = (label.clone(), Rc::new(OnceCell::<Retained<HoverView>>::new()));
+    let wash = Rc::clone(&washed);
+    let capsule = HoverView::link(
+        main_thread,
+        move |over| {
+            let (ink, opacity) = match over {
+                true => (NSColor::labelColor(), theme::CHIP_HOVER_OPACITY),
+                false => (NSColor::secondaryLabelColor(), theme::CHIP_WASH_OPACITY),
+            };
+            lit.setTextColor(Some(&ink));
+            if let Some(capsule) = wash.get() {
+                artwork::fill_with(capsule, &theme::white(opacity));
+            }
+        },
+        on_click,
+    );
+    capsule.set_live(genre.id.is_some());
+    capsule.setWantsLayer(true);
+    capsule.setTranslatesAutoresizingMaskIntoConstraints(false);
+    artwork::fill_with(&capsule, &theme::white(theme::CHIP_WASH_OPACITY));
+    if let Some(layer) = capsule.layer() {
+        layer.setCornerRadius(theme::CHIP_HEIGHT / 2.0);
+    }
+    capsule.addSubview(&label);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        capsule.heightAnchor().constraintEqualToConstant(theme::CHIP_HEIGHT),
+        label
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&capsule.leadingAnchor(), theme::CHIP_PADDING),
+        label
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&capsule.trailingAnchor(), -theme::CHIP_PADDING),
+        label.centerYAnchor().constraintEqualToAnchor(&capsule.centerYAnchor()),
+    ]));
+    capsule.setAccessibilityElement(true);
+    // SAFETY: the role is a constant that AppKit provides.
+    capsule.setAccessibilityRole(Some(unsafe { NSAccessibilityLinkRole }));
+    capsule.setAccessibilityLabel(Some(&NSString::from_str(&format!("More of {}", genre.tag))));
+    // Cannot fail: the cell was made empty above.
+    let _ = washed.set(capsule.clone());
+    Retained::into_super(capsule)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,6 +1248,29 @@ mod tests {
             "contentRating": "TV-14", "audienceRating": 7.9,
         }));
         assert_eq!(facts(&show), "2014 · 7 seasons · 100 episodes · TV-14 · ★ 7.9");
+    }
+
+    #[test]
+    fn a_rating_goes_under_the_name_of_who_gave_it() {
+        let rated = |json: serde_json::Value| {
+            let mut film = serde_json::json!({ "ratingKey": "1", "type": "movie", "title": "T" });
+            film.as_object_mut().unwrap().extend(json.as_object().unwrap().clone());
+            ratings(&item(film))
+        };
+        let both = rated(serde_json::json!({
+            "rating": 9.3, "ratingImage": "rottentomatoes://image.rating.ripe",
+            "audienceRating": 8.4, "audienceRatingImage": "rottentomatoes://image.rating.upright",
+        }));
+        assert_eq!(both, ["RT 93%", "Audience 84%"]);
+        let viewers_only = rated(serde_json::json!({
+            "audienceRating": 8.4, "audienceRatingImage": "rottentomatoes://image.rating.upright",
+        }));
+        assert_eq!(viewers_only, ["RT Audience 84%"]);
+        let other_places = rated(serde_json::json!({
+            "rating": 7.7, "ratingImage": "imdb://image.rating",
+            "audienceRating": 7.9, "audienceRatingImage": "themoviedb://image.rating",
+        }));
+        assert_eq!(other_places, ["IMDb 7.7", "TMDB 7.9"]);
     }
 
     #[test]

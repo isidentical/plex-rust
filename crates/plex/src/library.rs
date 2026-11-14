@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Hub, Item, Kind, RatingKey, Role, Section};
+use crate::model::{Hub, Item, Kind, RatingKey, Role, Section, Tag};
 use crate::server::MediaServer;
 
 /// One page of a longer list.
@@ -230,6 +230,13 @@ pub fn item_from(json: serde_json::Value) -> Result<Item> {
 /// which is every one in a listing: only an item fetched in full has them.
 pub fn appearances(section: u32, person: &Role) -> Option<String> {
     Some(format!("/library/sections/{section}/all?actor={}", person.id?))
+}
+
+/// Server path of the list of everything in library `section` of the
+/// genre `genre`. `None` for a genre the server gave no number, which is
+/// every one in a listing.
+pub fn of_genre(section: u32, genre: &Tag) -> Option<String> {
+    Some(format!("/library/sections/{section}/all?genre={}", genre.id?))
 }
 
 /// The episode to offer when the viewer asks to play a show, given all its
