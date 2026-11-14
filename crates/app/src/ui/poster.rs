@@ -1,15 +1,15 @@
 //! One thing in a grid or shelf as a card: artwork with two lines of text
 //! under it.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSCollectionViewItem,
-    NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint, NSNibName, NSTextField,
-    NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSAttributedStringNSStringDrawing,
+    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint,
+    NSNibName, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint, NSString};
 use plex::model::{Item, Kind, Role};
@@ -120,6 +120,8 @@ pub struct Views {
     art: ArtView,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
+    /// Whether the second line gives way to a title too long for one.
+    yields: Cell<bool>,
     /// Stands in for the photo of a person there is none of: a disc with
     /// their initials on it.
     monogram: Retained<NSView>,
@@ -179,6 +181,17 @@ define_class!(
             let _ = self.ivars().set(views);
         }
 
+        /// A card is made wider and narrower with its grid, and a title
+        /// that fitted on one line may no longer, or again.
+        #[unsafe(method(viewDidLayout))]
+        fn view_did_layout(&self) {
+            // SAFETY: forwards the call unchanged.
+            let () = unsafe { msg_send![super(self), viewDidLayout] };
+            if let Some(views) = self.ivars().get() {
+                views.fit_title(self.view().bounds().size.width);
+            }
+        }
+
         /// The collection view selects the card the keyboard is on.
         #[unsafe(method(setSelected:))]
         fn set_selected(&self, selected: bool) {
@@ -228,7 +241,7 @@ impl PosterItem {
         for bar in &views.outline {
             bar.setHidden(true);
         }
-        let (title, subtitle) = match card {
+        let Captions { title, second: subtitle, yields } = match card {
             Card::Item(item) => {
                 views.art.set_playable(is_playable(item));
                 views.art.set_progress(item.progress());
@@ -242,11 +255,13 @@ impl PosterItem {
                 views.art.set_badge(Badge::None);
                 views.art.show(person.thumb.as_deref(), shape.request(), images);
                 label::set(&views.initials, &initials(&person.tag));
-                (person.tag.clone(), person.role.clone().unwrap_or_default())
+                Captions::fixed(person.tag.clone(), person.role.clone().unwrap_or_default())
             }
         };
         label::set(&views.title, &title);
         label::set(&views.subtitle, &subtitle);
+        views.yields.set(yields);
+        views.fit_title(view.bounds().size.width);
         let spoken = spoken(card, &title, &subtitle, is_current);
         view.setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }
@@ -351,8 +366,27 @@ fn artwork_path(item: &Item, shape: Shape) -> Option<&str> {
 }
 
 /// The two lines under the artwork.
-fn captions(item: &Item, shape: Shape) -> (String, String) {
+#[derive(Debug, PartialEq)]
+struct Captions {
+    title: String,
+    second: String,
+    /// Whether the second line gives way to a title too long for one
+    /// line. A year does: films of one series differ at the end of their
+    /// titles, and cut to "The Lord of the Rings: T…" they are all alike.
+    yields: bool,
+}
+
+impl Captions {
+    /// A title cut to one line, over a second line that says what the
+    /// title does not: which episode, how much is left, who is played.
+    fn fixed(title: String, second: String) -> Self {
+        Self { title, second, yields: false }
+    }
+}
+
+fn captions(item: &Item, shape: Shape) -> Captions {
     let year = || item.year.map(|year| year.to_string()).unwrap_or_default();
+    let dated = |title: String| Captions { title, second: year(), yields: true };
     let length = || item.duration.map(|length| text::length(length.into()));
     let show = || item.grandparent_title.clone().unwrap_or_else(|| item.title.clone());
     match (item.kind, shape) {
@@ -361,26 +395,29 @@ fn captions(item: &Item, shape: Shape) -> (String, String) {
                 Some(number) => format!("{number}. {}", item.title),
                 None => item.title.clone(),
             };
-            (title, text::remaining(item).or_else(length).unwrap_or_default())
+            Captions::fixed(title, text::remaining(item).or_else(length).unwrap_or_default())
         }
         (Kind::Episode, Shape::Landscape) => {
             let mut second: Vec<String> = Vec::new();
             second.extend(text::episode_code(item));
             second.push(text::remaining(item).unwrap_or_else(|| item.title.clone()));
-            (show(), second.join(" · "))
+            Captions::fixed(show(), second.join(" · "))
         }
-        (Kind::Episode, _) => (show(), text::episode_code(item).unwrap_or_default()),
+        (Kind::Episode, _) => Captions::fixed(show(), text::episode_code(item).unwrap_or_default()),
         (Kind::Clip, _) => {
             let mut second = vec![text::extra(item.subtype.as_deref()).to_owned()];
             second.extend(length());
-            (item.title.clone(), second.join(" · "))
+            Captions::fixed(item.title.clone(), second.join(" · "))
         }
         (Kind::Season, _) => match &item.parent_title {
-            Some(show) => (show.clone(), item.title.clone()),
-            None => (item.title.clone(), year()),
+            Some(show) => Captions::fixed(show.clone(), item.title.clone()),
+            None => dated(item.title.clone()),
         },
-        (_, Shape::Landscape) => (item.title.clone(), text::remaining(item).unwrap_or_else(year)),
-        _ => (item.title.clone(), year()),
+        (_, Shape::Landscape) => match text::remaining(item) {
+            Some(left) => Captions::fixed(item.title.clone(), left),
+            None => dated(item.title.clone()),
+        },
+        _ => dated(item.title.clone()),
     }
 }
 
@@ -415,13 +452,15 @@ impl Views {
             monogram,
             initials,
             art: ArtView::new(main_thread, theme::RADIUS_M),
-            title: label::line(
+            title: label::paragraph(
                 theme::FONT_BODY,
                 Weight::Medium,
                 &NSColor::labelColor(),
+                1,
                 main_thread,
             ),
             subtitle: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
+            yields: Cell::new(false),
             shown: RefCell::new(None),
             on_rest: OnceCell::new(),
         };
@@ -430,6 +469,14 @@ impl Views {
         views.title.setAllowsExpansionToolTips(true);
         views.subtitle.setAllowsExpansionToolTips(true);
         views
+    }
+
+    /// Gives a title too long for a card `width` wide the second line as
+    /// well, if that line yields. The card stays as tall as every other.
+    fn fit_title(&self, width: f64) {
+        let wraps = self.yields.get() && self.title.attributedStringValue().size().width > width;
+        self.title.setMaximumNumberOfLines(if wraps { theme::CARD_TITLE_LINES } else { 1 });
+        self.subtitle.setHidden(wraps);
     }
 
     fn rested(&self) {
@@ -489,10 +536,26 @@ mod tests {
             "ratingKey": "1", "type": "episode", "title": "Pilot", "index": 6, "parentIndex": 2,
             "grandparentTitle": "Show", "duration": 1_260_000, "viewOffset": 600_000,
         }));
-        let (show, code) = (String::from("Show"), String::from("S2 · E6"));
-        assert_eq!(captions(&episode, Shape::Poster), (show.clone(), code));
-        assert_eq!(captions(&episode, Shape::Landscape), (show, "S2 · E6 · 11 min left".into()));
-        assert_eq!(captions(&episode, Shape::Still), ("6. Pilot".into(), "11 min left".into()));
+        let fixed = |title: &str, second: &str| Captions::fixed(title.into(), second.into());
+        assert_eq!(captions(&episode, Shape::Poster), fixed("Show", "S2 · E6"));
+        assert_eq!(captions(&episode, Shape::Landscape), fixed("Show", "S2 · E6 · 11 min left"));
+        assert_eq!(captions(&episode, Shape::Still), fixed("6. Pilot", "11 min left"));
+    }
+
+    #[test]
+    fn only_a_year_gives_way_to_a_long_title() {
+        let film = |offset: Option<u64>| {
+            item(serde_json::json!({
+                "ratingKey": "1", "type": "movie", "title": "Film", "year": 2001,
+                "duration": 1_260_000, "viewOffset": offset,
+            }))
+        };
+        let dated = Captions { title: "Film".into(), second: "2001".into(), yields: true };
+        assert_eq!(captions(&film(None), Shape::Poster), dated);
+        assert_eq!(captions(&film(None), Shape::Landscape), dated);
+        // How much is left of a film is not on the poster itself.
+        let left = Captions::fixed("Film".into(), "11 min left".into());
+        assert_eq!(captions(&film(Some(600_000)), Shape::Landscape), left);
     }
 
     #[test]

@@ -115,6 +115,8 @@ pub const MONOGRAM_INK_OPACITY: f64 = 0.7;
 
 /// The two lines of text under a card's artwork, with the gaps around them.
 pub const CAPTIONS_HEIGHT: f64 = 46.0;
+/// How many of them a title may take, where the second only holds a year.
+pub const CARD_TITLE_LINES: isize = 2;
 
 /// An episode in a list: a still on the left, text beside it.
 pub const EPISODE_ROW_HEIGHT: f64 = 124.0;
