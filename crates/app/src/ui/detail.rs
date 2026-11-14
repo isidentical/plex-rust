@@ -696,7 +696,13 @@ impl Detail {
         }
         for hub in self.related.borrow().iter() {
             let style = Style::Shelf(Shape::Poster);
-            let mut shelf = Shelf::of(hub.title.clone(), style, hub.items.clone());
+            // The server's row of films or shows like this one, which it
+            // heads "Related Movies", is the one viewers know by this name.
+            let title = match hub.identifier.ends_with(".similar") {
+                true => "More Like This",
+                false => hub.title.as_str(),
+            };
+            let mut shelf = Shelf::of(title, style, hub.items.clone());
             shelf.more = hub.more.clone();
             shelves.push(shelf);
         }
