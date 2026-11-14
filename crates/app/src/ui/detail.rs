@@ -11,8 +11,8 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityLinkRole, NSAttributedStringNSExtendedStringDrawing, NSButton,
     NSCellImagePosition, NSColor, NSControlSize, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSPopUpButton, NSPopover,
-    NSPopoverBehavior, NSStackView, NSStackViewGravity,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSMenu, NSMenuItem, NSPopUpButton,
+    NSPopover, NSPopoverBehavior, NSStackView, NSStackViewGravity,
     NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSStringDrawingOptions, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
@@ -100,6 +100,10 @@ struct Hero {
     genres: Retained<NSTextField>,
     play: Pill,
     watched: Pill,
+    /// What the two buttons do, again, in the menu a secondary click on
+    /// the header opens.
+    menu_play: Retained<NSMenuItem>,
+    menu_watched: Retained<NSMenuItem>,
     remaining: Retained<NSTextField>,
     summary: Retained<NSTextField>,
     /// Under a summary that is cut short. Leads to all of it.
@@ -152,6 +156,10 @@ impl Detail {
                 hero.play.button.setAction(Some(Callback::action()));
                 hero.watched.button.setTarget(Some(watched));
                 hero.watched.button.setAction(Some(Callback::action()));
+                hero.menu_play.setTarget(Some(play));
+                hero.menu_play.setAction(Some(Callback::action()));
+                hero.menu_watched.setTarget(Some(watched));
+                hero.menu_watched.setAction(Some(Callback::action()));
                 hero.seasons.setTarget(Some(season));
                 hero.seasons.setAction(Some(Callback::action()));
             }
@@ -407,6 +415,7 @@ impl Detail {
         let hero = &self.hero;
         let playable = self.playable();
         hero.play.button.setHidden(playable.is_none());
+        hero.menu_play.setHidden(playable.is_none());
         let Some(playable) = playable else {
             return;
         };
@@ -417,6 +426,7 @@ impl Detail {
             None => verb.to_owned(),
         };
         hero.play.set_title(&title);
+        hero.menu_play.setTitle(&NSString::from_str(&title));
         let remaining = text::remaining(&playable);
         label::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
         hero.remaining.setHidden(remaining.is_none());
@@ -531,8 +541,18 @@ impl Hero {
         more.setAccessibilityLabel(Some(ns_string!("Read the whole summary")));
         more.setHidden(true);
 
+        let (menu_play, menu_watched) =
+            (NSMenuItem::new(main_thread), NSMenuItem::new(main_thread));
+        let menu = NSMenu::new(main_thread);
+        menu.addItem(&menu_play);
+        menu.addItem(&menu_watched);
+        let view = NSView::new(main_thread);
+        // SAFETY: the view keeps the menu, as a responder keeps the one it
+        // is given.
+        unsafe { view.setMenu(Some(&menu)) };
+
         let hero = Self {
-            view: NSView::new(main_thread),
+            view,
             poster,
             poster_link,
             eyebrow,
@@ -547,6 +567,8 @@ impl Hero {
             genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
             play,
             watched,
+            menu_play,
+            menu_watched,
             remaining,
             summary,
             more,
@@ -688,10 +710,12 @@ impl Hero {
         );
         self.badges.setHidden(badges.is_empty());
 
-        self.watched.set_title(match item.is_watched() {
+        let toggle = match item.is_watched() {
             true => "Mark as Unwatched",
             false => "Mark as Watched",
-        });
+        };
+        self.watched.set_title(toggle);
+        self.menu_watched.setTitle(&NSString::from_str(toggle));
         self.watched.set_lit(item.is_watched());
 
         // An episode's own artwork is a wide frame, so it borrows its show's.
