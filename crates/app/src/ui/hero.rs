@@ -88,6 +88,10 @@ struct Views {
     items: RefCell<Vec<Item>>,
     /// Which of the items is shown.
     at: Cell<usize>,
+    /// Where the title, the facts and the button will be, drawn as grey
+    /// shapes until the first items are known.
+    outline: [Retained<NSView>; 3],
+    waiting: Cell<bool>,
     /// The colours of pictures shown with items they do not belong to,
     /// by the path of the picture, as far as the server has said.
     tones: RefCell<Vec<(String, Rgb)>>,
@@ -122,6 +126,7 @@ impl Hero {
             Views::new(main_thread, images, Box::new(ask_colours), Box::new(on_action), this, with)
         });
         views.place();
+        views.place_outline();
         views.show_item(false);
         Self(views)
     }
@@ -183,6 +188,7 @@ impl Hero {
         let at = was.and_then(|was| items.iter().position(|item| item.rating_key == was));
         views.at.set(at.unwrap_or(0));
         views.items.replace(items);
+        views.waiting.set(false);
         views.ask_tones();
         views.show_item(false);
     }
@@ -199,6 +205,11 @@ impl Views {
     ) -> Self {
         let art = ArtView::new(main_thread, 0.0);
         art.set_flat();
+        let bar = || {
+            let bar = artwork::layered(main_thread);
+            artwork::fill_with(&bar, &theme::white(theme::ARTWORK_PLACEHOLDER_OPACITY));
+            bar
+        };
         let card = HoverView::pressable(main_thread, |_| {}, with(|views| views.act(Action::Open)));
         // VoiceOver reads the hero as one button that opens the item, with
         // the play button inside it as another.
@@ -225,7 +236,9 @@ impl Views {
 
         let press = with(|views| views.act(Action::Play));
         let pressed = Callback::new(main_thread, move |_| press());
-        let play = Pill::new("Play", "play.fill", true, main_thread);
+        // What the first item most often says, so that the outline of the
+        // button is as wide as the button will be.
+        let play = Pill::new("Resume", "play.fill", true, main_thread);
         // SAFETY: the hero keeps the target for as long as it keeps the
         // button.
         unsafe {
@@ -292,6 +305,8 @@ impl Views {
             dots,
             items: RefCell::new(Vec::new()),
             at: Cell::new(0),
+            outline: [bar(), bar(), bar()],
+            waiting: Cell::new(true),
             tones: RefCell::new(Vec::new()),
             ask_colours,
             images,
@@ -418,6 +433,39 @@ impl Views {
         ]));
     }
 
+    /// Puts the grey shapes of a hero not loaded yet where its title, its
+    /// facts and its button will be, so that nothing moves when they come.
+    fn place_outline(&self) {
+        let [title, facts, play] = &self.outline;
+        let lines = [
+            (title, &self.title, theme::HOME_HERO_OUTLINE_TITLE),
+            (facts, &self.facts, theme::HOME_HERO_OUTLINE_FACTS),
+        ];
+        for (bar, line, (width, height)) in lines {
+            self.view.addSubview(bar);
+            if let Some(layer) = bar.layer() {
+                layer.setCornerRadius(height / 2.0);
+            }
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                bar.leadingAnchor().constraintEqualToAnchor(&line.leadingAnchor()),
+                bar.centerYAnchor().constraintEqualToAnchor(&line.centerYAnchor()),
+                bar.widthAnchor().constraintEqualToConstant(width),
+                bar.heightAnchor().constraintEqualToConstant(height),
+            ]));
+        }
+        if let Some(layer) = play.layer() {
+            layer.setCornerRadius(theme::PILL_HEIGHT / 2.0);
+        }
+        self.view.addSubview(play);
+        let button = &self.play.button;
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            play.leadingAnchor().constraintEqualToAnchor(&button.leadingAnchor()),
+            play.trailingAnchor().constraintEqualToAnchor(&button.trailingAnchor()),
+            play.topAnchor().constraintEqualToAnchor(&button.topAnchor()),
+            play.bottomAnchor().constraintEqualToAnchor(&button.bottomAnchor()),
+        ]));
+    }
+
     /// Draws the ring of the keyboard around the play button, or around
     /// the title of an item that is not something to play.
     fn ring_around(&self, target: &NSView) {
@@ -473,9 +521,14 @@ impl Views {
             fade.setDuration(theme::MOTION_ARRIVE);
             layer.addAnimation_forKey(&fade, Some(ns_string!("page")));
         }
+        let waiting = self.waiting.get();
         self.card.set_live(item.is_some());
         self.card.setHidden(item.is_none());
-        self.art.view().setHidden(item.is_none());
+        // While waiting, the artwork's own grey stands where it will be.
+        self.art.view().setHidden(item.is_none() && !waiting);
+        for shape in &self.outline {
+            shape.setHidden(!waiting);
+        }
         self.paint(item.and_then(|item| self.colour_of(item)));
         let Some(item) = item else {
             return;

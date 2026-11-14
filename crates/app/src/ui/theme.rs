@@ -227,6 +227,10 @@ pub const HOME_HERO_FADE_STOPS: [(f64, f64); 5] =
     [(0.0, 1.0), (0.25, 0.86), (0.5, 0.58), (0.75, 0.24), (1.0, 0.0)];
 /// The white of a card whose item has no colours of its own.
 pub const HOME_HERO_PLAIN_WHITE: f64 = 0.14;
+/// The grey shapes that stand for the title and the facts of a hero not
+/// loaded yet: how wide and how tall each is.
+pub const HOME_HERO_OUTLINE_TITLE: (f64, f64) = (280.0, 24.0);
+pub const HOME_HERO_OUTLINE_FACTS: (f64, f64) = (180.0, 12.0);
 /// How far up the banner, from its bottom, the page's colour starts to
 /// run over it.
 pub const HOME_HERO_SINK: f64 = 0.45;
