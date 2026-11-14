@@ -55,6 +55,14 @@ impl Key {
     }
 }
 
+/// Whether a key event is the key going down or the key being held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    First,
+    /// One of the repeats the system sends while a key stays down.
+    Held,
+}
+
 /// How many times the mouse button went down in quick succession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clicks {
@@ -75,7 +83,7 @@ mod code {
 
 #[derive(Default)]
 pub struct Ivars {
-    on_key: OnceCell<Box<dyn Fn(Key) -> bool>>,
+    on_key: OnceCell<Box<dyn Fn(Key, Press) -> bool>>,
     on_pointer: OnceCell<Box<dyn Fn(Option<NSPoint>)>>,
     on_click: OnceCell<Box<dyn Fn(Clicks)>>,
     on_display_changed: OnceCell<Box<dyn Fn()>>,
@@ -106,9 +114,10 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            let press = if event.isARepeat() { Press::Held } else { Press::First };
             let handled = key(event)
                 .zip(self.ivars().on_key.get())
-                .is_some_and(|(key, on_key)| on_key(key));
+                .is_some_and(|(key, on_key)| on_key(key, press));
             if !handled {
                 // Lets AppKit beep, as it does for any key nothing wants.
                 // SAFETY: forwards the event to the superclass unchanged.
@@ -187,7 +196,7 @@ impl InputView {
     /// display of another kind. Can be called once.
     pub fn listen(
         &self,
-        on_key: impl Fn(Key) -> bool + 'static,
+        on_key: impl Fn(Key, Press) -> bool + 'static,
         on_pointer: impl Fn(Option<NSPoint>) + 'static,
         on_click: impl Fn(Clicks) + 'static,
         on_display_changed: impl Fn() + 'static,

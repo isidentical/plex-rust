@@ -1147,7 +1147,7 @@ impl Shell {
         };
         let server = session.server.clone();
         let load = async move { server.children(&season).await };
-        let shell = Rc::clone(self);
+        let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |episodes| match episodes {
             Ok(episodes) => {
                 // The highest number below this one, for the reasons given
@@ -1160,7 +1160,7 @@ impl Shell {
                     shell.play(previous, purpose);
                 }
             }
-            Err(error) => shell.show_message(&with_causes(&error)),
+            Err(error) => shell.fail(moves, &error),
         });
     }
 

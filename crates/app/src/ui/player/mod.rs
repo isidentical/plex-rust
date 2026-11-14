@@ -33,7 +33,7 @@ use plex::playback::{self, PlaybackState};
 use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
-use self::input::{Clicks, InputView, Key};
+use self::input::{Clicks, InputView, Key, Press};
 use self::slider::Pointed;
 use crate::background::Background;
 use crate::error::{Result, with_causes};
@@ -359,8 +359,12 @@ impl PlayerScreen {
         let controls = &self.ivars().controls;
         self.on_click(&controls.back, |screen| screen.close(Outcome::Closed));
         self.on_click(&controls.toggle, |screen| screen.or_log(screen.toggle_pause()));
-        self.on_click(&controls.rewind, |screen| screen.or_log(screen.jump(-LONG_JUMP)));
-        self.on_click(&controls.forward, |screen| screen.or_log(screen.jump(LONG_JUMP)));
+        self.on_click(&controls.rewind, |screen| {
+            screen.or_log(screen.jump(-LONG_JUMP, Press::First))
+        });
+        self.on_click(&controls.forward, |screen| {
+            screen.or_log(screen.jump(LONG_JUMP, Press::First))
+        });
         self.on_click(&controls.previous, |screen| screen.close(Outcome::Previous));
         self.on_click(&controls.next, |screen| screen.close(Outcome::Finished));
         self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
@@ -417,7 +421,7 @@ impl PlayerScreen {
         let (keys, pointer, clicks, display) =
             (Weak::new(self), Weak::new(self), Weak::new(self), Weak::new(self));
         self.ivars().root.listen(
-            move |key| keys.load().is_some_and(|screen| screen.press(key)),
+            move |key, press| keys.load().is_some_and(|screen| screen.act_on(key, press)),
             move |place| {
                 if let Some(screen) = pointer.load() {
                     screen.pointer_moved(place);
@@ -445,15 +449,20 @@ impl PlayerScreen {
         );
     }
 
-    /// Acts on a key. Returns whether the key means anything here.
+    /// Acts on a key going down. Returns whether the key means anything
+    /// here.
     pub fn press(&self, key: Key) -> bool {
+        self.act_on(key, Press::First)
+    }
+
+    fn act_on(&self, key: Key, press: Press) -> bool {
         let is_episode = self.ivars().item.kind == Kind::Episode;
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
-            Key::Left => self.jump(-SHORT_JUMP),
-            Key::Right => self.jump(SHORT_JUMP),
-            Key::ShiftLeft => self.jump(-LONG_JUMP),
-            Key::ShiftRight => self.jump(LONG_JUMP),
+            Key::Left => self.jump(-SHORT_JUMP, press),
+            Key::Right => self.jump(SHORT_JUMP, press),
+            Key::ShiftLeft => self.jump(-LONG_JUMP, press),
+            Key::ShiftRight => self.jump(LONG_JUMP, press),
             Key::Up => self.change_volume(VOLUME_STEP),
             Key::Down => self.change_volume(-VOLUME_STEP),
             Key::Character('m') => self.toggle_mute(),
@@ -555,8 +564,14 @@ impl PlayerScreen {
     }
 
     /// Jumps `seconds` forward, or back if negative.
-    fn jump(&self, seconds: f64) -> player::Result<()> {
-        self.ivars().player.seek_by(seconds)?;
+    fn jump(&self, seconds: f64, press: Press) -> player::Result<()> {
+        let player = &self.ivars().player;
+        match press {
+            Press::First => player.seek_by(seconds)?,
+            // An exact jump takes longer than the gap between repeats, so a
+            // held key would stand still. Keyframe to keyframe keeps up.
+            Press::Held => player.scan_by(seconds)?,
+        }
         // U+2212 is the minus sign, as wide as the plus.
         let sign = if seconds < 0.0 { '\u{2212}' } else { '+' };
         self.notify(&format!("{sign}{} s", seconds.abs()));
