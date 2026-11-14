@@ -120,9 +120,10 @@ impl Shell {
             .map_or(0.0, |scroller| scroller.contentView().bounds().origin.y);
         let searched = self.toolbar.search_text();
         let sidebar = self.split.splitViewItems().containsObject(&self.sidebar_item);
+        let stale = self.stale.is_shown();
         timing::mark(&format!(
             "state: {title:?} cards={cards} scrolled={scrolled:.0} search={searched:?} \
-             sidebar={sidebar}"
+             sidebar={sidebar} stale={stale}"
         ));
     }
 

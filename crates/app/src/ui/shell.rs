@@ -44,6 +44,7 @@ pub use super::posters::Press;
 use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Style};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
+use super::stale::{Reason, Stale};
 use super::theme;
 use super::toolbar::Toolbar;
 use crate::account;
@@ -122,6 +123,9 @@ struct Shell {
     moves: Cell<u64>,
     /// A message shown in place of the current entry, such as an error.
     notice: RefCell<Option<Notice>>,
+    /// Says, over the current entry, that it shows what was saved and not
+    /// what the server has now.
+    stale: Stale,
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
@@ -312,6 +316,8 @@ pub struct Tweaks {
     pub unanswered: bool,
     /// The first launch after signing in, before any server is known.
     pub looking: bool,
+    /// The server not answering while what was saved is on screen.
+    pub offline: bool,
     /// The sign-in screen once the browser has been opened.
     pub approving: bool,
     /// On the page of a film or an episode, the download button pressed.
@@ -413,8 +419,12 @@ impl Shell {
         let content = NSView::new(main_thread);
         // The fade from one screen to the next is drawn by its layer.
         content.setWantsLayer(true);
+        // The content and, over it, the line that says it is out of date,
+        // which stays while one screen gives way to the next.
+        let pane = NSView::new(main_thread);
+        layout::fill(&pane, &content);
         let content_controller = view_controller(main_thread);
-        content_controller.setView(&content);
+        content_controller.setView(&pane);
         let window = window(main_thread, staged);
         let split = NSSplitViewController::new(main_thread);
 
@@ -457,6 +467,8 @@ impl Shell {
                 Self::command(shell, Self::focus_content),
             );
             toolbar.install(&window);
+            let stale = Stale::new(main_thread, Self::command(shell, Self::retry));
+            stale.float_in(&pane);
 
             let menu = |act: fn(&Rc<Self>)| {
                 let act = Self::command(shell, act);
@@ -503,6 +515,7 @@ impl Shell {
                 position: Cell::new(0),
                 moves: Cell::new(0),
                 notice: RefCell::new(None),
+                stale,
                 split,
                 playing: RefCell::new(None),
                 opening_player: Cell::new(false),
@@ -595,8 +608,23 @@ impl Shell {
                             session.server.address() == kept.server.address()
                                 && session.sections == sections
                         });
-                    if !known {
+                    if known {
+                        // Found again after it had stopped answering: what
+                        // is on screen was saved before that.
+                        if shell.stale.is_shown() {
+                            shell.refresh();
+                        }
+                    } else {
+                        // The same server at another address, as on another
+                        // network, is no reason to send the viewer Home.
+                        let same = shell.session().is_some_and(|session| {
+                            session.server.machine_identifier() == kept.server.machine_identifier()
+                        });
+                        let was = shell.current(|entry| entry.route.clone()).filter(|_| same);
                         shell.connected(kept, sections, subject.as_ref());
+                        if let Some(route) = was.filter(|route| *route != Route::Home) {
+                            shell.go(route);
+                        }
                     }
                     shell.downloads_changed();
                     shell.send_unsent();
@@ -621,8 +649,11 @@ impl Shell {
         self.reach.set(Reach::Away);
         if Failure::of(error) == Failure::SignedOut {
             self.show_failure(UNREACHABLE, error, Self::restart);
-        } else if self.fall_back_on_downloads() || self.session().is_some() {
+        } else if self.fall_back_on_downloads() {
             eprintln!("plex-rust: {}", with_causes(error));
+        } else if self.session().is_some() {
+            eprintln!("plex-rust: {}", with_causes(error));
+            self.mark_stale(error);
         } else {
             self.show_failure(UNREACHABLE, error, Self::restart);
         }
@@ -675,6 +706,31 @@ impl Shell {
         ));
     }
 
+    /// Looks for the server again while what was saved stays on screen:
+    /// first where it was, which is enough when it was off or asleep,
+    /// then wherever plex.tv says it is now.
+    fn retry(self: &Rc<Self>) {
+        self.stale.show(Some(Reason::Asking));
+        self.restart();
+    }
+
+    /// Says that the screen holds what was saved and not what the server
+    /// has now, because asking it ended in `error`. This stands where an
+    /// error page would take away what there still is to look at.
+    fn mark_stale(&self, error: &(dyn std::error::Error + 'static)) {
+        // A message in place of the screen has left nothing saved to see,
+        // and what was downloaded is on this Mac, not saved from an answer.
+        let on_downloads = self.current(|entry| entry.route == Route::Downloads) == Some(true);
+        if self.notice.borrow().is_some() || on_downloads {
+            return;
+        }
+        let reason = match Failure::of(error) {
+            Failure::Unanswered => Reason::Offline,
+            _ => Reason::Refused,
+        };
+        self.stale.show(Some(reason));
+    }
+
     /// Starts over from the stored account, after a failure to connect.
     fn restart(self: &Rc<Self>) {
         match account::signed_in() {
@@ -690,6 +746,7 @@ impl Shell {
         let images = Rc::new(Images::new(self.main_thread, background, server.clone(), artwork));
         let session = Session { server, images, sections: sections.clone() };
         *self.session.borrow_mut() = Some(session);
+        self.stale.show(None);
         self.history.borrow_mut().clear();
         self.set_browsing_shown(true);
         self.mark_shown("libraries known");
@@ -852,6 +909,9 @@ impl Shell {
             (false, true) => self.split.removeSplitViewItem(&self.sidebar_item),
             _ => {}
         }
+        if !shown {
+            self.stale.show(None);
+        }
         self.toolbar.set_visible(shown);
     }
 
@@ -971,6 +1031,11 @@ impl Shell {
         // item's download since.
         if let Screen::Detail(detail) = &screen {
             detail.show_download();
+        }
+        // What is downloaded is as it is on this Mac, whatever the server
+        // does. The line comes back with the next screen that asks it.
+        if route == Route::Downloads {
+            self.stale.show(None);
         }
         // The search field says what was searched for while the results
         // are on screen and at no other time: left as it was, it would
@@ -1199,6 +1264,14 @@ impl Shell {
                 posters.append(start, page.items);
                 shell.mark_shown("next page added");
             }
+            // The cards that are there stay. Only the sign-in being over
+            // takes the screen, since nothing more can come until it is
+            // renewed.
+            Err(error) if !error.is_unauthorized() => {
+                posters.more_failed();
+                eprintln!("plex-rust: {}", with_causes(&error));
+                shell.mark_stale(&error);
+            }
             Err(error) => {
                 posters.more_failed();
                 shell.fail(moves, &error);
@@ -1413,50 +1486,80 @@ impl Shell {
             let Some(shell) = shell.upgrade() else {
                 return;
             };
+            let moves = shell.moves.get();
             // Set once the server has answered, so that a late answer from
             // last time cannot replace its answer.
             let answered = Rc::new(Cell::new(false));
+            // The server's failure to answer is held back while the answer
+            // from last time is still being read. A server that refuses at
+            // once is quicker than the disk, and its error would take the
+            // screen from what was saved for just this case.
+            let remembering = Rc::new(Cell::new(false));
+            let held: Rc<RefCell<Option<plex::Error>>> = Rc::default();
             if shown.borrow().is_none() {
+                remembering.set(true);
                 let (shown, show, answered) =
                     (Rc::clone(&shown), Rc::clone(&show), Rc::clone(&answered));
+                let (remembering, held) = (Rc::clone(&remembering), Rc::clone(&held));
                 let remembered = ask(server.remembered());
-                let timed = Rc::clone(&shell);
+                let then = Rc::clone(&shell);
                 shell.background.run(shell.main_thread, remembered, move |answer| {
                     if let (Ok(answer), false) = (answer, answered.get()) {
                         show(&answer);
-                        timed.mark_shown("remembered answer shown");
+                        then.mark_shown("remembered answer shown");
                         *shown.borrow_mut() = Some(answer);
+                    }
+                    remembering.set(false);
+                    if let Some(error) = held.borrow_mut().take() {
+                        then.not_answered(moves, shown.borrow().is_some(), unanswered, &error);
                     }
                 });
             }
 
             let (shown, show) = (Rc::clone(&shown), Rc::clone(&show));
-            let (failed, moves) = (Rc::clone(&shell), shell.moves.get());
+            let failed = Rc::clone(&shell);
             let fresh = ask(server.clone());
             shell.background.run(shell.main_thread, fresh, move |answer| {
-                answered.set(true);
-                let has_shown = shown.borrow().is_some();
+                answered.set(answer.is_ok());
                 match answer {
                     Ok(answer) if shown.borrow().as_ref() == Some(&answer) => {
+                        failed.stale.show(None);
                         failed.mark_shown("server answered the same");
                     }
                     Ok(answer) => {
                         show(&answer);
                         *shown.borrow_mut() = Some(answer);
+                        failed.stale.show(None);
                         failed.mark_shown("server answer shown");
                     }
-                    // What is on screen from last time is better than an
-                    // error, but for the one that says the sign-in is over.
-                    Err(error)
-                        if (has_shown || unanswered == Unanswered::GoesWithout)
-                            && !error.is_unauthorized() =>
-                    {
-                        eprintln!("plex-rust: {}", with_causes(&error));
+                    Err(error) if remembering.get() => *held.borrow_mut() = Some(error),
+                    Err(error) => {
+                        failed.not_answered(moves, shown.borrow().is_some(), unanswered, &error);
                     }
-                    Err(error) => failed.fail(moves, &error),
                 }
             });
         })
+    }
+
+    /// What follows from the server not answering a screen's question
+    /// with anything but `error`. With an answer from last time on screen
+    /// (`has_shown`) that stays, marked as saved: it is better than an
+    /// error, but for the one that says the sign-in is over. Without one,
+    /// `otherwise` says whether the screen can stand.
+    fn not_answered(
+        self: &Rc<Self>,
+        moves: u64,
+        has_shown: bool,
+        otherwise: Unanswered,
+        error: &plex::Error,
+    ) {
+        if error.is_unauthorized() || !(has_shown || otherwise == Unanswered::GoesWithout) {
+            return self.fail(moves, error);
+        }
+        eprintln!("plex-rust: {}", with_causes(error));
+        if has_shown {
+            self.mark_stale(error);
+        }
     }
 
     // What the viewer does with an item.
@@ -1884,6 +1987,9 @@ impl Shell {
     fn show_notice(&self, notice: Notice) {
         // A message arrives the way a page does.
         self.fade_content();
+        // A message in place of the screen leaves nothing that was saved
+        // to be seen.
+        self.stale.show(None);
         layout::centre(&self.content, notice.view());
         notice.announce(&self.window);
         *self.notice.borrow_mut() = Some(notice);
@@ -1985,6 +2091,9 @@ impl Shell {
             if let Some(failure) = snapshot.tweaks.fault {
                 let small_print = "error sending request for url (https://192.168.0.2:32400/hubs)";
                 shell.show_failure_of(failure, NOT_LOADED, small_print, Self::reload);
+            }
+            if snapshot.tweaks.offline {
+                shell.stale.show(Some(Reason::Offline));
             }
             if snapshot.tweaks.looking {
                 shell.show_looking();

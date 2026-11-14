@@ -23,6 +23,7 @@ mod posters;
 pub mod shell;
 mod sidebar;
 mod snapshot;
+mod stale;
 mod text;
 mod theme;
 mod toolbar;

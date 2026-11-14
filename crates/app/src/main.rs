@@ -53,7 +53,7 @@ usage: plex-rust
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
-                 unanswered, looking, away,
+                 unanswered, looking, away, offline,
                  contrast, opaque, still (Accessibility settings as if on)
        plex-rust login
        plex-rust servers [<address>]
@@ -153,6 +153,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             None if *tweak == "unanswered" => parsed.unanswered = true,
             None if *tweak == "looking" => parsed.looking = true,
+            None if *tweak == "offline" => parsed.offline = true,
             None if *tweak == "approving" => parsed.approving = true,
             Some(("scroll", points)) => {
                 parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
