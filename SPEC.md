@@ -7,6 +7,9 @@ plex-rust is an unofficial third-party client. It is not affiliated with,
 endorsed by or sponsored by Plex. Plex is a trademark of Plex, Inc. The app
 uses no Plex logo or artwork, and its icon is its own.
 
+[`README.md`](README.md) says how to build and use the app and lists every
+key and gesture.
+
 This document records what the app does, why it is built the way it is, and
 what each decision rests on. Section numbers are stable: source comments and
 commit messages cite them. Where a claim comes from somewhere else, the
@@ -548,7 +551,8 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
   from upstream pull request
   [#18818](https://github.com/mpv-player/mpv/pull/18818) is applied as a
   patch file in `scripts/patches/`.
-- **License:** plex-rust is distributed under GPL-2.0-or-later. The
+- **License:** plex-rust is distributed under GPL-2.0-or-later, the text
+  of which is in [`LICENSE`](LICENSE). The
   executable statically links mpv built with `-Dgpl=true` and FFmpeg built
   with `--enable-gpl`, and both are under the GPL, version 2 or later, when
   built that way (mpv's `Copyright` file, FFmpeg's `LICENSE.md`). A binary
@@ -637,6 +641,10 @@ afterwards how far the viewer got. One self-contained app bundle.
 - A choice among several servers. The app uses the first server the
   account lists.
 - A Settings window.
+- Keeping image subtitles still under a zoomed picture. Text subtitles
+  are laid out in the window whatever the picture does. Subtitles that are
+  images belong to the picture and are enlarged and moved with it
+  (`place_picture` in `crates/player/src/core.rs`).
 - Notarization, a sandbox, and a build for Intel Macs.
 
 **Not possible on this render path** (reasons in sections 2 and 7).
