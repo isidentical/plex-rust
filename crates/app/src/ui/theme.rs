@@ -266,6 +266,12 @@ pub fn reduces_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
+/// Whether the viewer asked the system for less transparency. Then the
+/// sidebar and the toolbar are solid.
+pub fn reduces_transparency() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+}
+
 /// Whether the viewer asked the system for more contrast. Then outlines
 /// are stronger and artwork behind text is fainter.
 pub fn increases_contrast() -> bool {

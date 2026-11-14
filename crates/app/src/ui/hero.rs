@@ -173,6 +173,9 @@ impl Hero {
         let views = Rc::downgrade(&self.0);
         move |left, up| {
             if let Some(views) = views.upgrade() {
+                // A solid sidebar shows nothing through. The banner then
+                // starts at its edge, like every other page.
+                let left = if theme::reduces_transparency() { 0.0 } else { left };
                 views.reach.0.setConstant(-left);
                 views.reach.1.setConstant(-up);
             }
