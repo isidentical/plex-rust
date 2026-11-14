@@ -9,8 +9,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
-    NSImageView, NSLayoutConstraint, NSLayoutPriorityDefaultLow, NSStackView, NSTextField,
-    NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSImageView, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSLineBreakMode, NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSInsetRect, NSPoint, NSRect, NSString, ns_string};
 
@@ -28,6 +28,9 @@ pub enum Style {
     Solid,
     /// A button on a faint fill, for the lesser of two choices on a card.
     Quiet,
+    /// One line of a list: as wide as the list, its text starting at the
+    /// left after room for a tick.
+    Row,
 }
 
 pub struct Ivars {
@@ -176,12 +179,14 @@ define_class!(
 impl Chip {
     pub fn new(main_thread: MainThreadMarker, style: Style) -> Retained<Self> {
         let color = match style {
-            Style::Plain | Style::Quiet => theme::text(),
+            Style::Plain | Style::Quiet | Style::Row => theme::text(),
             Style::Solid => theme::text_on_solid(),
         };
         let icon = NSImageView::new(main_thread);
         icon.setContentTintColor(Some(&color));
-        icon.setHidden(true);
+        // A row keeps the room for its tick whether or not it has one, so
+        // that the texts of a list start under each other.
+        icon.setHidden(style != Style::Row);
         let label = NSTextField::labelWithString(ns_string!(""), main_thread);
         label.setTextColor(Some(&color));
         // Digits of equal width keep a time or a speed from changing the
@@ -288,6 +293,9 @@ impl Chip {
     }
 
     fn click(&self) {
+        // What a click does may take the chip out of its list and let go
+        // of it, while the closure it holds is still running.
+        let _alive = self.retain();
         if let Some(on_click) = self.ivars().on_click.get() {
             on_click();
         }
@@ -329,7 +337,8 @@ impl Chip {
     }
 
     /// Puts the symbol and the text side by side in the middle, and makes
-    /// the chip a square that widens to fit them.
+    /// the chip a square that widens to fit them. A row is as wide as it
+    /// is made, with its content at the left.
     fn lay_out(&self, main_thread: MainThreadMarker) {
         let ivars = self.ivars();
         let content: [&NSView; 2] = [&ivars.icon, &ivars.label];
@@ -340,6 +349,27 @@ impl Chip {
         self.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         let height = theme::CHIP_SIZE;
+        if ivars.style == Style::Row {
+            let padding = theme::CHIP_PADDING;
+            // A text too long for the list ends in an ellipsis.
+            ivars.label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+            ivars.label.setContentCompressionResistancePriority_forOrientation(
+                NSLayoutPriorityDefaultLow,
+                NSLayoutConstraintOrientation::Horizontal,
+            );
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                content
+                    .leadingAnchor()
+                    .constraintEqualToAnchor_constant(&self.leadingAnchor(), padding),
+                content
+                    .trailingAnchor()
+                    .constraintLessThanOrEqualToAnchor_constant(&self.trailingAnchor(), -padding),
+                content.centerYAnchor().constraintEqualToAnchor(&self.centerYAnchor()),
+                self.heightAnchor().constraintEqualToConstant(height),
+                ivars.icon.widthAnchor().constraintEqualToConstant(theme::SYMBOL_SIZE),
+            ]));
+            return;
+        }
         let padded = content.widthAnchor();
         let square = self.widthAnchor().constraintEqualToConstant(height);
         square.setPriority(NSLayoutPriorityDefaultLow);
@@ -397,9 +427,9 @@ impl Chip {
             (Style::Quiet, true, _) => Some(theme::pressed()),
             (Style::Quiet, false, true) => Some(theme::quiet_hovered()),
             (Style::Quiet, false, false) => Some(theme::hovered()),
-            (Style::Plain, true, _) => Some(theme::pressed()),
-            (Style::Plain, false, true) => Some(theme::hovered()),
-            (Style::Plain, false, false) => None,
+            (Style::Plain | Style::Row, true, _) => Some(theme::pressed()),
+            (Style::Plain | Style::Row, false, true) => Some(theme::hovered()),
+            (Style::Plain | Style::Row, false, false) => None,
         }
     }
 }

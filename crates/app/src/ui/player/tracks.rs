@@ -29,7 +29,7 @@ pub fn stream<'a>(track: &Track, part: &'a Part) -> Option<&'a Stream> {
     part.embedded(stream_kind(track.kind)).nth(position)
 }
 
-/// What `track` is called in a menu.
+/// What `track` is called in a list.
 ///
 /// The server's description is the best there is, such as "English (EAC3
 /// 5.1)", and it is what every other Plex app shows. A track the server
@@ -58,7 +58,7 @@ pub fn detail(track: &Track, part: Option<&Part>) -> Option<String> {
 }
 
 /// A detail longer than this many characters is a sentence about the
-/// track, not a name for it, and is left to the menu.
+/// track, not a name for it, and is left to the list of tracks.
 const LONGEST_DETAIL_IN_LINE: usize = 30;
 
 /// The name of `track` on one line, with its detail if that is short.

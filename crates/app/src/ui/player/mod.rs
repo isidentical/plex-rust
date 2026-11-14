@@ -2,6 +2,7 @@
 
 mod badge;
 mod bubble;
+mod captions;
 mod chip;
 mod chrome;
 mod controls;
@@ -9,8 +10,8 @@ mod failure;
 mod info;
 pub mod input;
 mod layout;
-mod menu;
 mod pane;
+mod panel;
 mod remote;
 mod slider;
 mod speed;
@@ -30,9 +31,9 @@ use std::time::{Duration, Instant};
 
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::{NSCursor, NSEvent, NSMenuItem, NSView, NSWindowStyleMask};
+use objc2_app_kit::{NSCursor, NSEvent, NSView, NSWindowStyleMask};
 use objc2_foundation::{
     NSActivityOptions, NSDate, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
@@ -44,11 +45,12 @@ use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
 
 use self::badge::Notice;
+use self::captions::{Shift, Size};
 use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, Gesture, InputView, Key, Press, Scene};
-use self::menu::Choice;
+use self::panel::{Choice, Step, Stepper};
 use self::remote::{Command, Playing, Remote};
 use self::slider::{Grip, Pointed};
 use self::speed::Speed;
@@ -135,6 +137,15 @@ enum UpNext {
     Cancelled,
 }
 
+/// What the panel above the bar is open for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    Chapters,
+    Speed,
+    Audio,
+    Subtitles,
+}
+
 /// What has come of the last click on the picture.
 enum Click {
     /// Nothing that a second click would have to take back.
@@ -182,9 +193,9 @@ pub struct Ivars {
     pointer_on_controls: Cell<bool>,
     ticks_idle: Cell<u32>,
     click: RefCell<Click>,
-    /// Whether one of the pop-up menus is up. The controls it hangs from
-    /// stay for as long as it is.
-    menu_open: Cell<bool>,
+    /// What the panel above the bar is open for, if it is. The controls
+    /// it stands on stay for as long as it is.
+    offer: Cell<Option<Offer>>,
     ticks_of_scrub_settling_left: Cell<u32>,
     /// Whether the time to the right of the scrubber is the file's full
     /// length, and not what is left of it.
@@ -248,29 +259,6 @@ define_class!(
     unsafe impl NSObjectProtocol for PlayerScreen {}
 
     impl PlayerScreen {
-        /// A menu item's tag is the id of its track, or 0 for no subtitles.
-        #[unsafe(method(audioChosen:))]
-        fn audio_chosen(&self, item: &NSMenuItem) {
-            self.or_log(self.ivars().player.select_audio(item.tag() as i64));
-            self.remember_track(TrackKind::Audio);
-        }
-
-        #[unsafe(method(subtitlesChosen:))]
-        fn subtitles_chosen(&self, item: &NSMenuItem) {
-            let id = item.tag() as i64;
-            self.or_log(self.ivars().player.select_subtitles((id != 0).then_some(id)));
-            self.remember_track(TrackKind::Subtitles);
-        }
-
-        /// Here the tag is the speed in hundredths. The menu only makes
-        /// tags out of speeds, so one that is not a speed cannot arrive.
-        #[unsafe(method(speedChosen:))]
-        fn speed_chosen(&self, item: &NSMenuItem) {
-            if let Ok(percent) = u32::try_from(item.tag()) {
-                self.or_log(self.set_speed(Speed::from_percent(percent)));
-            }
-        }
-
         /// No second click came: the first was a click and not half of a
         /// double click.
         #[unsafe(method(clickWaited:))]
@@ -342,7 +330,7 @@ impl PlayerScreen {
             pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
             click: RefCell::new(Click::Settled),
-            menu_open: Cell::new(false),
+            offer: Cell::new(None),
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
@@ -527,6 +515,7 @@ impl PlayerScreen {
         controls.waiting.hide();
         controls.skip.setHidden(true);
         controls.up_next.hide();
+        self.close_offer();
         controls.failure.show(&self.item().title, reason);
         // The title and the way out stay. The bar steers a file that is
         // no longer there.
@@ -546,11 +535,14 @@ impl PlayerScreen {
         }
     }
 
-    /// Puts away what is on top: the keyboard's place among the buttons,
-    /// the panel of playback information, the offer of the next episode,
-    /// then full screen, as Escape does everywhere, and then the player.
+    /// Puts away what is on top: the panel above the bar, the keyboard's
+    /// place among the buttons, the panel of playback information, the
+    /// offer of the next episode, then full screen, as Escape does
+    /// everywhere, and then the player.
     fn back_out(&self) {
-        if self.focused().is_some() {
+        if self.ivars().offer.get().is_some() {
+            self.close_offer();
+        } else if self.focused().is_some() {
             self.drop_focus();
         } else if self.ivars().controls.info.is_shown() {
             self.ivars().controls.info.set_shown(false);
@@ -564,10 +556,14 @@ impl PlayerScreen {
     }
 
     /// The buttons the keyboard can be put on right now, in the order
-    /// they are read in.
-    fn focusable(&self) -> Vec<&Chip> {
+    /// they are read in. While the panel above the bar is open they are
+    /// the panel's: what is behind it waits.
+    fn focusable(&self) -> Vec<Retained<Chip>> {
         let controls = &self.ivars().controls;
-        let chips: [&Chip; 17] = [
+        if self.ivars().offer.get().is_some() {
+            return controls.panel.chips();
+        }
+        let chips: [&Retained<Chip>; 18] = [
             &controls.back,
             &controls.failure.retry,
             &controls.failure.leave,
@@ -581,16 +577,17 @@ impl PlayerScreen {
             &controls.toggle,
             &controls.forward,
             &controls.next,
+            &controls.chapters,
             &controls.speed,
             &controls.audio,
             &controls.subtitles,
             &controls.full_screen,
         ];
-        chips.into_iter().filter(|chip| chip.can_be_pressed()).collect()
+        chips.into_iter().filter(|chip| chip.can_be_pressed()).cloned().collect()
     }
 
     /// The button the keyboard is on, if it is on one.
-    fn focused(&self) -> Option<&Chip> {
+    fn focused(&self) -> Option<Retained<Chip>> {
         self.focusable().into_iter().find(|chip| chip.is_focused())
     }
 
@@ -878,13 +875,19 @@ impl PlayerScreen {
         self.on_click(&controls.next, |screen| screen.go_to_next());
         self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
         self.on_click(&controls.remaining, |screen| screen.or_log(screen.switch_time_shown()));
-        self.on_click(&controls.speed, |screen| screen.offer_speeds());
-        self.on_click(&controls.audio, |screen| {
-            screen.or_log(screen.offer_tracks(TrackKind::Audio));
-        });
-        self.on_click(&controls.subtitles, |screen| {
-            screen.or_log(screen.offer_tracks(TrackKind::Subtitles));
-        });
+        // Pressed with the keyboard on it, a button hands the keyboard on
+        // to what it opens.
+        let offers = [
+            (&controls.chapters, Offer::Chapters),
+            (&controls.speed, Offer::Speed),
+            (&controls.audio, Offer::Audio),
+            (&controls.subtitles, Offer::Subtitles),
+        ];
+        for (chip, offer) in offers {
+            self.on_click(chip, move |screen| {
+                screen.toggle_offer(offer, screen.focused().is_some());
+            });
+        }
         self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
         self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
         self.on_click(&controls.up_next.play, |screen| screen.go_to_next());
@@ -964,6 +967,10 @@ impl PlayerScreen {
     /// clicks. A tap acts at once, because a finger on the glass expects
     /// the picture to answer it, and is taken back if a second follows.
     fn clicked(&self, clicks: Clicks) {
+        // With the panel open, a click beside it is how it is put away.
+        if self.ivars().offer.get().is_some() {
+            return self.close_offer();
+        }
         match clicks {
             Clicks::Single => self.wait_for_second_click(),
             Clicks::Tap => self.act_on_click(),
@@ -1047,7 +1054,7 @@ impl PlayerScreen {
             _ => None,
         };
         match self.focused().zip(code) {
-            Some((chip, code)) => stage::press_key(chip, code),
+            Some((chip, code)) => stage::press_key(&chip, code),
             None => return self.act_on(key, Press::First),
         }
         true
@@ -1094,10 +1101,17 @@ impl PlayerScreen {
                 | Key::ZoomIn
                 | Key::ZoomOut
                 | Key::ZoomFit
-                | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z' | 'i')
+                | Key::Character(
+                    'm' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z' | 'i' | '-' | '=' | '[' | ']'
+                )
         );
         let is_episode = self.item().kind == Kind::Episode;
         let result = match key {
+            // In an open list the arrows go from row to row.
+            Key::Up | Key::Down if self.ivars().offer.get().is_some() => {
+                self.move_focus(key == Key::Down);
+                return true;
+            }
             Key::Space | Key::Character('k') => self.toggle_pause(),
             Key::Left => self.jump(-SHORT_JUMP, press),
             Key::Right => self.jump(SHORT_JUMP, press),
@@ -1115,6 +1129,16 @@ impl PlayerScreen {
             Key::Character('t') => self.switch_time_shown(),
             Key::Character('i') => self.toggle_info(),
             Key::Character('z') => self.handle_gesture(Gesture::Toggle),
+            Key::Character('l') => {
+                self.toggle_offer(Offer::Chapters, true);
+                return true;
+            }
+            Key::Character(',') => self.step_chapter(Step::Down),
+            Key::Character('.') => self.step_chapter(Step::Up),
+            Key::Character('-') => self.step_subtitle_size(Step::Down),
+            Key::Character('=') => self.step_subtitle_size(Step::Up),
+            Key::Character('[') => self.step_subtitle_delay(Step::Down),
+            Key::Character(']') => self.step_subtitle_delay(Step::Up),
             Key::ZoomIn => self.step_zoom(theme::ZOOM_STEP),
             Key::ZoomOut => self.step_zoom(1.0 / theme::ZOOM_STEP),
             Key::ZoomFit => self.set_zoom(Zoom::FIT).map(|()| self.notify_of_zoom()),
@@ -1151,6 +1175,7 @@ impl PlayerScreen {
                 return true;
             }
             Key::Idle => {
+                self.close_offer();
                 self.show_controls(false);
                 return true;
             }
@@ -1186,8 +1211,9 @@ impl PlayerScreen {
     fn pointer_moved(&self, place: Option<NSPoint>) {
         self.wake();
         let controls = &self.ivars().controls;
-        let on_controls =
-            place.is_some_and(|place| controls.top.holds(place) || controls.bottom.holds(place));
+        let on_controls = place.is_some_and(|place| {
+            controls.top.holds(place) || controls.bottom.holds(place) || controls.panel.holds(place)
+        });
         self.ivars().pointer_on_controls.set(on_controls);
         if place.is_some() {
             self.show_controls(true);
@@ -1246,7 +1272,7 @@ impl PlayerScreen {
         let in_use = ivars.pointer_on_controls.get()
             || self.focused().is_some()
             || ivars.controls.scrubber.is_dragging()
-            || ivars.menu_open.get();
+            || ivars.offer.get().is_some();
         if idle >= TICKS_UNTIL_HIDDEN && !in_use {
             self.show_controls(false);
         }
@@ -1444,6 +1470,8 @@ impl PlayerScreen {
         self.show_progress(start, duration);
         controls.scrubber.set_loaded(0.0);
         controls.scrubber.set_marks(Vec::new());
+        controls.chapters.setHidden(true);
+        self.close_offer();
         controls.bubble.hide();
         controls.skip.setHidden(true);
         controls.up_next.hide();
@@ -1647,74 +1675,249 @@ impl PlayerScreen {
         });
     }
 
-    /// Pops up a menu of the tracks of `kind` over its button.
-    fn offer_tracks(&self, kind: TrackKind) -> player::Result<()> {
-        let controls = &self.ivars().controls;
+    /// Opens the panel above the bar for `offer`, or puts it away if that
+    /// is what it is open for. Opened from the `keyboard`, it has the
+    /// keyboard on the row in effect, for the arrows to move on from.
+    fn toggle_offer(&self, offer: Offer, keyboard: bool) {
+        if self.ivars().offer.get() == Some(offer) {
+            return self.close_offer();
+        }
+        self.or_log(self.show_offer(offer));
+        if let Some(row) = self.ivars().controls.panel.row_in_effect().filter(|_| keyboard) {
+            row.take_keys();
+        }
+    }
+
+    fn close_offer(&self) {
+        let ivars = self.ivars();
+        if ivars.offer.take().is_none() {
+            return;
+        }
+        // The keyboard is not left on a button that is no longer there.
+        if self.focused().is_none() {
+            self.drop_focus();
+        }
+        ivars.controls.panel.hide();
+    }
+
+    /// Fills the panel with what `offer` has to choose from as things
+    /// stand, and opens it over the button it belongs to.
+    fn show_offer(&self, offer: Offer) -> player::Result<()> {
+        let ivars = self.ivars();
+        let controls = &ivars.controls;
+        // An offer of chapters to a film that has none says nothing.
+        if offer == Offer::Chapters && ivars.chapters.borrow().is_empty() {
+            return Ok(());
+        }
+        let (heading, steppers, choices, button) = match offer {
+            Offer::Chapters => {
+                ("Chapters", Vec::new(), self.chapter_choices()?, &controls.chapters)
+            }
+            Offer::Speed => (
+                "Playback Speed",
+                vec![self.speed_stepper()],
+                self.speed_choices(),
+                &controls.speed,
+            ),
+            Offer::Audio => {
+                ("Audio", Vec::new(), self.track_choices(TrackKind::Audio)?, &controls.audio)
+            }
+            Offer::Subtitles => (
+                "Subtitles",
+                self.subtitle_steppers()?,
+                self.track_choices(TrackKind::Subtitles)?,
+                &controls.subtitles,
+            ),
+        };
+        ivars.offer.set(Some(offer));
+        controls.panel.show(heading, steppers, choices, button);
+        self.show_controls(true);
+        Ok(())
+    }
+
+    /// Brings the open panel up to date after one of its buttons changed
+    /// what it shows, with the keyboard on the button it was on.
+    fn refresh_offer(&self) {
+        let Some(offer) = self.ivars().offer.get() else {
+            return;
+        };
+        let panel = &self.ivars().controls.panel;
+        let focused = panel.chips().iter().position(|chip| chip.is_focused());
+        self.or_log(self.show_offer(offer));
+        if let Some(chip) = focused.and_then(|index| panel.chips().get(index).cloned()) {
+            chip.take_keys();
+        }
+    }
+
+    /// A line of the panel that does `act` and puts the panel away.
+    fn choice(
+        &self,
+        title: String,
+        chosen: bool,
+        act: impl Fn(&Self) -> player::Result<()> + 'static,
+    ) -> Choice {
+        let screen = Weak::new(self);
+        let on_choose = move || {
+            if let Some(screen) = screen.load() {
+                screen.or_log(act(&screen));
+                screen.close_offer();
+            }
+        };
+        Choice { title, chosen, on_choose: Box::new(on_choose) }
+    }
+
+    /// A value of the panel that `act` moves a step, after which the
+    /// panel shows what it has become.
+    fn stepper(
+        &self,
+        (name, lower, raise): (&'static str, &'static str, &'static str),
+        value: String,
+        act: impl Fn(&Self, Step) -> player::Result<()> + 'static,
+    ) -> Stepper {
+        let screen = Weak::new(self);
+        let on_step = move |step| {
+            if let Some(screen) = screen.load() {
+                screen.or_log(act(&screen, step));
+                screen.refresh_offer();
+                // The panel says what the value now is, where the notice
+                // of it would only lie behind the panel.
+                screen.ivars().controls.badge.hide();
+            }
+        };
+        Stepper { name, value, lower, raise, on_step: Box::new(on_step) }
+    }
+
+    /// The chapters of the file, each with the time it starts at, and
+    /// the one playing ticked.
+    fn chapter_choices(&self) -> player::Result<Vec<Choice>> {
+        let position = self.position()?.unwrap_or_default();
+        let chapters = self.ivars().chapters.borrow();
+        let playing = chapters.iter().rposition(|chapter| chapter.start <= position);
+        let choices = chapters.iter().enumerate().map(|(index, chapter)| {
+            let start = chapter.start;
+            let title = format!("{}  {}", clock(start), chapter_name(chapter, index));
+            self.choice(title, playing == Some(index), move |screen| {
+                screen.ivars().player.seek(start)
+            })
+        });
+        Ok(choices.collect())
+    }
+
+    /// Goes to the start of the next chapter, or back to the start of
+    /// this one, and from there to the one before.
+    fn step_chapter(&self, step: Step) -> player::Result<()> {
+        let ivars = self.ivars();
+        let position = self.position()?.unwrap_or_default();
+        let chapters = ivars.chapters.borrow();
+        let found = match step {
+            Step::Up => chapters.iter().position(|chapter| chapter.start > position),
+            // Just past a chapter's start, back means the chapter before.
+            Step::Down => chapters
+                .iter()
+                .rposition(|chapter| chapter.start + RESTART_AFTER <= position)
+                .or((!chapters.is_empty()).then_some(0)),
+        };
+        let Some((index, chapter)) = found.and_then(|index| Some((index, chapters.get(index)?)))
+        else {
+            return Ok(());
+        };
+        ivars.player.seek(chapter.start)?;
+        let symbol = if step == Step::Up { "forward.end.fill" } else { "backward.end.fill" };
+        self.notify(&Notice { symbol, text: &chapter_name(chapter, index), level: None });
+        Ok(())
+    }
+
+    fn speed_stepper(&self) -> Stepper {
+        let names = ("Speed", "Slower", "Faster");
+        self.stepper(names, self.speed().to_string(), |screen, step| {
+            screen.set_speed(match step {
+                Step::Down => screen.speed().slower(),
+                Step::Up => screen.speed().faster(),
+            })
+        })
+    }
+
+    /// The speeds the panel always offers, and the one in effect among
+    /// them if the keys or the stepper took it off them.
+    fn speed_choices(&self) -> Vec<Choice> {
+        let current = self.speed();
+        let choice = |speed: Speed| {
+            self.choice(speed.to_string(), speed == current, move |screen| screen.set_speed(speed))
+        };
+        current.choices().into_iter().map(choice).collect()
+    }
+
+    /// The tracks of `kind`, the one in use ticked, with "Off" before the
+    /// subtitles.
+    fn track_choices(&self, kind: TrackKind) -> player::Result<Vec<Choice>> {
         let item = self.item();
         let tracks = self.ivars().player.tracks()?;
         let tracks: Vec<&Track> = tracks.iter().filter(|track| track.kind == kind).collect();
         let mut choices = Vec::new();
         if kind == TrackKind::Subtitles {
-            choices.push(Choice {
-                title: "Off".to_owned(),
-                detail: None,
-                tag: 0,
-                chosen: tracks.iter().all(|track| !track.selected),
-                stands_apart: !tracks.is_empty(),
-            });
+            let off = tracks.iter().all(|track| !track.selected);
+            choices.push(self.choice("Off".to_owned(), off, |screen| {
+                screen.choose_track(TrackKind::Subtitles, None)
+            }));
         }
-        choices.extend(tracks.iter().map(|track| Choice {
-            title: tracks::name(track, part(&item)),
-            detail: tracks::detail(track, part(&item)),
-            tag: track.id as isize,
-            chosen: track.selected,
-            stands_apart: false,
+        choices.extend(tracks.iter().map(|track| {
+            let (id, name) = (track.id, tracks::name(track, part(&item)));
+            let title = match tracks::detail(track, part(&item)) {
+                Some(detail) => format!("{name} \u{b7} {detail}"),
+                None => name,
+            };
+            self.choice(title, track.selected, move |screen| screen.choose_track(kind, Some(id)))
         }));
-        match kind {
-            TrackKind::Audio => self.offer("Audio", &choices, sel!(audioChosen:), &controls.audio),
-            _ => self.offer("Subtitles", &choices, sel!(subtitlesChosen:), &controls.subtitles),
+        Ok(choices)
+    }
+
+    /// Plays or shows the track of `kind` with this id, and has the server
+    /// remember it. No id is no subtitles.
+    fn choose_track(&self, kind: TrackKind, id: Option<i64>) -> player::Result<()> {
+        let player = &self.ivars().player;
+        match (kind, id) {
+            (TrackKind::Audio, Some(id)) => player.select_audio(id)?,
+            (TrackKind::Subtitles, id) => player.select_subtitles(id)?,
+            (TrackKind::Audio, None) | (TrackKind::Video, _) => return Ok(()),
         }
+        self.remember_track(kind);
         Ok(())
     }
 
-    /// Pops up a menu of playback speeds over the speed button.
-    fn offer_speeds(&self) {
-        let current = self.speed();
-        let choices: Vec<Choice> = current
-            .choices()
-            .into_iter()
-            .map(|speed| Choice {
-                title: speed.to_string(),
-                detail: None,
-                tag: speed.percent() as isize,
-                chosen: speed == current,
-                stands_apart: false,
-            })
-            .collect();
-        self.offer("Playback Speed", &choices, sel!(speedChosen:), &self.ivars().controls.speed);
+    fn subtitle_steppers(&self) -> player::Result<Vec<Stepper>> {
+        let player = &self.ivars().player;
+        let size = Size::from_scale(player.subtitle_scale()?);
+        let shift = Shift::from_seconds(player.subtitle_delay()?);
+        Ok(vec![
+            self.stepper(
+                ("Size", "Smaller subtitles", "Larger subtitles"),
+                size.to_string(),
+                Self::step_subtitle_size,
+            ),
+            self.stepper(
+                ("Delay", "Subtitles earlier", "Subtitles later"),
+                shift.to_string(),
+                Self::step_subtitle_delay,
+            ),
+        ])
     }
 
-    /// Pops up a menu of `choices` under `heading` just above `chip`.
-    /// Picking one sends `action`, a method of this class, with the menu
-    /// item.
-    fn offer(&self, heading: &str, choices: &[Choice], action: Sel, chip: &Chip) {
-        // The menu runs its own event loop. The file can end inside it,
-        // which closes the screen and would otherwise free it under us.
-        let _alive = self.retain();
-        // SAFETY: the caller passes a selector this class defines, and the
-        // screen is kept alive above for as long as the menu is up.
-        let menu = unsafe { menu::build(self.mtm(), heading, choices, action, self) };
+    fn step_subtitle_size(&self, step: Step) -> player::Result<()> {
+        let player = &self.ivars().player;
+        let size = Size::from_scale(player.subtitle_scale()?).stepped(step);
+        player.set_subtitle_scale(size.scale())?;
+        let text = format!("Subtitles {size}");
+        self.notify(&Notice { symbol: "textformat.size", text: &text, level: Some(size.level()) });
+        Ok(())
+    }
 
-        // A menu hangs down from the point it is given, so to sit on top
-        // of the chip it starts its own height above it.
-        let above = NSPoint::new(0.0, chip.bounds().size.height + menu.size().height);
-        // Blocks until the menu is dismissed.
-        self.ivars().menu_open.set(true);
-        menu.popUpMenuPositioningItem_atLocation_inView(None, above, Some(chip));
-        self.ivars().menu_open.set(false);
-        if self.ivars().timer.borrow().is_some() {
-            self.show_controls(true);
-        }
+    fn step_subtitle_delay(&self, step: Step) -> player::Result<()> {
+        let player = &self.ivars().player;
+        let shift = Shift::from_seconds(player.subtitle_delay()?).stepped(step);
+        player.set_subtitle_delay(shift.seconds())?;
+        let text = format!("Subtitles {shift}");
+        self.notify(&Notice { symbol: "captions.bubble", text: &text, level: None });
+        Ok(())
     }
 
     fn next_episode_is_known(&self) -> bool {
@@ -1868,6 +2071,7 @@ impl PlayerScreen {
         ivars.controls.top.set_shown(shown || paused || failed);
         ivars.controls.bottom.set_shown(shown && !failed);
         if !shown {
+            self.close_offer();
             ivars.controls.bubble.hide();
             if self.focused().is_some() {
                 self.drop_focus();
@@ -1954,7 +2158,7 @@ impl PlayerScreen {
 
     /// Adds the subtitles the server keeps in files of their own to the
     /// tracks of the file that has just opened, so that they are in the
-    /// subtitle menu with the rest, and the one last chosen is shown.
+    /// list of subtitles with the rest, and the one last chosen is shown.
     fn add_sidecars(&self) {
         let ivars = self.ivars();
         let sidecars = ivars.sidecars.take();
@@ -1980,6 +2184,7 @@ impl PlayerScreen {
         // The first chapter starts with the file, where a notch says nothing.
         let starts = chapters.iter().map(|chapter| chapter.start.as_secs_f64());
         ivars.controls.scrubber.set_marks(starts.filter(|start| *start > 0.0).collect());
+        ivars.controls.chapters.setHidden(chapters.is_empty());
         *ivars.chapters.borrow_mut() = chapters;
         Ok(())
     }
@@ -2190,6 +2395,15 @@ impl Progress {
 fn log_unsaved(sent: plex::Result<()>) {
     if let Err(error) = sent {
         eprintln!("plex-rust: progress was not saved: {}", with_causes(&error));
+    }
+}
+
+/// What to call `chapter`, which is the one at `index` in its file: its
+/// title, or its number if it has none that says anything.
+fn chapter_name(chapter: &Chapter, index: usize) -> String {
+    match chapter.title.as_deref().filter(|title| !is_timestamp(title)) {
+        Some(title) => title.to_owned(),
+        None => format!("Chapter {}", index + 1),
     }
 }
 

@@ -568,6 +568,28 @@ impl Player {
         self.set_string("sid", &id.map_or_else(|| "no".to_owned(), |id| id.to_string()))
     }
 
+    /// How large subtitles are drawn, where 1.0 is the size they come at.
+    pub fn subtitle_scale(&self) -> Result<f64> {
+        Ok(self.number("sub-scale")?.unwrap_or(1.0))
+    }
+
+    /// Text subtitles are set in larger or smaller type. Subtitles that
+    /// are images are enlarged about their own middle (`get_bitmaps` in
+    /// mpv's sub/sd_lavc.c).
+    pub fn set_subtitle_scale(&self, scale: f64) -> Result<()> {
+        self.set_string("sub-scale", &scale.to_string())
+    }
+
+    /// How many seconds later than their file says subtitles are shown.
+    /// Negative is earlier.
+    pub fn subtitle_delay(&self) -> Result<f64> {
+        Ok(self.number("sub-delay")?.unwrap_or(0.0))
+    }
+
+    pub fn set_subtitle_delay(&self, seconds: f64) -> Result<()> {
+        self.set_string("sub-delay", &seconds.to_string())
+    }
+
     fn track(&self, index: usize) -> Result<Track> {
         let field = |name: &str| self.string(&format!("track-list/{index}/{name}"));
         let kind = match field("type")?.as_deref() {

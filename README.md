@@ -126,6 +126,11 @@ much room its files take and how much the disk has left.
 | R | Normal speed |
 | A | Next audio track |
 | C | Next subtitle track, then off |
+| - and = | Subtitles smaller and larger |
+| [ and ] | Subtitles 0.1 seconds earlier and later |
+| L | The list of chapters |
+| , and . | The start of the chapter, then the chapter before, and the next chapter |
+| Up, Down, in an open list | From row to row. Return chooses the one the keyboard is on |
 | Return | Skip the intro or credits, play the next episode once it is offered, or try again after a failure |
 | N | Next episode |
 | P | Start of the episode. Pressed again there, the previous episode |
@@ -136,7 +141,7 @@ much room its files take and how much the disk has left.
 | Command-plus, Command-minus | Picture larger and smaller |
 | Command-0 | The whole picture again |
 | F, double click | Full screen |
-| Escape | Turn down the next episode, leave full screen, then the player |
+| Escape | Close an open list, turn down the next episode, leave full screen, then the player |
 
 ## Fingers in the player
 
@@ -153,6 +158,12 @@ much room its files take and how much the disk has left.
 The same goes for the buttons on headphones, and for Control Center,
 which also shows what is playing with its poster, jumps 10 seconds
 back and forward, and has a scrubber of its own.
+
+The chapters, speed, audio and subtitle buttons each open a list above the
+bar. The speed's has a minus and a plus that change it by 0.1x over the
+speeds it offers, and the subtitles' has the same for their size and for
+how much earlier or later than the film they are shown. A click beside a
+list closes it.
 
 Low Power in the plex-rust menu draws the picture more cheaply, with plain
 scaling and no dithering. It is off until you turn it on, changes what is

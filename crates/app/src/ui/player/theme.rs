@@ -113,6 +113,19 @@ pub const FOLLOWS_POINTER: f32 = 1.0;
 /// Space between the bar and the Skip Intro button above it.
 pub const SKIP_GAP: f64 = scale::SPACE_M;
 
+/// The panel that opens above a button of the bar: how wide it is, how
+/// far its rows stand in from its edge, its corners, which are concentric
+/// with those rows, and how far it floats above the bar.
+pub const PANEL_WIDTH: f64 = 380.0;
+pub const PANEL_INSET: f64 = scale::SPACE_S;
+pub const PANEL_RADIUS: f64 = CHIP_RADIUS + PANEL_INSET;
+pub const PANEL_GAP: f64 = scale::SPACE_S;
+pub const PANEL_HEADING_GAP: f64 = scale::SPACE_XS;
+/// The tick before the row in effect.
+pub const PANEL_TICK_SIZE: f64 = scale::FONT_BODY;
+/// Room for the widest value between two buttons, such as "−12.5 s".
+pub const PANEL_VALUE_WIDTH: f64 = 64.0;
+
 pub const CARD_PADDING: f64 = scale::SPACE_L;
 /// Concentric with the buttons the card holds: their radius plus the
 /// padding around them.

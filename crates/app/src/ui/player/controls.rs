@@ -22,6 +22,7 @@ use super::failure::Failure;
 use super::info::Info;
 use super::layout::{add, cover, pin, row};
 use super::pane::Pane;
+use super::panel::Panel;
 use super::slider::{Reading, Slider};
 use super::surface::{Material, Surface};
 use super::theme;
@@ -54,6 +55,8 @@ pub struct Controls {
     pub remaining: Retained<Chip>,
     /// Says what time the pointer is over on the scrubber.
     pub bubble: Bubble,
+    /// Shown for a file that has chapters.
+    pub chapters: Retained<Chip>,
     pub speed: Retained<Chip>,
     pub audio: Retained<Chip>,
     pub subtitles: Retained<Chip>,
@@ -62,6 +65,8 @@ pub struct Controls {
     pub skip: Retained<Chip>,
     /// Offers the next episode as this one ends, in the skip button's place.
     pub up_next: UpNext,
+    /// What the chapters, speed, audio and subtitle buttons open.
+    pub panel: Panel,
     /// Says how the file is being played, when asked.
     pub info: Info,
     /// Says that the picture is on its way.
@@ -107,12 +112,14 @@ impl Controls {
             remaining: Chip::new(main_thread, Style::Plain),
             bubble: Bubble::new(main_thread, material, &scrubber),
             scrubber,
+            chapters: button("list.bullet", "Chapters", "L"),
             speed: Chip::new(main_thread, Style::Plain),
             audio: button("waveform", "Audio track", "A"),
             subtitles: button("captions.bubble", "Subtitles", "C"),
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread, material),
+            panel: Panel::new(main_thread, material),
             info: Info::new(main_thread, material),
             waiting: Waiting::new(main_thread, material),
             failure: Failure::new(main_thread, material),
@@ -129,6 +136,7 @@ impl Controls {
         controls.speed.set_name("Playback speed");
         controls.skip.setToolTip(tooltip("Skip (Return)").as_deref());
         let is_episode = item.kind == Kind::Episode;
+        controls.chapters.setHidden(true);
         controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);
 
@@ -206,7 +214,8 @@ impl Controls {
         let transport: [&NSView; 5] =
             [&self.previous, &self.rewind, &self.toggle, &self.forward, &self.next];
         let transport = row(&transport, theme::TRANSPORT_SPACING, main_thread);
-        let choices: [&NSView; 4] = [&self.speed, &self.audio, &self.subtitles, &self.full_screen];
+        let choices: [&NSView; 5] =
+            [&self.chapters, &self.speed, &self.audio, &self.subtitles, &self.full_screen];
         let choices = row(&choices, spacing, main_thread);
 
         let (leading, trailing) = (bar.leadingAnchor(), bar.trailingAnchor());
@@ -282,7 +291,26 @@ impl Controls {
         add(root, self.waiting.view());
         add(root, self.failure.view());
         add(root, self.bubble.view());
+        add(root, self.panel.view());
         pin(&[
+            // Above the bar, as far up as the title lets it, and inside
+            // the window whichever button it is over.
+            self.panel
+                .view()
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&self.bottom.topAnchor(), -theme::PANEL_GAP),
+            self.panel.view().topAnchor().constraintGreaterThanOrEqualToAnchor_constant(
+                &self.top.bottomAnchor(),
+                theme::TOP_GAP,
+            ),
+            self.panel
+                .view()
+                .leadingAnchor()
+                .constraintGreaterThanOrEqualToAnchor_constant(&leading, theme::MARGIN),
+            self.panel
+                .view()
+                .trailingAnchor()
+                .constraintLessThanOrEqualToAnchor_constant(&trailing, -theme::MARGIN),
             self.info
                 .view()
                 .trailingAnchor()

@@ -17,7 +17,8 @@ impl Speed {
     /// What one press of a speed key changes.
     const STEP: u32 = 10;
 
-    /// The speeds the menu always offers. The keys reach the rest.
+    /// The speeds the list always offers. The keys and the stepper reach
+    /// the rest.
     const PRESETS: [Self; 9] = [
         Self(50),
         Self(75),
@@ -61,7 +62,7 @@ impl Speed {
         Self::from_percent(self.0 + Self::STEP)
     }
 
-    /// What the speed menu lists while this is the speed: the presets, and
+    /// What the list of speeds holds while this is the speed: the presets, and
     /// this speed in its place among them if the keys took it off them.
     pub fn choices(self) -> Vec<Self> {
         let mut choices = Self::PRESETS.to_vec();
@@ -98,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_a_speed_between_presets_in_its_place() {
+    fn the_list_holds_a_speed_between_presets_in_its_place() {
         let percents = |speed: Speed| -> Vec<u32> {
             speed.choices().into_iter().map(Speed::percent).collect()
         };
