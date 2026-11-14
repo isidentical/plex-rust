@@ -27,7 +27,7 @@ pub const BOTTOM_MARGIN: f64 = 12.0;
 /// Space between the title bar, or the top of the screen, and the controls.
 pub const TOP_GAP: f64 = 8.0;
 
-pub const ROW_SPACING: f64 = 4.0;
+pub const ROW_SPACING: f64 = 2.0;
 pub const CONTROL_SPACING: f64 = 4.0;
 /// Between the buttons that move through the film, which are the ones
 /// reached for most and so get the most room.
@@ -66,7 +66,7 @@ pub const TITLE_FONT_SIZE: f64 = 16.0;
 pub const TITLE_SPACING: f64 = 1.0;
 
 /// The height a slider can be grabbed in, far more than what it draws.
-pub const SLIDER_HEIGHT: f64 = 24.0;
+pub const SLIDER_HEIGHT: f64 = 28.0;
 pub const TRACK_THICKNESS: f64 = 5.0;
 /// The track swells under the pointer to show it can be grabbed.
 pub const TRACK_THICKNESS_HOVERED: f64 = 8.0;
