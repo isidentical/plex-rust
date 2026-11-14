@@ -74,6 +74,18 @@ define_class!(
         fn constrain(&self, frame: NSRect, _screen: Option<&NSScreen>) -> NSRect {
             frame
         }
+
+        /// A window nobody can see must not take the keyboard from the
+        /// window the viewer is working in.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self) -> bool {
+            false
+        }
     }
 );
 
