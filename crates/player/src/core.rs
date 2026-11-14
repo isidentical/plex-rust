@@ -57,6 +57,12 @@ pub struct Source {
     pub headers: Vec<(String, String)>,
     /// Where to start playing.
     pub start: Duration,
+    /// The audio track to play, by its id. `None` leaves the choice to the
+    /// file's own default.
+    pub audio: Option<i64>,
+    /// The subtitle track to show, by its id. `None` shows no subtitles,
+    /// even when the file marks a track as its default.
+    pub subtitles: Option<i64>,
 }
 
 impl Source {
@@ -64,6 +70,27 @@ impl Source {
     pub fn new(location: impl Into<String>) -> Self {
         Self { location: location.into(), ..Self::default() }
     }
+}
+
+/// One stream inside the loaded file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Track {
+    /// mpv's id for the track, unique among tracks of the same kind.
+    pub id: i64,
+    pub kind: TrackKind,
+    /// The name the file gives the track, such as "Director's commentary".
+    pub title: Option<String>,
+    /// A language code, such as `eng`.
+    pub language: Option<String>,
+    /// Whether this is the track being played or shown.
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackKind {
+    Video,
+    Audio,
+    Subtitles,
 }
 
 /// What happened in the player, as returned by [`Player::wait_event`].
@@ -112,9 +139,12 @@ impl Player {
             source.headers.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         self.set_strings("http-header-fields", &headers)?;
 
-        let start = format!("start={}", source.start.as_secs_f64());
+        let mut options = vec![format!("start={}", source.start.as_secs_f64())];
+        options.extend(source.audio.map(|id| format!("aid={id}")));
+        options
+            .push(source.subtitles.map_or_else(|| "sid=no".to_owned(), |id| format!("sid={id}")));
         // "-1" is the playlist index argument, which "replace" ignores.
-        self.command(&["loadfile", &source.location, "replace", "-1", &start])
+        self.command(&["loadfile", &source.location, "replace", "-1", &options.join(",")])
     }
 
     /// Asks mpv to shut down. [`Event::Shutdown`] follows.
@@ -166,10 +196,57 @@ impl Player {
 
     /// Frames dropped since the file was loaded because they came too late.
     pub fn dropped_frames(&self) -> Result<u64> {
-        let count = self.string("frame-drop-count")?.unwrap_or_else(|| "0".into());
-        count.parse().map_err(|_| Error::Mpv {
-            action: "read frame-drop-count".into(),
-            message: format!("not a number: {count}"),
+        Ok(self.number("frame-drop-count")?.unwrap_or(0))
+    }
+
+    /// The volume, where 100 is the file's own level.
+    pub fn volume(&self) -> Result<f64> {
+        Ok(self.number("volume")?.unwrap_or(100.0))
+    }
+
+    pub fn set_volume(&self, volume: f64) -> Result<()> {
+        self.set_string("volume", &volume.to_string())
+    }
+
+    pub fn is_muted(&self) -> Result<bool> {
+        Ok(self.string("mute")?.as_deref() == Some("yes"))
+    }
+
+    /// The video, audio and subtitle tracks of the loaded file.
+    pub fn tracks(&self) -> Result<Vec<Track>> {
+        let count: usize = self.number("track-list/count")?.unwrap_or(0);
+        (0..count).map(|index| self.track(index)).collect()
+    }
+
+    /// Plays the audio track with this id.
+    pub fn select_audio(&self, id: i64) -> Result<()> {
+        self.set_string("aid", &id.to_string())
+    }
+
+    /// Shows the subtitle track with this id, or none.
+    pub fn select_subtitles(&self, id: Option<i64>) -> Result<()> {
+        self.set_string("sid", &id.map_or_else(|| "no".to_owned(), |id| id.to_string()))
+    }
+
+    fn track(&self, index: usize) -> Result<Track> {
+        let field = |name: &str| self.string(&format!("track-list/{index}/{name}"));
+        let kind = match field("type")?.as_deref() {
+            Some("video") => TrackKind::Video,
+            Some("audio") => TrackKind::Audio,
+            Some("sub") => TrackKind::Subtitles,
+            other => {
+                return Err(Error::Mpv {
+                    action: format!("read track {index}"),
+                    message: format!("unknown track type {other:?}"),
+                });
+            }
+        };
+        Ok(Track {
+            id: self.number(&format!("track-list/{index}/id"))?.unwrap_or(0),
+            kind,
+            title: field("title")?,
+            language: field("lang")?,
+            selected: field("selected")?.as_deref() == Some("yes"),
         })
     }
 
@@ -275,6 +352,17 @@ impl Player {
         // SAFETY: `value` was allocated by mpv and is not used again.
         unsafe { sys::mpv_free(value.cast()) };
         Ok(Some(text))
+    }
+
+    /// Reads a property that mpv prints as a number.
+    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>> {
+        let Some(text) = self.string(name)? else {
+            return Ok(None);
+        };
+        text.parse().map(Some).map_err(|_| Error::Mpv {
+            action: format!("read {name}"),
+            message: format!("not a number: {text}"),
+        })
     }
 
     fn seconds(&self, name: &str) -> Result<Option<Duration>> {

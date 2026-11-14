@@ -24,6 +24,12 @@ impl Background {
         Ok(Self { runtime })
     }
 
+    /// Runs `work` and waits for it, blocking the calling thread. Only for
+    /// the moment the app quits, when nothing will run afterwards.
+    pub fn wait<T>(&self, work: impl Future<Output = T>) -> T {
+        self.runtime.block_on(work)
+    }
+
     /// Runs `work` off the main thread, then calls `then` with its result on
     /// the main thread.
     pub fn run<T: Send + 'static>(

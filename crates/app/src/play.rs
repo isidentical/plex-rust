@@ -188,11 +188,22 @@ fn state(player: &Player) -> player::Result<serde_json::Value> {
         "buffered": seconds(player.buffered()?),
         "hardware_decoder": player.hardware_decoder()?,
         "dropped_frames": player.dropped_frames()?,
+        "volume": player.volume()?,
+        "tracks": player.tracks()?.iter().map(track).collect::<Vec<_>>(),
         // macOS does not draw windows that are covered or on another Space,
         // and mpv counts every frame that was not drawn as dropped. A drop
         // count only says something about playback when this is true.
         "window_visible": window_is_visible(),
     }))
+}
+
+fn track(track: &player::Track) -> serde_json::Value {
+    serde_json::json!({
+        "id": track.id,
+        "kind": format!("{:?}", track.kind),
+        "language": track.language,
+        "selected": track.selected,
+    })
 }
 
 fn window_is_visible() -> bool {

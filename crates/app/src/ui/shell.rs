@@ -1,24 +1,27 @@
 //! The main window: sidebar on the left, the chosen place on the right.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
+use objc2::runtime::ProtocolObject;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
-    NSBackingStoreType, NSMenu, NSMenuItem, NSSplitViewController, NSSplitViewItem, NSTextField,
-    NSView, NSViewController, NSWindow, NSWindowStyleMask,
+    NSApplicationDelegate, NSBackingStoreType, NSMenu, NSMenuItem, NSSplitViewController,
+    NSSplitViewItem, NSTextField, NSView, NSViewController, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSString, ns_string};
+use objc2_foundation::{
+    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSString, ns_string,
+};
 use plex::MediaServer;
 use plex::model::{Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
 use super::layout;
-use super::player::{PlayerScreen, Purpose};
+use super::player::{NORMAL_SPEED, Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
 use super::sidebar::{Destination, Sidebar};
@@ -58,6 +61,8 @@ struct Shell {
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
+    /// Playback speed in tenths of normal, kept from one item to the next.
+    speed: Cell<u32>,
 }
 
 /// What exists only while connected to a server.
@@ -135,6 +140,8 @@ pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
         }
     });
 
+    let delegate = AppDelegate::new(main_thread, Rc::clone(&shell));
+    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
     Ok(())
 }
@@ -155,6 +162,7 @@ impl Shell {
             destination: RefCell::new(Destination::Home),
             split: NSSplitViewController::new(main_thread),
             playing: RefCell::new(None),
+            speed: Cell::new(NORMAL_SPEED),
         });
 
         let selected = Rc::downgrade(&shell);
@@ -349,8 +357,14 @@ impl Shell {
         });
     }
 
-    /// Replaces the whole window content with the player, playing `item`.
+    /// Plays `item`, first fetching it in full: a listing leaves out the
+    /// intro and credits markers that the player offers to skip.
     fn play(self: &Rc<Self>, item: &Item, purpose: Purpose) {
+        self.fetch(item.rating_key.clone(), move |shell, item| shell.open_player(item, purpose));
+    }
+
+    /// Replaces the whole window content with the player, playing `item`.
+    fn open_player(self: &Rc<Self>, item: &Item, purpose: Purpose) {
         let Some(session) = self.session.get() else {
             return;
         };
@@ -360,11 +374,11 @@ impl Shell {
             Rc::clone(&self.background),
             session.server.clone(),
             item,
+            self.speed.get(),
             purpose,
-            move || {
+            move |outcome| {
                 if let Some(shell) = closed.upgrade() {
-                    shell.set_window_content(&shell.split);
-                    shell.playing.borrow_mut().take();
+                    shell.player_closed(outcome, purpose);
                 }
             },
         );
@@ -378,6 +392,40 @@ impl Shell {
             }
             Err(error) => self.show_message(&with_causes(&error)),
         }
+    }
+
+    fn player_closed(self: &Rc<Self>, outcome: Outcome, purpose: Purpose) {
+        let Some(screen) = self.playing.borrow_mut().take() else {
+            return;
+        };
+        // The chosen speed carries over to whatever is played next.
+        self.speed.set(screen.speed());
+        self.set_window_content(&self.split);
+        if outcome == Outcome::Finished && screen.item().kind == Kind::Episode {
+            self.play_episode_after(screen.item(), purpose);
+        }
+    }
+
+    /// Plays the episode that follows `episode` in its season, if there is
+    /// one. The end of a season is a natural place to stop.
+    fn play_episode_after(self: &Rc<Self>, episode: &Item, purpose: Purpose) {
+        let (Some(session), Some(season), Some(number)) =
+            (self.session.get(), episode.parent_rating_key.clone(), episode.index)
+        else {
+            return;
+        };
+        let server = session.server.clone();
+        let load = async move { server.children(&season).await };
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, load, move |episodes| match episodes {
+            Ok(episodes) => {
+                let next = episodes.iter().find(|episode| episode.index == Some(number + 1));
+                if let Some(next) = next {
+                    shell.play(next, purpose);
+                }
+            }
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
     }
 
     /// Swaps what the window shows without letting it change size. A
@@ -465,4 +513,40 @@ fn main_menu(main_thread: MainThreadMarker) -> Retained<NSMenu> {
     let menu = NSMenu::new(main_thread);
     menu.addItem(&app_item);
     menu
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements and `AppDelegate`
+    // does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ReelShellDelegate"]
+    #[ivars = Rc<Shell>]
+    struct AppDelegate;
+
+    unsafe impl NSObjectProtocol for AppDelegate {}
+
+    unsafe impl NSApplicationDelegate for AppDelegate {
+        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
+        fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
+            true
+        }
+
+        /// Quitting mid-film must still leave the server with the place
+        /// the viewer got to.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            if let Some(screen) = self.ivars().playing.borrow_mut().take() {
+                screen.close_for_quit();
+            }
+        }
+    }
+);
+
+impl AppDelegate {
+    fn new(main_thread: MainThreadMarker, shell: Rc<Shell>) -> Retained<Self> {
+        let this = Self::alloc(main_thread).set_ivars(shell);
+        // SAFETY: `init` is NSObject's designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
 }

@@ -6,6 +6,7 @@ mod error;
 mod images;
 mod play;
 mod progress;
+mod source;
 mod ui;
 mod video_layer;
 
@@ -89,14 +90,7 @@ fn play(what: &str, unattended: Option<Duration>) -> Result<()> {
         Ok::<_, Error>((server, item))
     })?;
 
-    let part = item.media.first().and_then(|media| media.parts.first());
-    let part = part.ok_or_else(|| Error::NotPlayable(item.title.clone()))?;
-    let file = server.original_file(part);
-    let source = Source {
-        location: file.url,
-        headers: file.headers,
-        start: item.view_offset.map(Into::into).unwrap_or_default(),
-    };
+    let source = source::of(&server, &item)?;
     // An unattended run is a check. It must not move anyone's place in a
     // film, so it tells the server nothing.
     let progress = unattended.is_none().then(|| Progress::new(runtime, server, item.rating_key));

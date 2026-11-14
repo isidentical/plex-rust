@@ -97,6 +97,8 @@ pub struct Item {
     pub index: Option<u32>,
     /// For an episode, its season number.
     pub parent_index: Option<u32>,
+    /// For an episode, its season. For a season, its show.
+    pub parent_rating_key: Option<RatingKey>,
     /// For an episode, the show's title.
     pub grandparent_title: Option<String>,
     /// For an episode, the show's poster.
@@ -161,6 +163,21 @@ pub struct Part {
     /// [`MediaServer::item`]: crate::MediaServer::item
     #[serde(rename = "Stream", default)]
     pub streams: Vec<Stream>,
+}
+
+impl Part {
+    /// The tracks of `kind` that are inside the file itself, in file order.
+    /// A player numbers its tracks the same way, from 1.
+    pub fn embedded(&self, kind: StreamKind) -> impl Iterator<Item = &Stream> {
+        self.streams.iter().filter(move |stream| stream.kind == kind && stream.key.is_none())
+    }
+
+    /// The position, from 1, of the track of `kind` that the viewer last
+    /// chose, among the embedded tracks of that kind.
+    pub fn chosen(&self, kind: StreamKind) -> Option<i64> {
+        let position = self.embedded(kind).position(|stream| stream.selected)?;
+        i64::try_from(position + 1).ok()
+    }
 }
 
 /// A video, audio or subtitle track inside a file.
@@ -230,4 +247,30 @@ pub struct Colors {
     pub top_right: String,
     pub bottom_left: String,
     pub bottom_right: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_chosen_track_is_counted_among_embedded_tracks_of_its_kind() {
+        let part: Part = serde_json::from_value(serde_json::json!({
+            "id": 1, "key": "/library/parts/1/0/file.mkv", "size": 1,
+            "Stream": [
+                { "id": 10, "streamType": 1 },
+                { "id": 11, "streamType": 2, "selected": true },
+                { "id": 12, "streamType": 3, "key": "/library/streams/12" },
+                { "id": 13, "streamType": 3 },
+                { "id": 14, "streamType": 3, "selected": true },
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(part.chosen(StreamKind::Audio), Some(1));
+        // The first subtitle stream is a separate file, so it is not one of
+        // the file's own tracks and does not count.
+        assert_eq!(part.chosen(StreamKind::Subtitle), Some(2));
+        assert_eq!(part.chosen(StreamKind::Video), None);
+    }
 }

@@ -83,6 +83,27 @@ impl MediaServer {
         Ok(())
     }
 
+    /// Remembers which audio and subtitle tracks the viewer chose for
+    /// `part`, by stream id. `None` leaves a choice as it is, and
+    /// `Some(None)` for subtitles means none.
+    pub async fn choose_streams(
+        &self,
+        part: &Part,
+        audio: Option<u64>,
+        subtitles: Option<Option<u64>>,
+    ) -> Result<()> {
+        let mut query = Vec::new();
+        query.extend(audio.map(|id| ("audioStreamID", id.to_string())));
+        // The server reads 0 as "no subtitles".
+        query.extend(subtitles.map(|id| ("subtitleStreamID", id.unwrap_or(0).to_string())));
+        self.request(Method::PUT, &format!("/library/parts/{}", part.id))
+            .query(&query)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     /// Marks an item as watched or unwatched.
     pub async fn set_watched(&self, item: &RatingKey, watched: bool) -> Result<()> {
         let path = if watched { "/:/scrobble" } else { "/:/unscrobble" };

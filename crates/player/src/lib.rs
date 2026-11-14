@@ -7,6 +7,6 @@ mod core;
 mod error;
 mod render;
 
-pub use crate::core::{EndReason, Event, Player, Source};
+pub use crate::core::{EndReason, Event, Player, Source, Track, TrackKind};
 pub use crate::error::{Error, Result};
 pub use crate::render::Renderer;
