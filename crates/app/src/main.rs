@@ -24,6 +24,7 @@ usage: reel
        reel snapshot home <png-path>
        reel snapshot library <index> <png-path>
        reel snapshot item <rating-key> <png-path>
+       reel snapshot play <rating-key> <png-path>
        reel login
        reel servers [<address>]
        reel api <path>
@@ -53,6 +54,9 @@ fn run(args: &[&str]) -> Result<()> {
         }
         ["snapshot", "item", key, path] => {
             ui::shell::run(Some((Subject::Item((*key).to_owned()), path.into())))
+        }
+        ["snapshot", "play", key, path] => {
+            ui::shell::run(Some((Subject::Play((*key).to_owned()), path.into())))
         }
         ["login"] => account::login(),
         ["servers"] => servers(None),

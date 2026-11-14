@@ -40,3 +40,59 @@ fn replace_content(parent: &NSView, child: &NSView) {
     child.setTranslatesAutoresizingMaskIntoConstraints(false);
     parent.setSubviews(&NSArray::from_slice(&[child]));
 }
+
+/// Adds `child` on top of whatever `parent` holds, covering all of it,
+/// including the part under the title bar.
+pub fn cover(parent: &NSView, child: &NSView) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.addSubview(child);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        child
+            .leadingAnchor()
+            .constraintEqualToAnchor(&parent.leadingAnchor()),
+        child
+            .trailingAnchor()
+            .constraintEqualToAnchor(&parent.trailingAnchor()),
+        child
+            .topAnchor()
+            .constraintEqualToAnchor(&parent.topAnchor()),
+        child
+            .bottomAnchor()
+            .constraintEqualToAnchor(&parent.bottomAnchor()),
+    ]));
+}
+
+/// Adds `child` on top of whatever `parent` holds, along its bottom edge,
+/// `margin` in from the bottom and both sides.
+pub fn dock_bottom(parent: &NSView, child: &NSView, margin: f64) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.addSubview(child);
+    let (leading, trailing) = (parent.leadingAnchor(), parent.trailingAnchor());
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        child
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&leading, margin),
+        child
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&trailing, -margin),
+        child
+            .bottomAnchor()
+            .constraintEqualToAnchor_constant(&parent.bottomAnchor(), -margin),
+    ]));
+}
+
+/// Adds `child` on top of whatever `parent` holds, in its top left corner
+/// below the title bar, `margin` in from both edges.
+pub fn dock_top_leading(parent: &NSView, child: &NSView, margin: f64) {
+    child.setTranslatesAutoresizingMaskIntoConstraints(false);
+    parent.addSubview(child);
+    let top = parent.safeAreaLayoutGuide().topAnchor();
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        child
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&parent.leadingAnchor(), margin),
+        child
+            .topAnchor()
+            .constraintEqualToAnchor_constant(&top, margin),
+    ]));
+}

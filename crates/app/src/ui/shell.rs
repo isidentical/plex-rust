@@ -18,6 +18,7 @@ use plex::model::{Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
 use super::layout;
+use super::player::PlayerScreen;
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
 use super::sidebar::{Destination, Sidebar};
@@ -54,6 +55,9 @@ struct Shell {
     place: RefCell<Place>,
     /// Where Back on a detail page returns to.
     destination: RefCell<Destination>,
+    /// The sidebar and content area, which the player replaces while open.
+    split: Retained<NSSplitViewController>,
+    playing: RefCell<Option<Retained<PlayerScreen>>>,
 }
 
 /// What exists only while connected to a server.
@@ -81,6 +85,8 @@ pub enum Subject {
     Library(usize),
     /// The detail page of the item with this rating key.
     Item(String),
+    /// The player, playing the item with this rating key, muted.
+    Play(String),
 }
 
 /// Opens the main window and runs the app until it quits.
@@ -152,6 +158,8 @@ impl Shell {
             session: OnceCell::new(),
             place: RefCell::new(Place::Message),
             destination: RefCell::new(Destination::Home),
+            split: NSSplitViewController::new(main_thread),
+            playing: RefCell::new(None),
         });
 
         let selected = Rc::downgrade(&shell);
@@ -166,12 +174,13 @@ impl Shell {
         sidebar_item.setMinimumThickness(theme::SIDEBAR_WIDTH);
         sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
 
-        let split = NSSplitViewController::new(main_thread);
-        split.addSplitViewItem(&sidebar_item);
-        split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
-            &content_controller,
-        ));
-        shell.window.setContentViewController(Some(&split));
+        shell.split.addSplitViewItem(&sidebar_item);
+        shell
+            .split
+            .addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
+                &content_controller,
+            ));
+        shell.window.setContentViewController(Some(&shell.split));
         shell.window.setContentSize(theme::WINDOW_SIZE);
         shell.window.center();
 
@@ -210,8 +219,14 @@ impl Shell {
             // Selecting a row is what shows its place.
             sidebar.show(destinations, first);
         }
-        if let Some(Subject::Item(key)) = subject {
-            self.open_key(RatingKey::new(key.as_str()));
+        match subject {
+            Some(Subject::Item(key)) => self.fetch(RatingKey::new(key.as_str()), Self::open),
+            Some(Subject::Play(key)) => {
+                self.fetch(RatingKey::new(key.as_str()), |shell, item| {
+                    shell.play(item, true)
+                });
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -306,7 +321,11 @@ impl Shell {
         let Some(session) = self.session.get() else {
             return;
         };
-        let (opened, back) = (Rc::downgrade(self), Rc::downgrade(self));
+        let (opened, played, back) = (
+            Rc::downgrade(self),
+            Rc::downgrade(self),
+            Rc::downgrade(self),
+        );
         let detail = Detail::new(
             self.main_thread,
             item,
@@ -314,6 +333,11 @@ impl Shell {
             move |child| {
                 if let Some(shell) = opened.upgrade() {
                     shell.open(child);
+                }
+            },
+            move |item| {
+                if let Some(shell) = played.upgrade() {
+                    shell.play(item, false);
                 }
             },
             move || {
@@ -339,8 +363,8 @@ impl Shell {
             });
     }
 
-    /// Fetches the item with `key` and shows its detail page.
-    fn open_key(self: &Rc<Self>, key: RatingKey) {
+    /// Fetches the item with `key` and hands it to `then`.
+    fn fetch(self: &Rc<Self>, key: RatingKey, then: impl FnOnce(&Rc<Self>, &Item) + 'static) {
         let Some(session) = self.session.get() else {
             return;
         };
@@ -349,9 +373,48 @@ impl Shell {
         let shell = Rc::clone(self);
         self.background
             .run(self.main_thread, load, move |item| match item {
-                Ok(item) => shell.open(&item),
+                Ok(item) => then(&shell, &item),
                 Err(error) => shell.show_message(&with_causes(&error)),
             });
+    }
+
+    /// Replaces the whole window content with the player, playing `item`.
+    fn play(self: &Rc<Self>, item: &Item, muted: bool) {
+        let Some(session) = self.session.get() else {
+            return;
+        };
+        let closed = Rc::downgrade(self);
+        let screen = PlayerScreen::open(
+            self.main_thread,
+            Rc::clone(&self.background),
+            session.server.clone(),
+            item,
+            muted,
+            move || {
+                if let Some(shell) = closed.upgrade() {
+                    shell.set_window_content(&shell.split);
+                    shell.playing.borrow_mut().take();
+                }
+            },
+        );
+        match screen {
+            Ok(screen) => {
+                let controller = view_controller(self.main_thread);
+                controller.setView(screen.view());
+                self.set_window_content(&controller);
+                *self.playing.borrow_mut() = Some(screen);
+            }
+            Err(error) => self.show_message(&with_causes(&error)),
+        }
+    }
+
+    /// Swaps what the window shows without letting it change size. A
+    /// window otherwise shrinks to fit a controller whose view has no size
+    /// of its own.
+    fn set_window_content(&self, controller: &NSViewController) {
+        let frame = self.window.frame();
+        self.window.setContentViewController(Some(controller));
+        self.window.setFrame_display(frame, true);
     }
 
     fn snapshot_and_exit(&self, path: &Path) {

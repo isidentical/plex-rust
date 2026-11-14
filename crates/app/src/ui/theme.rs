@@ -41,3 +41,6 @@ pub const DETAIL_POSTER_HEIGHT: u32 = 300;
 pub const DETAIL_TITLE_FONT_SIZE: f64 = 30.0;
 pub const DETAIL_TEXT_WIDTH: f64 = 620.0;
 pub const DETAIL_SUMMARY_LINES: isize = 8;
+
+pub const CONTROL_SPACING: f64 = 12.0;
+pub const CONTROL_BAR_RADIUS: f64 = 16.0;

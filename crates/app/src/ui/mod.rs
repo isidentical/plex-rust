@@ -2,6 +2,7 @@
 
 mod detail;
 mod layout;
+mod player;
 mod poster;
 mod posters;
 pub mod shell;

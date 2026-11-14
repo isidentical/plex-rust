@@ -8,12 +8,14 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSFont, NSFontWeightBold, NSImage, NSImageScaling, NSImageView,
-    NSLayoutAttribute, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont, NSFontWeightBold, NSImage,
+    NSImageScaling, NSImageView, NSLayoutAttribute, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSString, ns_string};
 use plex::model::{Item, Kind};
 
+use super::player::clock;
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
 use super::theme;
@@ -23,6 +25,8 @@ pub struct Ivars {
     page: Retained<NSStackView>,
     /// The seasons of a show or the episodes of a season.
     children: Retained<Posters>,
+    item: Item,
+    on_play: Box<dyn Fn(&Item)>,
     on_back: Box<dyn Fn()>,
 }
 
@@ -38,6 +42,11 @@ define_class!(
     unsafe impl NSObjectProtocol for Detail {}
 
     impl Detail {
+        #[unsafe(method(play:))]
+        fn play(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().on_play)(&self.ivars().item);
+        }
+
         #[unsafe(method(back:))]
         fn back(&self, _sender: Option<&AnyObject>) {
             (self.ivars().on_back)();
@@ -47,12 +56,14 @@ define_class!(
 
 impl Detail {
     /// `on_open` is called when one of the item's children is clicked,
-    /// `on_back` when the user asks to leave the page.
+    /// `on_play` when the user asks to watch the item, and `on_back` when
+    /// they ask to leave the page.
     pub fn new(
         main_thread: MainThreadMarker,
         item: &Item,
         images: &Rc<Images>,
         on_open: impl Fn(&Item) + 'static,
+        on_play: impl Fn(&Item) + 'static,
         on_back: impl Fn() + 'static,
     ) -> Retained<Self> {
         // A season lists episodes, which are wide stills. A show lists
@@ -84,6 +95,8 @@ impl Detail {
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             page,
             children,
+            item: item.clone(),
+            on_play: Box::new(on_play),
             on_back: Box::new(on_back),
         });
         // SAFETY: `init` is NSObject's designated initializer.
@@ -91,7 +104,8 @@ impl Detail {
 
         let page = &detail.ivars().page;
         page.addArrangedSubview(&detail.back_button(main_thread));
-        page.addArrangedSubview(&header(item, images, main_thread));
+        let play = detail.play_button(main_thread);
+        page.addArrangedSubview(&header(item, images, play.as_deref(), main_thread));
         page.addArrangedSubview(detail.ivars().children.view());
         detail
     }
@@ -106,6 +120,39 @@ impl Detail {
             title: String::new(),
             items: children,
         }]);
+    }
+
+    /// "Play", or "Resume at 1:16:05" when the item was left partway. `None`
+    /// for shows and seasons, which have no file of their own.
+    fn play_button(&self, main_thread: MainThreadMarker) -> Option<Retained<NSButton>> {
+        let item = &self.ivars().item;
+        if item.media.is_empty() {
+            return None;
+        }
+        let title = match item.view_offset {
+            Some(offset) => format!("Resume at {}", clock(offset.into())),
+            None => "Play".to_owned(),
+        };
+        // SAFETY: the button does not retain its target. `Detail` owns the
+        // page the button is in, so it outlives every click.
+        let button = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(&title),
+                Some(self),
+                Some(sel!(play:)),
+                main_thread,
+            )
+        };
+        button.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("play.fill"),
+                None,
+            )
+            .as_deref(),
+        );
+        button.setImagePosition(NSCellImagePosition::ImageLeading);
+        button.setControlSize(NSControlSize::Large);
+        Some(button)
     }
 
     fn back_button(&self, main_thread: MainThreadMarker) -> Retained<NSView> {
@@ -136,7 +183,12 @@ impl Detail {
 }
 
 /// Artwork on the left, title and description on the right.
-fn header(item: &Item, images: &Rc<Images>, main_thread: MainThreadMarker) -> Retained<NSView> {
+fn header(
+    item: &Item,
+    images: &Rc<Images>,
+    play: Option<&NSButton>,
+    main_thread: MainThreadMarker,
+) -> Retained<NSView> {
     let poster = NSImageView::new(main_thread);
     poster.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
     poster.setWantsLayer(true);
@@ -182,7 +234,9 @@ fn header(item: &Item, images: &Rc<Images>, main_thread: MainThreadMarker) -> Re
     summary.setPreferredMaxLayoutWidth(theme::DETAIL_TEXT_WIDTH);
     summary.setMaximumNumberOfLines(theme::DETAIL_SUMMARY_LINES);
 
-    let text: [&NSView; 3] = [&title, &facts, &summary];
+    let mut text: Vec<&NSView> = vec![&title, &facts];
+    text.extend(play.map(|play| -> &NSView { play }));
+    text.push(&summary);
     let text = NSStackView::stackViewWithViews(&NSArray::from_slice(&text), main_thread);
     text.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     text.setAlignment(NSLayoutAttribute::Leading);
