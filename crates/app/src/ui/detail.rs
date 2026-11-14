@@ -10,8 +10,10 @@ use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityLinkRole, NSButton, NSCellImagePosition, NSColor,
-    NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSPopUpButton, NSStackView,
-    NSStackViewGravity, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSControlSize, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultLow, NSPopUpButton, NSStackView, NSStackViewGravity,
+    NSStackViewVisibilityPriorityDetachOnlyIfNecessary, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
@@ -474,8 +476,13 @@ impl Hero {
             [&show_link, &first_dot, &season_link, &second_dot, &episode_number];
         let eyebrow = NSStackView::stackViewWithViews(&NSArray::from_slice(&eyebrow), main_thread);
         eyebrow.setSpacing(theme::SPACE_S);
-        let title =
-            label::paragraph(theme::FONT_LARGE_TITLE, Weight::Bold, &primary, 2, main_thread);
+        let title = label::paragraph(
+            theme::FONT_LARGE_TITLE,
+            Weight::Bold,
+            &primary,
+            theme::HERO_TITLE_LINES,
+            main_thread,
+        );
         let badges = NSStackView::new(main_thread);
         badges.setSpacing(theme::SPACE_S);
 
@@ -484,9 +491,20 @@ impl Hero {
         play.button.setKeyEquivalent(ns_string!("\r"));
         let watched = Pill::new("Mark as Watched", "checkmark", false, main_thread);
         let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
-        let buttons: [&NSView; 3] = [&play.button, &watched.button, &remaining];
-        let buttons = NSStackView::stackViewWithViews(&NSArray::from_slice(&buttons), main_thread);
+        // Placed by gravity, which is what lets the stack drop a view that
+        // does not fit.
+        let row: [&NSView; 3] = [&play.button, &watched.button, &remaining];
+        let buttons = NSStackView::new(main_thread);
+        buttons.setViews_inGravity(&NSArray::from_slice(&row), NSStackViewGravity::Leading);
         buttons.setSpacing(theme::SPACE_M);
+        // In a narrow window the row gives up how much is left to watch,
+        // whole, before anything in it is cut short.
+        buttons.setClippingResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let if_necessary = NSStackViewVisibilityPriorityDetachOnlyIfNecessary;
+        buttons.setVisibilityPriority_forView(if_necessary, &remaining);
 
         let seasons = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(main_thread),
@@ -567,9 +585,10 @@ impl Hero {
         let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
         // The strip starts where the header of a page without one ends.
         let bar_middle = theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT / 2.0;
-        for text in [&self.title, &self.summary] {
-            text.setPreferredMaxLayoutWidth(theme::HERO_TEXT_WIDTH);
-        }
+        self.summary.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Vertical,
+        );
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             poster.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
             poster.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
@@ -583,6 +602,10 @@ impl Hero {
                 .trailingAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&view.trailingAnchor(), -margin),
             column.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
+            // The text never runs past the poster. When a long title takes
+            // three lines, the summary gives up lines of its own.
+            column.bottomAnchor().constraintLessThanOrEqualToAnchor(&poster.bottomAnchor()),
+            buttons.trailingAnchor().constraintLessThanOrEqualToAnchor(&column.trailingAnchor()),
             season.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
             season.centerYAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), bar_middle),
         ]));

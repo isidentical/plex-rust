@@ -119,6 +119,7 @@ pub const PILL_WASH_OPACITY: f64 = 0.16;
 pub const HERO_POSTER_WIDTH: f64 = 232.0;
 pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
 pub const HERO_TEXT_WIDTH: f64 = 640.0;
+pub const HERO_TITLE_LINES: isize = 3;
 pub const HERO_SUMMARY_LINES: isize = 4;
 pub const HERO_SHADOW_OPACITY: f32 = 0.5;
 pub const HERO_SHADOW_RADIUS: f64 = 24.0;
