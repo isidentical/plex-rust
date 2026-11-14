@@ -132,12 +132,13 @@ pub enum Press {
     Held,
 }
 
-/// How many times the mouse button went down in quick succession.
+/// How many times the mouse button went down in quick succession, or a
+/// finger on a touch screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clicks {
     Single,
     Double,
-    /// Two taps of a finger on a touch screen.
+    Tap,
     DoubleTap,
 }
 
@@ -315,7 +316,8 @@ define_class!(
             // event that a finger on the screen made says so.
             let touched = event.subtype() == NSEventSubtype::Touch;
             let clicks = match (event.clickCount(), touched) {
-                (1, _) => Clicks::Single,
+                (1, false) => Clicks::Single,
+                (1, true) => Clicks::Tap,
                 (2, false) => Clicks::Double,
                 (2, true) => Clicks::DoubleTap,
                 _ => return,

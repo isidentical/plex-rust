@@ -143,6 +143,13 @@ pub const FAILURE_TITLE_FONT_SIZE: f64 = 17.0;
 pub const FAILURE_TEXT_WIDTH: f64 = 380.0;
 pub const FAILURE_REASON_LINES: isize = 3;
 
+/// Seconds a click on the picture waits for a second one before it
+/// pauses. The second click of a double click comes sooner than this from
+/// most hands, and a pause this long after its click still reads as the
+/// click's doing. The system's own double click interval is twice as long
+/// as it is set by default, which reads as a player that is slow.
+pub const CLICK_WAIT: f64 = 0.25;
+
 /// How much larger one press of Command-plus makes the picture.
 pub const ZOOM_STEP: f64 = 1.25;
 

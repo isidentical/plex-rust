@@ -32,7 +32,7 @@ use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::{NSCursor, NSMenuItem, NSView, NSWindowStyleMask};
+use objc2_app_kit::{NSCursor, NSEvent, NSMenuItem, NSView, NSWindowStyleMask};
 use objc2_foundation::{
     NSActivityOptions, NSDate, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
     NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
@@ -135,6 +135,16 @@ enum UpNext {
     Cancelled,
 }
 
+/// What has come of the last click on the picture.
+enum Click {
+    /// Nothing that a second click would have to take back.
+    Settled,
+    /// It is waiting, on this timer, to be known for a single click.
+    Waiting(Retained<NSTimer>),
+    /// It paused or resumed.
+    Acted,
+}
+
 /// How far the item on screen has got towards playing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -171,6 +181,7 @@ pub struct Ivars {
     /// long as it rests there.
     pointer_on_controls: Cell<bool>,
     ticks_idle: Cell<u32>,
+    click: RefCell<Click>,
     /// Whether one of the pop-up menus is up. The controls it hangs from
     /// stay for as long as it is.
     menu_open: Cell<bool>,
@@ -260,6 +271,13 @@ define_class!(
             }
         }
 
+        /// No second click came: the first was a click and not half of a
+        /// double click.
+        #[unsafe(method(clickWaited:))]
+        fn click_waited(&self, _timer: Option<&AnyObject>) {
+            self.act_on_click();
+        }
+
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&AnyObject>) {
             self.or_log(self.on_tick());
@@ -323,6 +341,7 @@ impl PlayerScreen {
             controls_shown: Cell::new(true),
             pointer_on_controls: Cell::new(false),
             ticks_idle: Cell::new(0),
+            click: RefCell::new(Click::Settled),
             menu_open: Cell::new(false),
             ticks_of_scrub_settling_left: Cell::new(0),
             shows_length: Cell::new(false),
@@ -731,6 +750,9 @@ impl PlayerScreen {
             return false;
         };
         timer.invalidate();
+        if let Click::Waiting(wait) = ivars.click.replace(Click::Settled) {
+            wait.invalidate();
+        }
         if let Some(remote) = ivars.remote.borrow_mut().take() {
             remote.release();
         }
@@ -913,24 +935,8 @@ impl PlayerScreen {
                 }
             },
             move |count| {
-                let Some(screen) = clicks.load() else {
-                    return;
-                };
-                match count {
-                    Clicks::Single => screen.or_log(screen.toggle_pause()),
-                    // The first click of the pair already paused or resumed.
-                    // Undo it, so that a double click only changes the size.
-                    Clicks::Double => {
-                        screen.or_log(screen.toggle_pause());
-                        screen.toggle_full_screen();
-                    }
-                    // A finger has no second pair to tap with, as a
-                    // trackpad has for this, and a screen is where a
-                    // picture gets pinched: there two taps fill the view.
-                    Clicks::DoubleTap => {
-                        screen.or_log(screen.toggle_pause());
-                        screen.or_log(screen.handle_gesture(Gesture::Toggle));
-                    }
+                if let Some(screen) = clicks.load() {
+                    screen.clicked(count);
                 }
             },
             move |gesture| {
@@ -948,6 +954,85 @@ impl PlayerScreen {
                 }
             },
         );
+    }
+
+    /// Acts on a click or a tap on the picture: one pauses or resumes, two
+    /// change the size of the window or of the picture.
+    ///
+    /// A click waits to see whether a second follows, so that a double
+    /// click does not pause the film for the moment between its two
+    /// clicks. A tap acts at once, because a finger on the glass expects
+    /// the picture to answer it, and is taken back if a second follows.
+    fn clicked(&self, clicks: Clicks) {
+        match clicks {
+            Clicks::Single => self.wait_for_second_click(),
+            Clicks::Tap => self.act_on_click(),
+            Clicks::Double => {
+                self.take_back_click();
+                self.toggle_full_screen();
+            }
+            // A finger has no second pair to tap with, as a trackpad has
+            // for this, and a screen is where a picture gets pinched:
+            // there two taps fill the view.
+            Clicks::DoubleTap => {
+                self.take_back_click();
+                self.or_log(self.handle_gesture(Gesture::Toggle));
+            }
+        }
+    }
+
+    /// Puts a click's pause off until [`theme::CLICK_WAIT`] has passed
+    /// without another click, or the whole of the system's double click
+    /// interval if the viewer has set that shorter. A second click that
+    /// comes later than the wait and still inside the interval finds the
+    /// pause made, and takes it back.
+    fn wait_for_second_click(&self) {
+        // A click that was still waiting when this one came was not half
+        // of a double click: the system counted this one as a first.
+        if matches!(*self.ivars().click.borrow(), Click::Waiting(_)) {
+            self.act_on_click();
+        }
+        let wait = theme::CLICK_WAIT.min(NSEvent::doubleClickInterval());
+        // SAFETY: `clickWaited:` is defined above. The timer retains the
+        // screen until it fires or is invalidated.
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                wait,
+                self,
+                sel!(clickWaited:),
+                None,
+                false,
+            )
+        };
+        // In the common modes, as the screen's own timer is and for the
+        // same reason.
+        // SAFETY: the mode is a constant that Foundation provides.
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        self.ivars().click.replace(Click::Waiting(timer));
+        // The controls answer the click at once, which the pause cannot.
+        self.show_controls(true);
+    }
+
+    /// Pauses or resumes for a click that no second one followed.
+    fn act_on_click(&self) {
+        let ivars = self.ivars();
+        if let Click::Waiting(wait) = ivars.click.replace(Click::Acted) {
+            wait.invalidate();
+        }
+        // The file may have ended, and the screen with it, during the wait.
+        if ivars.timer.borrow().is_some() {
+            self.or_log(self.toggle_pause());
+        }
+    }
+
+    /// Makes a first click one that changed nothing, now that a second
+    /// has followed it.
+    fn take_back_click(&self) {
+        match self.ivars().click.replace(Click::Settled) {
+            Click::Waiting(wait) => wait.invalidate(),
+            Click::Acted => self.or_log(self.toggle_pause()),
+            Click::Settled => {}
+        }
     }
 
     /// Acts on a key going down. Returns whether the key means anything
