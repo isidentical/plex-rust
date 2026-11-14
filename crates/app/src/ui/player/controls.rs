@@ -18,6 +18,7 @@ use plex::model::{Item, Kind};
 use super::badge::Badge;
 use super::chip::{Chip, Style};
 use super::failure::Failure;
+use super::info::Info;
 use super::layout::{add, cover, pin, row};
 use super::pane::Pane;
 use super::slider::{Reading, Slider};
@@ -70,6 +71,8 @@ pub struct Controls {
     pub skip: Retained<Chip>,
     /// Offers the next episode as this one ends, in the skip button's place.
     pub up_next: UpNext,
+    /// Says how the file is being played, when asked.
+    pub info: Info,
     /// Says that the picture is on its way.
     pub waiting: Waiting,
     /// Says that the file stopped playing, and offers to try again.
@@ -121,6 +124,7 @@ impl Controls {
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread, material),
+            info: Info::new(main_thread, material),
             waiting: Waiting::new(main_thread, material),
             failure: Failure::new(main_thread, material),
             badge: Badge::new(main_thread, material),
@@ -294,10 +298,16 @@ impl Controls {
         add(root, &self.skip);
         add(root, self.up_next.view());
         add(root, self.badge.view());
+        add(root, self.info.view());
         add(root, self.waiting.view());
         add(root, self.failure.view());
         add(root, &self.bubble);
         pin(&[
+            self.info
+                .view()
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&trailing, -theme::MARGIN),
+            self.info.view().topAnchor().constraintEqualToAnchor(&self.top.topAnchor()),
             self.waiting.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),
             self.waiting.view().centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()),
             self.failure.view().centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()),

@@ -69,6 +69,7 @@ last given.
 | N | Next episode |
 | P | Start of the episode. Pressed again there, the previous episode |
 | T | Time left, or the full length |
+| I | How the file is being played: picture, colour, decoding, sound, bit rate, dropped frames, buffer |
 | Tab, Shift-Tab | Move from button to button. Space or Return presses the one the keyboard is on |
 | Z | Fill the window with the picture, cropping what does not fit, and back |
 | Command-plus, Command-minus | Picture larger and smaller |

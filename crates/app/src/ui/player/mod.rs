@@ -5,6 +5,7 @@ mod chip;
 mod chrome;
 mod controls;
 mod failure;
+mod info;
 pub mod input;
 mod layout;
 mod menu;
@@ -487,11 +488,13 @@ impl PlayerScreen {
     }
 
     /// Puts away what is on top: the keyboard's place among the buttons,
-    /// the offer of the next episode, then full screen, as Escape does
-    /// everywhere, and then the player.
+    /// the panel of playback information, the offer of the next episode,
+    /// then full screen, as Escape does everywhere, and then the player.
     fn back_out(&self) {
         if self.focused().is_some() {
             self.drop_focus();
+        } else if self.ivars().controls.info.is_shown() {
+            self.ivars().controls.info.set_shown(false);
         } else if self.ivars().up_next.get() == UpNext::Counting {
             self.turn_down_next_episode();
         } else if self.is_full_screen() {
@@ -634,6 +637,14 @@ impl PlayerScreen {
             ("plus.magnifyingglass", format!("{:.2}\u{d7}", zoom.scale()))
         };
         self.notify(&Notice { symbol, text: &text, level: Some(zoom.level()) });
+    }
+
+    /// Shows the panel of playback information, or puts it away.
+    fn toggle_info(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let info = &ivars.controls.info;
+        info.set_shown(!info.is_shown());
+        info.refresh(&ivars.player)
     }
 
     /// Switches the time right of the scrubber between what is left and
@@ -953,7 +964,7 @@ impl PlayerScreen {
                 | Key::ZoomIn
                 | Key::ZoomOut
                 | Key::ZoomFit
-                | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z')
+                | Key::Character('m' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z' | 'i')
         );
         let is_episode = self.item().kind == Kind::Episode;
         let result = match key {
@@ -972,6 +983,7 @@ impl PlayerScreen {
             Key::Character('c') => self.next_track(TrackKind::Subtitles),
             Key::Return => self.skip_marker(),
             Key::Character('t') => self.switch_time_shown(),
+            Key::Character('i') => self.toggle_info(),
             Key::Character('z') => self.handle_gesture(Gesture::Toggle),
             Key::ZoomIn => self.step_zoom(theme::ZOOM_STEP),
             Key::ZoomOut => self.step_zoom(1.0 / theme::ZOOM_STEP),
@@ -1059,6 +1071,11 @@ impl PlayerScreen {
         if ticks.is_multiple_of(TICKS_PER_REPORT) {
             self.report_current_state();
             self.or_log(self.show_now_playing());
+        }
+
+        // Once a second is as often as its numbers are worth reading.
+        if ivars.controls.info.is_shown() && ticks.is_multiple_of(TICKS_PER_SECOND) {
+            ivars.controls.info.refresh(&ivars.player)?;
         }
 
         let notice_left = ivars.ticks_of_notice_left.get();

@@ -110,6 +110,9 @@ pub const STILL_WIDTH: f64 = 160.0;
 pub const STILL_HEIGHT: f64 = 90.0;
 pub const STILL_RADIUS: f64 = 8.0;
 
+/// Between the names and the values in the panel of playback information.
+pub const INFO_COLUMN_SPACING: f64 = 12.0;
+
 /// The sign that the picture is on its way.
 pub const WAITING_RADIUS: f64 = 22.0;
 pub const WAITING_PADDING: f64 = 18.0;
