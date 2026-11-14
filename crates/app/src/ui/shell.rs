@@ -345,6 +345,8 @@ pub struct Tweaks {
     pub scroll: f64,
     /// The first shelf scrolled this many points sideways.
     pub across: f64,
+    /// The first shelf paged on from the arrow in its heading.
+    pub page: bool,
     /// For a library, which items and in what order.
     pub listing: Listing,
     /// The screen having failed to load in this way.
@@ -2460,6 +2462,9 @@ impl Shell {
                 }
                 if let (true, Screen::Posters(posters)) = (snapshot.tweaks.across > 0.0, screen) {
                     posters.scroll_first_shelf_to(snapshot.tweaks.across);
+                }
+                if let (true, Screen::Posters(posters)) = (snapshot.tweaks.page, screen) {
+                    posters.page_first_shelf();
                 }
                 if let Screen::Posters(posters) = screen {
                     snapshot.tweaks.presses.iter().for_each(|press| posters.press(*press));

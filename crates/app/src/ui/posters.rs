@@ -14,10 +14,10 @@ use objc2::{
     define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSCarriageReturnCharacter, NSCollectionElementKindSectionHeader,
-    NSCollectionLayoutBoundarySupplementaryItem, NSCollectionLayoutContainer,
-    NSCollectionLayoutDimension, NSCollectionLayoutEnvironment, NSCollectionLayoutGroup,
-    NSCollectionLayoutItem, NSCollectionLayoutSection,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSCarriageReturnCharacter,
+    NSCollectionElementKindSectionHeader, NSCollectionLayoutBoundarySupplementaryItem,
+    NSCollectionLayoutContainer, NSCollectionLayoutDimension, NSCollectionLayoutEnvironment,
+    NSCollectionLayoutGroup, NSCollectionLayoutItem, NSCollectionLayoutSection,
     NSCollectionLayoutSectionOrthogonalScrollingBehavior, NSCollectionLayoutSize,
     NSCollectionLayoutSpacing, NSCollectionView, NSCollectionViewCompositionalLayout,
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
@@ -28,9 +28,12 @@ use objc2_app_kit::{
     NSScrollView, NSUpArrowFunctionKey, NSView, NSViewBoundsDidChangeNotification,
 };
 use objc2_foundation::{
-    NSArray, NSIndexPath, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
-    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSet, NSString,
-    ns_string,
+    NSArray, NSDictionary, NSIndexPath, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
+    NSNotificationCenter, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSet,
+    NSString, ns_string,
+};
+use objc2_quartz_core::{
+    CABasicAnimation, CAMediaTimingFunction, kCAMediaTimingFunctionEaseInEaseOut,
 };
 use plex::model::{Item, Kind, Part, RatingKey, Role};
 
@@ -287,6 +290,11 @@ impl Content {
 /// When the card this close to the end of a grid is drawn, more are needed.
 const NEAR_END: usize = 30;
 
+/// The property of the collection a shelf's slide is an animation of.
+fn shelf_offset() -> &'static NSString {
+    ns_string!("shelfOffset")
+}
+
 const HEADING: &str = "heading";
 const PAGE_HEADER: &str = "page-header";
 
@@ -327,6 +335,9 @@ pub struct Ivars {
     header_reached: Cell<(f64, f64)>,
     /// Whether the keyboard is on the header, not on a card.
     in_header: Cell<bool>,
+    /// The shelf an arrow of its heading is sliding sideways, and how
+    /// far along it the slide ends.
+    sliding: RefCell<Option<(Retained<NSScrollView>, f64)>>,
 }
 
 define_class!(
@@ -541,6 +552,7 @@ impl Posters {
             header_reach: OnceCell::new(),
             header_reached: Cell::new((0.0, 0.0)),
             in_header: Cell::new(false),
+            sliding: RefCell::new(None),
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let posters: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -829,21 +841,91 @@ impl Posters {
         scrollers
     }
 
-    /// Scrolls shelf number `shelf` sideways by nearly what is in view of
+    /// Slides shelf number `shelf` sideways by nearly what is in view of
     /// it, so that the card cut off at one edge is whole at the other.
     fn page_shelf(&self, shelf: usize, forward: bool) {
         let scrollers = self.shelf_scrollers();
         let Some((_, scroller)) = scrollers.iter().find(|(at, _)| *at == shelf) else {
             return;
         };
-        let (clip, length) = (scroller.contentView(), shelf_length(scroller));
-        let seen = clip.bounds();
+        let (seen, length) = (scroller.contentView().bounds(), shelf_length(scroller));
+        // A second press while the shelf is still sliding goes on from
+        // where that slide ends, not from where it happens to be.
+        let from = match &*self.ivars().sliding.borrow() {
+            Some((sliding, to)) if sliding == scroller => *to,
+            _ => seen.origin.x,
+        };
         let step = (seen.size.width - 2.0 * theme::PAGE_MARGIN).max(theme::PAGE_MARGIN);
-        let x = seen.origin.x + if forward { step } else { -step };
-        let x = x.min(length - seen.size.width).max(0.0);
-        clip.scrollToPoint(NSPoint { x, y: seen.origin.y });
+        let to = from + if forward { step } else { -step };
+        let to = to.min(length - seen.size.width).max(0.0);
+        self.ivars().sliding.replace(Some((scroller.clone(), to)));
+        if theme::reduces_motion() {
+            return self.end_slide(to);
+        }
+
+        let (collection, ended) = (self.ivars().collection.clone(), Weak::new(self));
+        let slide = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+            // SAFETY: AppKit passes a valid context for the call.
+            let context = unsafe { context.as_ref() };
+            context.setDuration(theme::MOTION_LEAVE);
+            // SAFETY: the name is a constant that Core Animation provides.
+            let ease = unsafe { kCAMediaTimingFunctionEaseInEaseOut };
+            context.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(ease)));
+            // By name, because the animator is an object of another
+            // class that passes on what it is sent, with no method of its
+            // own for a property AppKit does not know.
+            // SAFETY: `ItemsView` has the property, which is a double.
+            let () = unsafe {
+                msg_send![
+                    &*collection.animator(),
+                    setValue: &*NSNumber::new_f64(to),
+                    forKey: shelf_offset(),
+                ]
+            };
+        });
+        let ended = RcBlock::new(move || {
+            if let Some(posters) = ended.load() {
+                posters.end_slide(to);
+            }
+        });
+        NSAnimationContext::runAnimationGroup_completionHandler(&slide, Some(&ended));
+    }
+
+    /// Scrolls the shelf that is sliding to `x`, one step of the way. The
+    /// cards that come into view are made as they do, and those that
+    /// leave stay until they are out of it, as when the viewer scrolls.
+    fn slide_to(&self, x: f64) {
+        let Some((scroller, _)) = self.ivars().sliding.borrow().clone() else {
+            return;
+        };
+        let clip = scroller.contentView();
+        clip.scrollToPoint(NSPoint { x, y: clip.bounds().origin.y });
         scroller.reflectScrolledClipView(&clip);
         self.fill_scrolled_shelves();
+    }
+
+    /// Ends the slide to `to` there, unless a later press has since sent
+    /// the shelf further.
+    fn end_slide(&self, to: f64) {
+        let ends_here = matches!(&*self.ivars().sliding.borrow(), Some((_, last)) if *last == to);
+        if ends_here {
+            self.slide_to(to);
+            self.ivars().sliding.take();
+        }
+    }
+
+    /// Pages the first shelf on as the arrow in its heading does, for a
+    /// snapshot.
+    pub fn page_first_shelf(&self) {
+        if let Some((shelf, _)) = self.shelf_scrollers().first() {
+            self.page_shelf(*shelf, true);
+        }
+    }
+
+    /// How far the shelf that is sliding is scrolled.
+    fn slid(&self) -> Option<f64> {
+        let sliding = self.ivars().sliding.borrow();
+        sliding.as_ref().map(|(scroller, _)| scroller.contentView().bounds().origin.x)
     }
 
     /// Tells the heading of each shelf in view which way its shelf can
@@ -1276,6 +1358,22 @@ define_class!(
             unsafe { msg_send![super(this), initWithFrame: frame] }
         }
 
+        /// How far the shelf that is sliding has come. The slide is an
+        /// animation of this property, which AppKit steps through on the
+        /// main thread, so that every step is a scroll like the viewer's.
+        #[unsafe(method(shelfOffset))]
+        fn shelf_offset(&self) -> f64 {
+            let owner = self.ivars().get().and_then(Weak::load);
+            owner.and_then(|posters| posters.slid()).unwrap_or(0.0)
+        }
+
+        #[unsafe(method(setShelfOffset:))]
+        fn set_shelf_offset(&self, x: f64) {
+            if let Some(posters) = self.ivars().get().and_then(Weak::load) {
+                posters.slide_to(x);
+            }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let owner = self.ivars().get().and_then(Weak::load);
@@ -1312,6 +1410,10 @@ define_class!(
             for view in self.subviews() {
                 if let Ok(shelf) = view.downcast::<NSScrollView>() {
                     shelf.setDrawsBackground(false);
+                    // A shelf shows how far it goes by the card cut off
+                    // at its edge and by its arrows. A scroller would
+                    // come up over the captions at every slide.
+                    shelf.setHasHorizontalScroller(false);
                     // A shelf is exactly as tall as its cards, and would
                     // cut off the focus ring, the lift and the shadow of
                     // a card that reaches past its own frame.
@@ -1359,7 +1461,14 @@ define_class!(
 impl ItemsView {
     fn new(main_thread: MainThreadMarker) -> Retained<Self> {
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
-        unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] }
+        let view: Retained<Self> =
+            unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
+        let slide = CABasicAnimation::animation();
+        let slide: &AnyObject = slide.as_ref();
+        let animations = NSDictionary::from_slices(&[shelf_offset()], &[slide]);
+        // SAFETY: an animation for a property the view has, by its name.
+        unsafe { view.setAnimations(&animations) };
+        view
     }
 }
 

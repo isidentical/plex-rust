@@ -53,7 +53,7 @@ usage: plex-rust
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
          tweaks: narrow, wide, collapsed, hover, link, season, download,
                  version=<media-id>,
-                 scroll=<points>, across=<points>, unwatched,
+                 scroll=<points>, across=<points>, page, unwatched,
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
@@ -154,6 +154,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "opaque" => parsed.asked.less_transparency = true,
             None if *tweak == "still" => parsed.asked.less_motion = true,
             None if *tweak == "hover" => parsed.hover = true,
+            None if *tweak == "page" => parsed.page = true,
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
             None if *tweak == "download" => parsed.download = true,
