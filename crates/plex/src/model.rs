@@ -40,6 +40,30 @@ impl From<Millis> for Duration {
     }
 }
 
+/// A day in the calendar, which the server writes as `2011-04-24`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Date {
+    pub year: u16,
+    /// From 1 for January.
+    pub month: u8,
+    pub day: u8,
+}
+
+impl TryFrom<String> for Date {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let mut parts = text.splitn(3, '-');
+        let year = parts.next().and_then(|part| part.parse::<u16>().ok());
+        let mut small = || parts.next().and_then(|part| part.parse::<u8>().ok());
+        match (year, small(), small()) {
+            (Some(year), Some(month @ 1..=12), Some(day @ 1..=31)) => Ok(Self { year, month, day }),
+            _ => Err(format!("{text:?} is not a date written as yyyy-mm-dd")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -90,6 +114,8 @@ pub struct Item {
     /// The line from the poster, such as "In space no one can hear you".
     pub tagline: Option<String>,
     pub year: Option<u16>,
+    /// The day it was first shown.
+    pub originally_available_at: Option<Date>,
     /// The age rating, such as `PG-13` or `TV-14`.
     pub content_rating: Option<String>,
     /// What critics gave it, out of 10.
@@ -386,5 +412,15 @@ mod tests {
         assert_eq!(rgb("#8d2d05"), Ok(Rgb { red: 0x8d, green: 0x2d, blue: 0x05 }));
         assert!(rgb("8d2d").is_err());
         assert!(rgb("red").is_err());
+    }
+
+    #[test]
+    fn a_date_is_a_year_a_month_and_a_day_that_exist() {
+        let date = |text: &str| Date::try_from(text.to_owned());
+        assert_eq!(date("2011-04-24"), Ok(Date { year: 2011, month: 4, day: 24 }));
+        assert!(date("2011-13-01").is_err());
+        assert!(date("2011-04-00").is_err());
+        assert!(date("2011-04").is_err());
+        assert!(date("yesterday").is_err());
     }
 }

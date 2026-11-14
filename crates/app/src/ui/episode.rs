@@ -131,9 +131,11 @@ impl EpisodeItem {
     }
 }
 
-/// The line under the title: "42 min", or "42 min · 23 min left".
+/// The line under the title: "Apr 24, 2011 · 42 min", and after those
+/// "23 min left" when it was started.
 fn facts(episode: &Item) -> String {
     let mut facts: Vec<String> = Vec::new();
+    facts.extend(episode.originally_available_at.map(text::date));
     facts.extend(episode.duration.map(|duration| text::length(duration.into())));
     facts.extend(text::remaining(episode));
     facts.join(" · ")

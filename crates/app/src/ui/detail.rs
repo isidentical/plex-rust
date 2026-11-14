@@ -934,7 +934,11 @@ fn text_link(
 /// The line under the title, such as "2015 · 2 h 18 min · PG-13 · ★ 8.4".
 fn facts(item: &Item) -> String {
     let mut facts: Vec<String> = Vec::new();
-    facts.extend(item.year.map(|year| year.to_string()));
+    match (item.kind, item.originally_available_at) {
+        // A film is known by its year, an episode by the day it aired.
+        (Kind::Episode, Some(aired)) => facts.push(text::date(aired)),
+        _ => facts.extend(item.year.map(|year| year.to_string())),
+    }
     match item.kind {
         // The server gives a show the length of one episode, which reads
         // as the length of the show. Its size says more.
@@ -1050,6 +1054,15 @@ mod tests {
             "contentRating": "TV-14", "audienceRating": 7.9,
         }));
         assert_eq!(facts(&show), "2014 · 7 seasons · 100 episodes · TV-14 · ★ 7.9");
+    }
+
+    #[test]
+    fn an_episode_states_the_day_it_aired() {
+        let episode = item(serde_json::json!({
+            "ratingKey": "1", "type": "episode", "title": "Title", "year": 2011,
+            "originallyAvailableAt": "2011-04-24", "duration": 3_317_386,
+        }));
+        assert_eq!(facts(&episode), "Apr 24, 2011 · 55 min");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use plex::model::Item;
+use plex::model::{Date, Item};
 
 /// A running time as people say it: "41 min", "2 h 18 min".
 pub fn length(time: Duration) -> String {
@@ -30,6 +30,15 @@ pub fn episode_code(item: &Item) -> Option<String> {
 /// "1 season", "13 episodes".
 pub fn count(number: u32, one: &str) -> String {
     if number == 1 { format!("1 {one}") } else { format!("{number} {one}s") }
+}
+
+/// A day as it is written out in English: "Apr 24, 2011".
+pub fn date(date: Date) -> String {
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // A `Date` holds a month from 1 to 12.
+    let month = MONTHS[usize::from(date.month - 1)];
+    format!("{month} {}, {}", date.day, date.year)
 }
 
 /// The size of a file as the Finder writes it, in units of a thousand:
