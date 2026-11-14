@@ -81,13 +81,19 @@ impl Unsent {
 }
 
 impl Store {
-    /// The folder in the user's Movies, created if it is not there.
+    /// The folder in the user's Movies. It is made by the first download:
+    /// a Movies folder that cannot be written to is no reason for the app
+    /// not to start, only for a download not to.
     pub fn open() -> Result<Self> {
         let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
-        let directory = PathBuf::from(home).join("Movies/plex-rust");
-        fs::create_dir_all(&directory)
-            .map_err(|source| Error::File { path: directory.clone(), source })?;
-        Ok(Self { directory })
+        Ok(Self { directory: PathBuf::from(home).join("Movies/plex-rust") })
+    }
+
+    /// How many more bytes fit on the disk the downloads are on.
+    pub fn free_space(&self) -> Result<u64> {
+        let room = rustix::fs::statvfs(&self.directory)
+            .map_err(|errno| Error::File { path: self.directory.clone(), source: errno.into() })?;
+        Ok(room.f_bavail.saturating_mul(room.f_frsize))
     }
 
     /// Every download in the folder, by title.
@@ -97,7 +103,13 @@ impl Store {
     pub fn list(&self) -> Result<Vec<Download>> {
         let folder_error = |source| Error::File { path: self.directory.clone(), source };
         let mut downloads = Vec::new();
-        for entry in fs::read_dir(&self.directory).map_err(folder_error)? {
+        let folder = match fs::read_dir(&self.directory) {
+            Ok(folder) => folder,
+            // Nothing was ever downloaded.
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(downloads),
+            Err(error) => return Err(folder_error(error)),
+        };
+        for entry in folder {
             let path = entry.map_err(folder_error)?.path();
             if path.extension().is_none_or(|extension| extension != "json") {
                 continue;
@@ -123,6 +135,8 @@ impl Store {
     pub fn add(&self, item: &serde_json::Value, version: Option<u64>) -> Result<Download> {
         let item = &with_first(item.clone(), version);
         let download = self.download(item.clone())?;
+        fs::create_dir_all(&self.directory)
+            .map_err(|source| Error::File { path: self.directory.clone(), source })?;
         let created = fs::OpenOptions::new().write(true).create_new(true).open(&download.record);
         created
             .and_then(|mut file| file.write_all(item.to_string().as_bytes()))
@@ -414,6 +428,19 @@ pub mod tests {
         fs::write(&download.subtitles[1].partial, "1").unwrap();
         store.remove(&download).unwrap();
         assert_eq!(fs::read_dir(&store.directory).unwrap().count(), 0);
+        fs::remove_dir_all(&store.directory).unwrap();
+    }
+
+    #[test]
+    fn the_folder_is_made_by_the_first_download() {
+        let store = store("folder");
+        fs::remove_dir_all(&store.directory).unwrap();
+        assert_eq!(store.list().unwrap(), []);
+        assert!(!store.directory.exists());
+
+        let download = store.add(&episode(), None).unwrap();
+        assert_eq!(store.list().unwrap(), [download]);
+        assert!(store.free_space().unwrap() > 0);
         fs::remove_dir_all(&store.directory).unwrap();
     }
 

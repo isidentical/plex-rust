@@ -1586,7 +1586,8 @@ impl Shell {
         let (shown, shell) = (list.clone(), Rc::downgrade(self));
         let reload = Rc::new(move || {
             if let Some(shell) = shell.upgrade() {
-                shown.show(&shell.downloads.entries(), shell.reach.get().is_away());
+                let (entries, free) = (shell.downloads.entries(), shell.downloads.free_space());
+                shown.show(&entries, shell.reach.get().is_away(), free);
             }
         });
         (Screen::Downloads(list), reload)
@@ -2042,7 +2043,10 @@ impl Shell {
                     "This version is split across {parts} files, and a download is one file. \
                      Pick another version if there is one, or play it from your server."
                 ),
-                Err(error) => with_causes(&error),
+                Err(error) => {
+                    eprintln!("plex-rust: {}", with_causes(&error));
+                    downloads::reason(&error)
+                }
             };
             eprintln!("plex-rust: {title} was not downloaded: {reason}");
             confirm::refusal(&shell.window, &format!("{title} was not downloaded"), &reason);

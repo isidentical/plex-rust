@@ -100,6 +100,10 @@ pub struct Ivars {
     away: Retained<NSView>,
     /// The strip's button, which looks for the server again.
     reconnect: Retained<NSButton>,
+    /// A strip across the bottom, with `room` in it.
+    foot: Retained<NSView>,
+    /// How much the downloads take up, and how much more would fit.
+    room: Retained<NSTextField>,
     rows: RefCell<Vec<Row>>,
     on_act: Rc<dyn Fn(Act)>,
     /// Kept because a button does not retain its target.
@@ -175,11 +179,19 @@ impl DownloadList {
         let (away, reconnect_button) = away_strip(&reconnect, main_thread);
         away.setHidden(true);
 
+        let (foot, room) = foot_strip(main_thread);
+        foot.setHidden(true);
+
         let (root, body) = (NSView::new(main_thread), NSView::new(main_thread));
         layout::fill(&root, &body);
         layout::centre(&body, nothing.view());
         root.addSubview(&away);
+        root.addSubview(&foot);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            foot.bottomAnchor().constraintEqualToAnchor(&root.bottomAnchor()),
+            foot.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()),
+            foot.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()),
+            foot.heightAnchor().constraintEqualToConstant(theme::DOWNLOAD_STRIP_HEIGHT),
             away.topAnchor().constraintEqualToAnchor(&root.safeAreaLayoutGuide().topAnchor()),
             away.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()),
             away.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()),
@@ -194,6 +206,8 @@ impl DownloadList {
             nothing,
             away,
             reconnect: reconnect_button,
+            foot,
+            room,
             rows: RefCell::new(Vec::new()),
             on_act,
             _reconnect: reconnect,
@@ -250,19 +264,22 @@ impl DownloadList {
         button.is_some()
     }
 
-    /// Shows `entries`, and with `away` that the server is not there.
+    /// Shows `entries`, with `away` that the server is not there, and
+    /// how much room the downloads take of a disk with `free` bytes left.
     /// While the entries are the downloads already listed, each in the
     /// state it was in, only the progress in their rows changes, so that a
     /// button is not replaced under the pointer once a second.
-    pub fn show(&self, entries: &[Entry], away: bool) {
+    pub fn show(&self, entries: &[Entry], away: bool, free: Option<u64>) {
         let ivars = self.ivars();
         ivars.away.setHidden(!away);
-        // The list starts below the strip.
-        let top = if away { theme::DOWNLOAD_STRIP_HEIGHT } else { 0.0 };
+        ivars.foot.setHidden(entries.is_empty());
+        label::set(&ivars.room, &room(entries, free));
+        // The list starts below one strip and ends above the other.
+        let beside = |shown: bool| if shown { theme::DOWNLOAD_STRIP_HEIGHT } else { 0.0 };
         ivars.scroll.setAdditionalSafeAreaInsets(NSEdgeInsets {
-            top,
+            top: beside(away),
             left: 0.0,
-            bottom: 0.0,
+            bottom: beside(!entries.is_empty()),
             right: 0.0,
         });
         let listed = |(row, entry): (&Row, &Entry)| {
@@ -456,6 +473,47 @@ fn away_strip(
     (strip, button)
 }
 
+/// The strip that says how much room the downloads take, and its words.
+fn foot_strip(main_thread: MainThreadMarker) -> (Retained<NSView>, Retained<NSTextField>) {
+    let words = label::line(
+        theme::FONT_BODY,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+        main_thread,
+    );
+    let strip = artwork::layered(main_thread);
+    // Rows scroll under the strip and must not show through it.
+    artwork::fill_with(&strip, &theme::page_background());
+    strip.addSubview(&words);
+    let clear = strip.safeAreaLayoutGuide();
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        words
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&clear.leadingAnchor(), theme::PAGE_MARGIN),
+        words.centerYAnchor().constraintEqualToAnchor(&strip.centerYAnchor()),
+        words.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(
+            &strip.trailingAnchor(),
+            -theme::PAGE_MARGIN,
+        ),
+    ]));
+    (strip, words)
+}
+
+/// How many downloads there are, how much of the disk they take as far
+/// as they have got, and how much more would fit if that is known.
+fn room(entries: &[Entry], free: Option<u64>) -> String {
+    let on_disk = |entry: &Entry| match &entry.state {
+        State::Downloading(transfer) => transfer.received(),
+        State::Incomplete { received, .. } => *received,
+        State::Downloaded => entry.download.size,
+    };
+    let taken: u64 = entries.iter().map(on_disk).sum();
+    let count = text::count(u32::try_from(entries.len()).unwrap_or(u32::MAX), "download");
+    let mut room = vec![count, text::size(taken)];
+    room.extend(free.map(|free| format!("{} free on this Mac", text::size(free))));
+    room.join(" · ")
+}
+
 /// What a film or an episode is besides its title: "A Show · S2 · E7" or
 /// "2015".
 fn context_of(item: &Item) -> String {
@@ -501,5 +559,31 @@ mod tests {
             "Stopped · 5 MB of 15 MB · 33% · the server stopped sending the file"
         );
         assert_eq!(status(&State::Downloaded, size), "Downloaded · 15 MB");
+    }
+
+    #[test]
+    fn the_foot_counts_what_is_on_disk_and_not_what_is_still_to_come() {
+        use std::sync::Arc;
+
+        use crate::store::tests::{episode, store};
+
+        let store = store("room");
+        let mut entries = Vec::new();
+        for (key, state) in [
+            ("1", State::Downloaded),
+            ("2", State::Incomplete { received: 500_000_000, error: None }),
+        ] {
+            let mut item = episode();
+            item["ratingKey"] = key.into();
+            item["Media"][0]["Part"][0]["size"] = 2_000_000_000_u64.into();
+            let download = Arc::new(store.add(&item, None).unwrap());
+            entries.push(Entry { download, state });
+        }
+        assert_eq!(
+            room(&entries, Some(250_000_000_000)),
+            "2 downloads · 2.5 GB · 250.0 GB free on this Mac"
+        );
+        assert_eq!(room(&entries[..1], None), "1 download · 2.0 GB");
+        std::fs::remove_dir_all(entries[0].download.file.parent().unwrap()).unwrap();
     }
 }

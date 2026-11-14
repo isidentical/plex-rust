@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -111,6 +112,13 @@ impl Downloads {
     /// The folder the downloads are in.
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// How many more bytes fit on the disk the downloads are on, if that
+    /// can be told.
+    pub fn free_space(&self) -> Option<u64> {
+        let free = self.store.free_space();
+        free.map_err(|error| eprintln!("plex-rust: {}", with_causes(&error))).ok()
     }
 
     /// The item of `download` as it was last left: where a viewing on
@@ -240,10 +248,10 @@ impl Downloads {
             Ok(()) => self.set_state(key, State::Downloaded),
             Err(Error::Plex(plex::Error::Cancelled)) => return self.delete(&download),
             Err(error) => {
-                let error = with_causes(&error);
-                eprintln!("plex-rust: {} was not downloaded: {error}", download.item.title);
-                let received = transfer.received();
-                self.set_state(key, State::Incomplete { received, error: Some(error) });
+                let title = &download.item.title;
+                eprintln!("plex-rust: {title} was not downloaded: {}", with_causes(&error));
+                let (received, error) = (transfer.received(), Some(reason(&error)));
+                self.set_state(key, State::Incomplete { received, error });
             }
         }
         self.changed();
@@ -287,6 +295,29 @@ impl Downloads {
             this.changed();
             this.report_progress();
         });
+    }
+}
+
+/// Why a download did not start or stopped short, in words for the
+/// viewer where the cause is one they can do something about. The error
+/// itself names a file by its whole path first, which in the one line a
+/// row has leaves no room for what went wrong with it.
+pub fn reason(error: &Error) -> String {
+    let disk = match error {
+        Error::File { source, .. } | Error::Plex(plex::Error::File { source, .. }) => {
+            Some(source.kind())
+        }
+        _ => None,
+    };
+    match (disk, error) {
+        (Some(ErrorKind::StorageFull), _) => "this Mac's disk is full".to_owned(),
+        (Some(ErrorKind::PermissionDenied), _) => {
+            "plex-rust is not allowed to write to its folder in Movies".to_owned()
+        }
+        (_, Error::Plex(error)) if error.is_unanswered() => {
+            "the server stopped answering".to_owned()
+        }
+        _ => with_causes(error),
     }
 }
 
@@ -459,6 +490,21 @@ mod tests {
         assert_eq!(store.unsent(&first).unwrap(), Some(left));
         assert_eq!(store.unsent(&second).unwrap(), None);
         std::fs::remove_dir_all(first.file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_full_disk_is_said_in_words_and_not_as_a_path() {
+        let failed = |kind: ErrorKind| {
+            let path = "/Users/someone/Movies/plex-rust/A Film (2015) [370].mkv.part".into();
+            Error::Plex(plex::Error::File { path, source: kind.into() })
+        };
+        assert_eq!(reason(&failed(ErrorKind::StorageFull)), "this Mac's disk is full");
+        assert!(reason(&failed(ErrorKind::PermissionDenied)).contains("not allowed to write"));
+        // Anything else is said as it is.
+        assert_eq!(
+            reason(&Error::Plex(plex::Error::Stalled)),
+            "the server stopped sending the file"
+        );
     }
 
     #[test]
