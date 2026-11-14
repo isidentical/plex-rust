@@ -30,7 +30,7 @@ use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
 use super::poster::{Card, Shape};
-use super::posters::{Action, Header, OnAction, Outline, Posters, Shelf, Style};
+use super::posters::{Action, Header, OnAction, Outline, Playback, Posters, Shelf, Style};
 use super::text;
 use super::theme;
 use crate::downloads::{Downloads, State};
@@ -96,7 +96,7 @@ pub struct Detail {
     /// the width of the window.
     header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 4],
+    _targets: [Retained<Callback>; 5],
 }
 
 /// The views at the top of the page.
@@ -125,6 +125,8 @@ struct Hero {
     /// One capsule for each genre, which leads to the others of it.
     genres: Retained<NSStackView>,
     play: Pill,
+    /// Beside the button that resumes: the way back to the beginning.
+    restart: Pill,
     watched: Pill,
     download: Pill,
     /// Beside the download button while a download is on its way: how far
@@ -133,6 +135,7 @@ struct Hero {
     /// What the two buttons do, again, in the menu a secondary click on
     /// the header opens.
     menu_play: Retained<NSMenuItem>,
+    menu_restart: Retained<NSMenuItem>,
     menu_watched: Retained<NSMenuItem>,
     remaining: Retained<NSTextField>,
     summary: Retained<NSTextField>,
@@ -169,6 +172,7 @@ impl Detail {
             };
             let targets = [
                 target(Self::press_play),
+                target(Self::press_restart),
                 target(Self::press_watched),
                 target(Self::press_download),
                 target(Self::season_chosen),
@@ -179,7 +183,7 @@ impl Detail {
                     page.hear(event);
                 }
             });
-            let [play, watched, download, season] = &targets;
+            let [play, restart, watched, download, season] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -191,6 +195,10 @@ impl Detail {
                 hero.download.button.setAction(Some(Callback::action()));
                 hero.menu_play.setTarget(Some(play));
                 hero.menu_play.setAction(Some(Callback::action()));
+                hero.restart.button.setTarget(Some(restart));
+                hero.restart.button.setAction(Some(Callback::action()));
+                hero.menu_restart.setTarget(Some(restart));
+                hero.menu_restart.setAction(Some(Callback::action()));
                 hero.menu_watched.setTarget(Some(watched));
                 hero.menu_watched.setAction(Some(Callback::action()));
                 hero.seasons.setTarget(Some(season));
@@ -284,6 +292,13 @@ impl Detail {
         let item = self.item.borrow().clone();
         if let Some(item) = item.filter(is_downloadable) {
             (self.on_action)(Action::ToggleDownload(item));
+        }
+    }
+
+    /// Plays from its beginning what the play button would resume.
+    pub fn press_restart(&self) {
+        if let Some(item) = self.playable() {
+            (self.on_action)(Action::PlayAs(item, Playback { from_start: true }));
         }
     }
 
@@ -520,6 +535,8 @@ impl Detail {
         hero.play.button.setHidden(playable.is_none());
         hero.menu_play.setHidden(playable.is_none());
         let Some(playable) = playable else {
+            hero.restart.button.setHidden(true);
+            hero.menu_restart.setHidden(true);
             return;
         };
         let verb = if playable.view_offset.is_some() { "Resume" } else { "Play" };
@@ -530,6 +547,11 @@ impl Detail {
         };
         hero.play.set_title(&title);
         hero.menu_play.setTitle(&NSString::from_str(&title));
+        // Only what was stopped part of the way has a beginning to go
+        // back to.
+        let resumes = playable.view_offset.is_some();
+        hero.restart.button.setHidden(!resumes);
+        hero.menu_restart.setHidden(!resumes);
         let remaining = text::remaining(&playable);
         label::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
         hero.remaining.setHidden(remaining.is_none());
@@ -647,6 +669,8 @@ impl Hero {
         let play = Pill::new("Play", "play.fill", true, main_thread);
         // The default action of the page, which Return triggers.
         play.button.setKeyEquivalent(ns_string!("\r"));
+        let restart = Pill::new("Play from Start", "arrow.counterclockwise", false, main_thread);
+        restart.button.setHidden(true);
         let watched = Pill::new("Mark as Watched", "checkmark", false, main_thread);
         let download = Pill::new("Download", "arrow.down.circle", false, main_thread);
         download.button.setHidden(true);
@@ -655,8 +679,14 @@ impl Hero {
         let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
         // Placed by gravity, which is what lets the stack drop a view that
         // does not fit.
-        let row: [&NSView; 5] =
-            [&play.button, &watched.button, &download.button, &downloaded, &remaining];
+        let row: [&NSView; 6] = [
+            &play.button,
+            &restart.button,
+            &watched.button,
+            &download.button,
+            &downloaded,
+            &remaining,
+        ];
         let buttons = NSStackView::new(main_thread);
         buttons.setViews_inGravity(&NSArray::from_slice(&row), NSStackViewGravity::Leading);
         buttons.setSpacing(theme::SPACE_M);
@@ -692,8 +722,12 @@ impl Hero {
 
         let (menu_play, menu_watched) =
             (NSMenuItem::new(main_thread), NSMenuItem::new(main_thread));
+        let menu_restart = NSMenuItem::new(main_thread);
+        menu_restart.setTitle(ns_string!("Play from Start"));
+        menu_restart.setHidden(true);
         let menu = NSMenu::new(main_thread);
         menu.addItem(&menu_play);
+        menu.addItem(&menu_restart);
         menu.addItem(&menu_watched);
         let view = HeaderView::new(main_thread);
         // SAFETY: the view keeps the menu, as a responder keeps the one it
@@ -725,10 +759,12 @@ impl Hero {
             badges,
             genres,
             play,
+            restart,
             watched,
             download,
             downloaded,
             menu_play,
+            menu_restart,
             menu_watched,
             remaining,
             summary,

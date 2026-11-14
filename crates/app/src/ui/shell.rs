@@ -37,7 +37,7 @@ use super::player::input::Key;
 use super::player::{Outcome, PlayerScreen, Purpose};
 use super::poster::Shape;
 pub use super::posters::Press;
-use super::posters::{Action, Header, Outline, Posters, Shelf, Style};
+use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Style};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::theme;
@@ -689,7 +689,7 @@ impl Shell {
                 // A download plays as it was kept, with no server to ask.
                 match self.downloads.whole(&key) {
                     Some(download) => {
-                        self.play_kept(&download, Purpose::Check);
+                        self.play_kept(&download, Purpose::Check, Playback::default());
                         self.press_later(keys, SNAPSHOT_KEYS_AFTER);
                     }
                     None => self.fetch(key, move |shell, item| {
@@ -1407,7 +1407,8 @@ impl Shell {
             };
             match action {
                 Action::Open(item) => shell.open(&item),
-                Action::Play(item) => shell.play(&item, Purpose::Watching),
+                Action::Play(item) => shell.play(&item, Purpose::Watching, Playback::default()),
+                Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
                 Action::ToggleDownload(item) => shell.toggle_download(&item.rating_key),
                 Action::OpenShow(episode) => {
@@ -1435,7 +1436,7 @@ impl Shell {
     /// plays.
     fn open(self: &Rc<Self>, item: &Item) {
         match (item.kind, &item.parent_rating_key) {
-            (Kind::Clip, _) => self.play(item, Purpose::Watching),
+            (Kind::Clip, _) => self.play(item, Purpose::Watching, Playback::default()),
             (Kind::Season, Some(show)) => {
                 let season = Some(item.rating_key.clone());
                 let opening = Opening { season, at_episodes: true, episode: None };
@@ -1514,7 +1515,7 @@ impl Shell {
         match act {
             Act::Play(key) => {
                 if let Some(entry) = self.downloads.find(&key) {
-                    self.play(&entry.download.item, Purpose::Watching);
+                    self.play(&entry.download.item, Purpose::Watching, Playback::default());
                 }
             }
             Act::Resume(key) => {
@@ -1565,14 +1566,15 @@ impl Shell {
 
     // Playing.
 
-    /// Plays `item`, first fetching it in full: a listing leaves out the
-    /// intro and credits markers that the player offers to skip.
+    /// Plays `item` as `playback` says, first fetching it in full: a
+    /// listing leaves out the intro and credits markers that the player
+    /// offers to skip.
     ///
     /// A download plays as it was kept when the server is not there to ask.
-    fn play(self: &Rc<Self>, item: &Item, purpose: Purpose) {
+    fn play(self: &Rc<Self>, item: &Item, purpose: Purpose, playback: Playback) {
         let download = self.downloads.whole(&item.rating_key);
         if let (Some(download), false) = (&download, self.reach.get() == Reach::Answering) {
-            return self.play_kept(download, purpose);
+            return self.play_kept(download, purpose, playback);
         }
         // A second click on Play while the first is still fetching must
         // not open a second player behind the first.
@@ -1589,23 +1591,29 @@ impl Shell {
         self.background.run(self.main_thread, load, move |item| {
             shell.opening_player.set(false);
             match (item, download) {
-                (Ok(item), _) => shell.open_player(&item, purpose),
+                (Ok(mut item), _) => {
+                    playback.apply(&mut item);
+                    shell.open_player(&item, purpose);
+                }
                 // The server has gone since it last answered.
                 (Err(error), Some(download)) if error.is_unanswered() => {
                     eprintln!("plex-rust: {}", with_causes(&error));
                     shell.reach.set(Reach::Away);
-                    shell.play_kept(&download, purpose);
+                    shell.play_kept(&download, purpose, playback);
                 }
                 (Err(error), _) => shell.fail(moves, &error),
             }
         });
     }
 
-    /// Plays `download` from where it was last left as far as this Mac
-    /// knows, with no server to say.
-    fn play_kept(self: &Rc<Self>, download: &Download, purpose: Purpose) {
+    /// Plays `download` as `playback` says, from where it was last left as
+    /// far as this Mac knows, with no server to say.
+    fn play_kept(self: &Rc<Self>, download: &Download, purpose: Purpose, playback: Playback) {
         match self.downloads.as_left(download) {
-            Ok(item) => self.open_player(&item, purpose),
+            Ok(mut item) => {
+                playback.apply(&mut item);
+                self.open_player(&item, purpose);
+            }
             Err(error) => self.fail(self.moves.get(), &error),
         }
     }

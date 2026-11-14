@@ -89,6 +89,8 @@ pub struct Outline {
 pub enum Action {
     Open(Item),
     Play(Item),
+    /// Play it otherwise than it was left.
+    PlayAs(Item, Playback),
     SetWatched(Item, bool),
     /// Download it, or if it is downloaded or on its way, delete that.
     ToggleDownload(Item),
@@ -103,6 +105,22 @@ pub enum Action {
         title: String,
         path: String,
     },
+}
+
+/// How to play an item, where that is not how the server remembers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Playback {
+    /// From its beginning, wherever it was stopped.
+    pub from_start: bool,
+}
+
+impl Playback {
+    /// Makes `item` play this way.
+    pub fn apply(self, item: &mut Item) {
+        if self.from_start {
+            item.view_offset = None;
+        }
+    }
 }
 
 /// A key the viewer moves through the cards with.
