@@ -8,9 +8,9 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSAccessibility, NSColor, NSLayoutAttribute};
 use objc2_app_kit::{
     NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
-    NSLayoutPriorityDefaultLow, NSLineBreakMode, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString};
 use plex::model::{Item, Kind};
@@ -21,6 +21,13 @@ use super::pane::{Edge, Pane};
 use super::slider::{Reading, Slider};
 use super::theme;
 use super::upnext::UpNext;
+
+/// How much the bubble's wish to be over the pointer counts for in the
+/// layout: less than anything else there. At the default strengths it
+/// outweighed the window's wish to keep its size and a label's wish to
+/// keep its width, so a bubble that could not be where it was asked to be
+/// moved the scrubber and widened the window instead of giving way.
+const FOLLOWS_POINTER: f32 = 1.0;
 
 /// The loudest the volume slider goes, which is the file's own level.
 pub const FULL_VOLUME: f64 = 100.0;
@@ -196,7 +203,8 @@ impl Controls {
         add(pane, &self.bubble);
         // The bubble follows the pointer, but stops short of the window's
         // edge instead of being cut off by it.
-        self.bubble_x.setPriority(NSLayoutPriorityDefaultHigh);
+        self.bubble_x.setPriority(FOLLOWS_POINTER);
+        self.bubble.limit_width(theme::NOTICE_MAX_WIDTH);
         self.bubble.setHidden(true);
         pin(&[
             pane.bottomAnchor().constraintEqualToAnchor(&root.bottomAnchor()),

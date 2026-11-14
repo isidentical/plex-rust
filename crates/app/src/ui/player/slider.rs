@@ -22,6 +22,7 @@ pub struct Pointed {
     /// The value the slider would take if clicked there.
     pub value: f64,
     /// How far along the slider that is, in points from its left edge.
+    /// Always on the track, wherever the pointer has strayed to.
     pub x: f64,
 }
 
@@ -289,8 +290,17 @@ impl Slider {
         self.setNeedsDisplay(true);
     }
 
-    /// Reports the place `x` points from the left edge as pointed at.
+    /// Reports the place `x` points from the left edge as pointed at, or
+    /// the end of the track nearest to it.
+    ///
+    /// A drag goes on after the pointer has left the slider, and what is
+    /// placed by this, the bubble, must not follow it out: a bubble that
+    /// was asked to be left of the window pushed the slider to the right
+    /// to get there, which put the pointer further left of the slider
+    /// still, and so on with every move until nothing was left in view.
     pub fn point_at(&self, x: f64) {
+        let (start, end) = self.span();
+        let x = x.min(end).max(start);
         self.set_hovered(true);
         if self.ivars().pointed.replace(Some(x)) != Some(x) {
             self.setNeedsDisplay(true);

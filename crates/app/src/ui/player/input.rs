@@ -45,6 +45,11 @@ pub enum Scene {
     /// The pointer taking the scrubber's knob three quarters of the way
     /// along and keeping hold of it.
     Drag,
+    /// A real press on the scrubber, dragged to the left until the pointer
+    /// is far outside the window, and still held there.
+    Pull,
+    /// The mouse button let go where a pull ended.
+    Release,
     /// A white picture, the hardest to read the controls on.
     Bright,
     /// The window at its smallest.
@@ -74,6 +79,8 @@ impl Key {
             ("idle", ..) => Some(Self::Idle),
             ("hover", ..) => Some(Self::Scene(Scene::Hover)),
             ("drag", ..) => Some(Self::Scene(Scene::Drag)),
+            ("pull", ..) => Some(Self::Scene(Scene::Pull)),
+            ("release", ..) => Some(Self::Scene(Scene::Release)),
             ("bright", ..) => Some(Self::Scene(Scene::Bright)),
             ("small", ..) => Some(Self::Scene(Scene::Small)),
             ("wide", ..) => Some(Self::Scene(Scene::Wide)),
