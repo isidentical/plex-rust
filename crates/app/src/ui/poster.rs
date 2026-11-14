@@ -223,14 +223,14 @@ impl PosterItem {
                 views.art.set_playable(is_playable(item));
                 views.art.set_progress(item.progress());
                 views.art.set_badge(badge(item));
-                views.art.show(artwork_path(item, shape), shape.request(), None, images);
+                views.art.show(artwork_path(item, shape), shape.request(), images);
                 captions(item, shape)
             }
             Card::Person(person) => {
                 views.art.set_playable(false);
                 views.art.set_progress(0.0);
                 views.art.set_badge(Badge::None);
-                views.art.show(person.thumb.as_deref(), shape.request(), None, images);
+                views.art.show(person.thumb.as_deref(), shape.request(), images);
                 label::set(&views.initials, &initials(&person.tag));
                 (person.tag.clone(), person.role.clone().unwrap_or_default())
             }

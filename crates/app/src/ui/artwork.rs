@@ -45,8 +45,6 @@ pub struct ArtView {
     /// Darkens the picture under the play glyph.
     scrim: Retained<NSView>,
     play: Retained<NSImageView>,
-    /// Stands in for a picture there is none of.
-    placeholder: Retained<NSImageView>,
     track: Retained<NSView>,
     fill: Retained<NSView>,
     fill_width: RefCell<Option<Retained<NSLayoutConstraint>>>,
@@ -98,17 +96,6 @@ impl ArtView {
             ring.bottomAnchor().constraintEqualToAnchor_constant(&root.bottomAnchor(), outset),
         ]));
         layout::cover(&root, &picture);
-
-        let placeholder = NSImageView::new(main_thread);
-        placeholder.setContentTintColor(Some(&theme::white(theme::PLACEHOLDER_GLYPH_OPACITY)));
-        placeholder.setTranslatesAutoresizingMaskIntoConstraints(false);
-        placeholder.setHidden(true);
-        placeholder.setAccessibilityElement(false);
-        picture.addSubview(&placeholder);
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            placeholder.centerXAnchor().constraintEqualToAnchor(&picture.centerXAnchor()),
-            placeholder.centerYAnchor().constraintEqualToAnchor(&picture.centerYAnchor()),
-        ]));
 
         let scrim = layered(main_thread);
         fill_with(&scrim, &theme::black(theme::HOVER_SCRIM_OPACITY));
@@ -164,7 +151,6 @@ impl ArtView {
             picture,
             scrim,
             play,
-            placeholder,
             track,
             fill,
             fill_width: RefCell::new(None),
@@ -195,19 +181,8 @@ impl ArtView {
     /// Shows the artwork at server path `path`, requested for a box of
     /// `size` points. A picture already in memory appears at once. One that
     /// has to be fetched fades in when it arrives. Without a path, the
-    /// SF Symbol `placeholder` stands in, if one is given.
-    pub fn show(
-        &self,
-        path: Option<&str>,
-        size: (u32, u32),
-        placeholder: Option<&str>,
-        images: &Rc<Images>,
-    ) {
-        let glyph = placeholder.filter(|_| path.is_none());
-        let glyph =
-            glyph.and_then(|name| symbol(name, theme::PORTRAIT_GLYPH_SIZE, Weight::Regular));
-        self.placeholder.setImage(glyph.as_deref());
-        self.placeholder.setHidden(glyph.is_none());
+    /// empty frame stays.
+    pub fn show(&self, path: Option<&str>, size: (u32, u32), images: &Rc<Images>) {
         // The same picture is already here or on its way. Asking again
         // would fetch and decode it a second time.
         if path.is_some() && self.wanted.borrow().as_deref() == path {

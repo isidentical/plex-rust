@@ -120,7 +120,7 @@ impl EpisodeItem {
         views.art.set_playable(true);
         views.art.set_progress(episode.progress());
         views.art.set_badge(poster::badge(episode));
-        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, None, images);
+        views.art.show(episode.thumb.as_deref(), theme::LANDSCAPE_REQUEST, images);
         let spoken = poster::spoken(&Card::Item(episode.clone()), &title, &facts(episode), false);
         self.view().setAccessibilityLabel(Some(&NSString::from_str(&spoken)));
     }

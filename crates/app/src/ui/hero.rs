@@ -480,7 +480,7 @@ impl Views {
             Kind::Episode => item.grandparent_art.as_deref().or(item.art.as_deref()),
             _ => item.art.as_deref(),
         };
-        self.art.show(art.or(item.thumb.as_deref()), theme::HOME_HERO_REQUEST, None, &self.images);
+        self.art.show(art.or(item.thumb.as_deref()), theme::HOME_HERO_REQUEST, &self.images);
 
         let title = match item.kind {
             Kind::Episode => item.grandparent_title.as_deref().unwrap_or(&item.title),

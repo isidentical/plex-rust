@@ -793,7 +793,7 @@ impl Hero {
             Kind::Episode => item.grandparent_thumb.as_deref().or(item.thumb.as_deref()),
             _ => item.thumb.as_deref(),
         };
-        self.poster.show(poster, theme::HERO_POSTER_REQUEST, None, images);
+        self.poster.show(poster, theme::HERO_POSTER_REQUEST, images);
         self.poster.set_progress(item.progress());
     }
 }

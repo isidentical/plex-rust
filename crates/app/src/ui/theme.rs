@@ -104,9 +104,6 @@ pub const STILL_WIDTH: f64 = 240.0;
 /// A member of the cast, in a shelf.
 pub const PORTRAIT_WIDTH: f64 = 112.0;
 pub const PORTRAIT_REQUEST: (u32, u32) = (112, 112);
-/// The glyph that stands in for a missing photo.
-pub const PORTRAIT_GLYPH_SIZE: f64 = 44.0;
-pub const PLACEHOLDER_GLYPH_OPACITY: f64 = 0.25;
 /// The disc and the initials that stand in for a person's missing photo.
 pub const MONOGRAM_DISC_OPACITY: f64 = 0.12;
 pub const MONOGRAM_INK_OPACITY: f64 = 0.7;
