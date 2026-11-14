@@ -1,5 +1,6 @@
 //! Artwork, fetched once and kept.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -21,6 +22,7 @@ use plex::MediaServer;
 
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
+use crate::timing;
 
 /// How many bytes of decoded artwork are kept in memory. A poster at twice
 /// its point size is about half a megabyte, so this holds several hundred.
@@ -55,6 +57,8 @@ pub struct Images {
     directory: PathBuf,
     /// Decoded `CGImage`s. Evicted by the system under memory pressure.
     memory: Retained<NSCache<NSString, AnyObject>>,
+    /// How many pictures are on their way, for timing the last to arrive.
+    loading: Cell<usize>,
 }
 
 impl Images {
@@ -72,7 +76,7 @@ impl Images {
         let memory = unsafe { NSCache::new() };
         // SAFETY: the limit is a plain number of bytes.
         unsafe { memory.setTotalCostLimit(MEMORY_LIMIT) };
-        Ok(Self { main_thread, background, server, directory, memory })
+        Ok(Self { main_thread, background, server, directory, memory, loading: Cell::new(0) })
     }
 
     /// The artwork at server path `path` for a box of `width` by `height`
@@ -117,16 +121,23 @@ impl Images {
         };
 
         let images = Rc::clone(self);
-        self.background.run(self.main_thread, fetch, move |image| match image {
-            Ok(image) => {
-                let object: &AnyObject = (*image).as_ref();
-                let artwork = Artwork(object.retain());
-                let cost = CGImage::bytes_per_row(Some(&image)) * CGImage::height(Some(&image));
-                // SAFETY: as in `cached`.
-                unsafe { images.memory.setObject_forKey_cost(artwork.contents(), &key, cost) };
-                then(&artwork);
+        self.loading.set(self.loading.get() + 1);
+        self.background.run(self.main_thread, fetch, move |image| {
+            images.loading.set(images.loading.get() - 1);
+            if images.loading.get() == 0 {
+                timing::mark("artwork all in");
             }
-            Err(error) => eprintln!("plex-rust: artwork not loaded: {}", with_causes(&error)),
+            match image {
+                Ok(image) => {
+                    let object: &AnyObject = (*image).as_ref();
+                    let artwork = Artwork(object.retain());
+                    let cost = CGImage::bytes_per_row(Some(&image)) * CGImage::height(Some(&image));
+                    // SAFETY: as in `cached`.
+                    unsafe { images.memory.setObject_forKey_cost(artwork.contents(), &key, cost) };
+                    then(&artwork);
+                }
+                Err(error) => eprintln!("plex-rust: artwork not loaded: {}", with_causes(&error)),
+            }
         });
     }
 }

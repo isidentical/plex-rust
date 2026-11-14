@@ -12,6 +12,7 @@ mod seeks;
 mod settings;
 mod source;
 mod store;
+mod timing;
 mod ui;
 mod video_layer;
 
@@ -28,7 +29,7 @@ use crate::progress::Progress;
 use crate::seeks::Conditions;
 use crate::store::{OnDisk, Store};
 use crate::ui::player::input::Key;
-use crate::ui::shell::{Failure, Link, Press, Snapshot, Subject, Tweaks};
+use crate::ui::shell::{Failure, Link, Press, Snapshot, Step, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
@@ -40,6 +41,10 @@ usage: plex-rust
        plex-rust snapshot downloads <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path> [approving]
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
+       plex-rust snapshot walk <png-path> [<step>...]
+         steps: home, library=<index>, list=<server-path>, refresh,
+                scroll=<points>, back, forward, search=<query>, wait,
+                left, right, up, down, return
          keys: space, left, d, ..., and idle, end, wait, hover, drag,
                pull, release, bright, small, wide, marker, stall, fail,
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
@@ -92,6 +97,11 @@ fn run(args: &[&str]) -> Result<()> {
         }
         ["snapshot", "downloads", path, tweaks @ ..] => snapshot(Subject::Downloads, path, tweaks),
         ["snapshot", "signin", path, tweaks @ ..] => snapshot(Subject::SignIn, path, tweaks),
+        ["snapshot", "walk", path, steps @ ..] => {
+            timing::start();
+            let steps: Option<Vec<Step>> = steps.iter().map(|name| Step::named(name)).collect();
+            snapshot(Subject::Walk(steps.ok_or(Error::Usage(USAGE))?), path, &[])
+        }
         ["snapshot", "play", key, path, keys @ ..] => {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
             let keys = keys.ok_or(Error::Usage(USAGE))?;

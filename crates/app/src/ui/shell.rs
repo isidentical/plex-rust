@@ -1,6 +1,8 @@
 //! The main window: sidebar on the left, the chosen place on the right,
 //! and the way from one place to the next.
 
+mod walk;
+
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,7 @@ use plex::library::{Listing, Page};
 use plex::model::{Hub, Item, Kind, RatingKey, Section};
 use plex::{Client, MediaServer, Token};
 
+pub use self::walk::Step;
 use super::callback::Callback;
 use super::confirm;
 pub use super::detail::Link;
@@ -50,6 +53,7 @@ use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
 use crate::settings::{Listings, Settings};
 use crate::store::Download;
+use crate::timing;
 
 /// How many items each shelf of the home screen starts with.
 const SHELF_LENGTH: u32 = 20;
@@ -259,6 +263,8 @@ pub enum Subject {
     Downloads,
     /// The screen a signed-out viewer starts on.
     SignIn,
+    /// Home, and from there these steps, with the time of each printed.
+    Walk(Vec<Step>),
 }
 
 /// Changes to the state a snapshot is taken in.
@@ -340,6 +346,7 @@ pub fn run(snapshot: Option<Snapshot>) -> Result<()> {
         downloads,
         snapshot.is_some(),
     );
+    timing::mark("window built");
     match &snapshot {
         Some(snapshot) if snapshot.tweaks.narrow => {
             shell.window.setContentSize(theme::WINDOW_MIN_SIZE);
@@ -675,6 +682,7 @@ impl Shell {
         *self.session.borrow_mut() = Some(session);
         self.history.borrow_mut().clear();
         self.set_browsing_shown(true);
+        self.mark_shown("libraries known");
 
         self.list_places(Some(&sections));
 
@@ -711,7 +719,7 @@ impl Shell {
                 self.go(Route::List { title: "List".to_owned(), path: path.clone() });
             }
             Some(Subject::Downloads) => self.go(Route::Downloads),
-            Some(Subject::Home | Subject::SignIn) | None => self.go(Route::Home),
+            Some(Subject::Home | Subject::SignIn | Subject::Walk(_)) | None => self.go(Route::Home),
         }
     }
 
@@ -936,6 +944,7 @@ impl Shell {
         };
         *self.notice.borrow_mut() = None;
         self.show_view(screen.view(), fade);
+        self.mark_shown("screen in the window");
         self.window.setTitle(&NSString::from_str(title(&route)));
         let position = self.position.get();
         self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
@@ -1146,7 +1155,10 @@ impl Shell {
         let load = source.page(session.server.clone(), u32::try_from(start).unwrap_or(u32::MAX));
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |page| match page {
-            Ok(page) => posters.append(start, page.items),
+            Ok(page) => {
+                posters.append(start, page.items);
+                shell.mark_shown("next page added");
+            }
             Err(error) => {
                 posters.more_failed();
                 shell.fail(moves, &error);
@@ -1368,9 +1380,11 @@ impl Shell {
                 let (shown, show, answered) =
                     (Rc::clone(&shown), Rc::clone(&show), Rc::clone(&answered));
                 let remembered = ask(server.remembered());
+                let timed = Rc::clone(&shell);
                 shell.background.run(shell.main_thread, remembered, move |answer| {
                     if let (Ok(answer), false) = (answer, answered.get()) {
                         show(&answer);
+                        timed.mark_shown("remembered answer shown");
                         *shown.borrow_mut() = Some(answer);
                     }
                 });
@@ -1383,10 +1397,13 @@ impl Shell {
                 answered.set(true);
                 let has_shown = shown.borrow().is_some();
                 match answer {
-                    Ok(answer) if shown.borrow().as_ref() == Some(&answer) => {}
+                    Ok(answer) if shown.borrow().as_ref() == Some(&answer) => {
+                        failed.mark_shown("server answered the same");
+                    }
                     Ok(answer) => {
                         show(&answer);
                         *shown.borrow_mut() = Some(answer);
+                        failed.mark_shown("server answer shown");
                     }
                     // What is on screen from last time is better than an
                     // error, but for the one that says the sign-in is over.
@@ -1876,6 +1893,9 @@ impl Shell {
     /// Waits for the screen to settle, applies the snapshot's tweaks,
     /// waits again and writes the PNG.
     fn snapshot_later(self: &Rc<Self>, snapshot: Snapshot) {
+        if let Subject::Walk(steps) = &snapshot.subject {
+            return self.walk(steps.clone(), snapshot);
+        }
         // The picture is taken once the keys pressed in a player are done.
         let waits = match &snapshot.subject {
             Subject::Play(_, keys) => keys.iter().filter(|key| **key == Key::Wait).count(),
