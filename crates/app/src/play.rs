@@ -20,7 +20,7 @@ use plex::playback::PlaybackState;
 
 use crate::error::with_causes;
 use crate::progress::Progress;
-use crate::seeks::{self, Step};
+use crate::seeks::{self, Conditions, Step};
 use crate::video_layer::{self, VideoLayer};
 
 /// How often the server hears from a running playback. Plex asks for 10 s.
@@ -57,10 +57,11 @@ pub enum Check {
     /// took until then. With `low_power`, the switch is thrown once the
     /// file is playing, which is how the viewer throws it.
     State { length: Duration, low_power: bool },
-    /// How long these jumps stall playback, and then the playback state.
-    /// The video is drawn offscreen, because a window that the owner's other
-    /// windows cover is not drawn at all, and that changes the timings.
-    Seeks(Vec<Step>),
+    /// How long these jumps stall playback under these conditions, and then
+    /// the playback state. The video is drawn offscreen, because a window
+    /// that the owner's other windows cover is not drawn at all, and that
+    /// changes the timings.
+    Seeks(Vec<Step>, Conditions),
 }
 
 /// The size in pixels that the window of a check draws at on a Retina
@@ -84,7 +85,7 @@ pub fn run(
     let playback = Arc::new(Playback { player: Player::new()?, progress });
     let player = &playback.player;
 
-    let offscreen = matches!(check, Some(Check::Seeks(_)));
+    let offscreen = matches!(check, Some(Check::Seeks(..)));
     let app = NSApplication::sharedApplication(main_thread);
     app.setActivationPolicy(if offscreen {
         NSApplicationActivationPolicy::Accessory
@@ -277,7 +278,9 @@ fn checked(
             let cpu_share = (cpu_time() - cpu).as_secs_f64() / clock.elapsed().as_secs_f64();
             (None, Some(cpu_share))
         }
-        Check::Seeks(steps) => (Some(seeks::run(player, &mut probe, steps)?), None),
+        Check::Seeks(steps, conditions) => {
+            (Some(seeks::run(player, &mut probe, steps, conditions)?), None)
+        }
     };
     let mut report = state(player)?;
     // Processor time over time passed, from the file starting to play

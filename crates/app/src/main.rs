@@ -25,6 +25,7 @@ use plex::model::RatingKey;
 use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
+use crate::seeks::Conditions;
 use crate::store::{OnDisk, Store};
 use crate::ui::player::input::Key;
 use crate::ui::shell::{Failure, Link, Press, Snapshot, Subject, Tweaks};
@@ -56,6 +57,7 @@ usage: plex-rust
        plex-rust play <file-or-url> [--unattended <seconds> [--low-power]]
        plex-rust play item:<rating-key> [--unattended <seconds> [--low-power]]
        plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
+                      [speed=<rate>] [subtitles=<id>|off] [paused]
        plex-rust pacing <file-or-url-or-item:<rating-key>> <seconds> <speed>...";
 
 fn main() -> ExitCode {
@@ -111,9 +113,10 @@ fn run(args: &[&str]) -> Result<()> {
             };
             play(what, Some(Check::State { length, low_power }))
         }
-        ["play", what, "--seeks", script] => {
+        ["play", what, "--seeks", script, conditions @ ..] => {
             let steps = seeks::parse(script).ok_or(Error::Usage(USAGE))?;
-            play(what, Some(Check::Seeks(steps)))
+            let conditions = Conditions::parse(conditions).ok_or(Error::Usage(USAGE))?;
+            play(what, Some(Check::Seeks(steps, conditions)))
         }
         ["pacing", what, seconds, speeds @ ..] => pacing::run(what, seconds, speeds),
         _ => Err(Error::Usage(USAGE)),

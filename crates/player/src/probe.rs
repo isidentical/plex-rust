@@ -2,7 +2,7 @@
 
 use std::ffi::CStr;
 use std::ptr::NonNull;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libmpv2_sys as sys;
 
@@ -105,11 +105,14 @@ impl Probe {
 
     /// Blocks until the next moment, or returns `None` after `timeout`.
     pub fn wait(&mut self, timeout: Duration) -> Option<Moment> {
+        // mpv also reports what is no moment, such as every other log
+        // line, and none of that may start the wait over.
+        let until = Instant::now() + timeout;
         loop {
+            let left = until.saturating_duration_since(Instant::now());
             // SAFETY: the client is valid, and the returned event is valid
             // until the next wait on this client, which only this loop makes.
-            let event =
-                unsafe { &*sys::mpv_wait_event(self.client.as_ptr(), timeout.as_secs_f64()) };
+            let event = unsafe { &*sys::mpv_wait_event(self.client.as_ptr(), left.as_secs_f64()) };
             match event.event_id {
                 sys::mpv_event_id_MPV_EVENT_NONE => return None,
                 sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return Some(Moment::Shutdown),
