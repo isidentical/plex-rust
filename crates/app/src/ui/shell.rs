@@ -64,8 +64,10 @@ struct Shell {
     /// What the content area shows. Held here because views do not keep
     /// their data sources and button targets alive.
     place: RefCell<Place>,
-    /// Where Back on a detail page returns to.
+    /// The sidebar's place, where the trail of detail pages starts.
     destination: RefCell<Destination>,
+    /// The detail pages opened since leaving that place, last one on screen.
+    trail: RefCell<Vec<Item>>,
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
@@ -214,6 +216,7 @@ impl Shell {
             session: RefCell::new(None),
             place: RefCell::new(Place::Message),
             destination: RefCell::new(Destination::Home),
+            trail: RefCell::new(Vec::new()),
             split: NSSplitViewController::new(main_thread),
             playing: RefCell::new(None),
             opening_player: Cell::new(false),
@@ -329,6 +332,7 @@ impl Shell {
     /// Shows a place from the sidebar.
     fn go_to(self: &Rc<Self>, destination: &Destination) {
         *self.destination.borrow_mut() = destination.clone();
+        self.trail.borrow_mut().clear();
         let Some(session) = self.session() else {
             return;
         };
@@ -407,8 +411,45 @@ impl Shell {
         posters
     }
 
-    /// Shows the detail page of `item`.
+    /// Goes to the detail page of `item`, remembering the way back.
     fn open(self: &Rc<Self>, item: &Item) {
+        self.trail.borrow_mut().push(item.clone());
+        self.show_detail(item);
+    }
+
+    /// Leaves the detail page for the one it was opened from, or for the
+    /// sidebar's place if it was opened from there.
+    fn back(self: &Rc<Self>) {
+        let previous = {
+            let mut trail = self.trail.borrow_mut();
+            trail.pop();
+            trail.last().cloned()
+        };
+        match previous {
+            Some(item) => self.show_detail(&item),
+            None => {
+                let destination = self.destination.borrow().clone();
+                self.go_to(&destination);
+            }
+        }
+    }
+
+    /// Fetches the page on screen again, after something about its item has
+    /// changed on the server, such as how far it was watched.
+    fn refresh_page(self: &Rc<Self>) {
+        let Some(key) = self.trail.borrow().last().map(|item| item.rating_key.clone()) else {
+            return;
+        };
+        self.fetch(key, |shell, item| {
+            if let Some(top) = shell.trail.borrow_mut().last_mut() {
+                *top = item.clone();
+            }
+            shell.show_detail(item);
+        });
+    }
+
+    /// Shows the detail page of `item`.
+    fn show_detail(self: &Rc<Self>, item: &Item) {
         let Some(session) = self.session() else {
             return;
         };
@@ -430,8 +471,7 @@ impl Shell {
             },
             move || {
                 if let Some(shell) = back.upgrade() {
-                    let destination = shell.destination.borrow().clone();
-                    shell.go_to(&destination);
+                    shell.back();
                 }
             },
         );
@@ -532,6 +572,11 @@ impl Shell {
         };
         self.keep_settings(&screen);
         self.set_window_content(&self.split);
+        // The page behind the player still says where the item was left
+        // before it was played.
+        if purpose == Purpose::Watching {
+            self.refresh_page();
+        }
         match outcome {
             Outcome::Closed => {}
             Outcome::Finished if screen.item().kind == Kind::Episode => {
