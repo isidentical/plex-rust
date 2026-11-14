@@ -7,14 +7,15 @@ use std::rc::Rc;
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSFontWeightRegular,
-    NSFontWeightSemibold, NSLayoutConstraint, NSNibName, NSTextField, NSView,
+    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint,
+    NSNibName, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint};
 use plex::model::Item;
 
 use super::artwork::{self, ArtView};
 use super::hover::HoverView;
+use super::label::{self, Weight};
 use super::layout;
 use super::poster;
 use super::text;
@@ -99,9 +100,9 @@ impl EpisodeItem {
             Some(number) => format!("{number}. {}", episode.title),
             None => episode.title.clone(),
         };
-        text::set(&views.title, &title);
-        text::set(&views.facts, &facts(episode));
-        text::set(&views.summary, episode.summary.as_deref().unwrap_or_default());
+        label::set(&views.title, &title);
+        label::set(&views.facts, &facts(episode));
+        label::set(&views.summary, episode.summary.as_deref().unwrap_or_default());
         views.set_hovered(false);
         views.art.reset();
         views.art.set_playable(true);
@@ -126,8 +127,6 @@ fn facts(episode: &Item) -> String {
 
 impl Views {
     fn new(main_thread: MainThreadMarker) -> Self {
-        // SAFETY: the weights are constants that AppKit provides.
-        let (semibold, regular) = unsafe { (NSFontWeightSemibold, NSFontWeightRegular) };
         let secondary = NSColor::secondaryLabelColor();
         let wash = artwork::layered(main_thread);
         artwork::fill_with(&wash, &theme::white(theme::ROW_HOVER_OPACITY));
@@ -137,10 +136,16 @@ impl Views {
         wash.setAlphaValue(0.0);
         Self {
             art: ArtView::new(main_thread, theme::RADIUS_M),
-            title: text::label(theme::FONT_HEADLINE, semibold, &NSColor::labelColor(), main_thread),
-            facts: text::label(theme::FONT_CAPTION, regular, &secondary, main_thread),
-            summary: text::paragraph(
+            title: label::line(
+                theme::FONT_HEADLINE,
+                Weight::Semibold,
+                &NSColor::labelColor(),
+                main_thread,
+            ),
+            facts: label::line(theme::FONT_CAPTION, Weight::Regular, &secondary, main_thread),
+            summary: label::paragraph(
                 theme::FONT_BODY,
+                Weight::Regular,
                 &secondary,
                 theme::EPISODE_SUMMARY_LINES,
                 main_thread,

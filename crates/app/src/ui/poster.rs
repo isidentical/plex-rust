@@ -7,14 +7,15 @@ use std::rc::Rc;
 use objc2::rc::{Allocated, Retained};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSFontWeightMedium,
-    NSFontWeightRegular, NSLayoutConstraint, NSNibName, NSTextField,
+    NSCollectionViewItem, NSCollectionViewItemHighlightState, NSColor, NSLayoutConstraint,
+    NSNibName, NSTextField,
 };
 use objc2_foundation::{NSArray, NSBundle, NSPoint};
 use plex::model::{Item, Kind};
 
 use super::artwork::{ArtView, Badge};
 use super::hover::HoverView;
+use super::label::{self, Weight};
 use super::text;
 use super::theme;
 use crate::images::Images;
@@ -129,8 +130,8 @@ impl PosterItem {
             return;
         };
         let (title, subtitle) = captions(item, shape);
-        text::set(&views.title, &title);
-        text::set(&views.subtitle, &subtitle);
+        label::set(&views.title, &title);
+        label::set(&views.subtitle, &subtitle);
         views.art.reset();
         views.art.set_playable(is_playable(item));
         views.art.set_progress(item.progress());
@@ -204,14 +205,17 @@ fn captions(item: &Item, shape: Shape) -> (String, String) {
 
 impl Views {
     fn new(main_thread: MainThreadMarker) -> Self {
-        // SAFETY: the weights are constants that AppKit provides.
-        let (medium, regular) = unsafe { (NSFontWeightMedium, NSFontWeightRegular) };
         Self {
             art: ArtView::new(main_thread, theme::RADIUS_M),
-            title: text::label(theme::FONT_BODY, medium, &NSColor::labelColor(), main_thread),
-            subtitle: text::label(
+            title: label::line(
+                theme::FONT_BODY,
+                Weight::Medium,
+                &NSColor::labelColor(),
+                main_thread,
+            ),
+            subtitle: label::line(
                 theme::FONT_CAPTION,
-                regular,
+                Weight::Regular,
                 &NSColor::secondaryLabelColor(),
                 main_thread,
             ),

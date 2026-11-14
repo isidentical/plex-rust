@@ -6,13 +6,14 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSButtonType, NSColor, NSControlStateValueOn, NSFontWeightRegular,
-    NSLayoutConstraint, NSPopUpButton, NSTextField, NSView,
+    NSButton, NSButtonType, NSColor, NSControlStateValueOn, NSLayoutConstraint, NSPopUpButton,
+    NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
 use plex::library::{Listing, Sort};
 
 use super::callback::Callback;
+use super::label::{self, Weight};
 use super::text;
 use super::theme;
 
@@ -77,10 +78,12 @@ impl LibraryBar {
             unwatched.setAction(Some(Callback::action()));
         }
 
-        // SAFETY: the weight is a constant that AppKit provides.
-        let regular = unsafe { NSFontWeightRegular };
-        let count =
-            text::label(theme::FONT_BODY, regular, &NSColor::secondaryLabelColor(), main_thread);
+        let count = label::line(
+            theme::FONT_BODY,
+            Weight::Regular,
+            &NSColor::secondaryLabelColor(),
+            main_thread,
+        );
         let view = NSView::new(main_thread);
         for control in [&**order, &**unwatched, &**count] {
             let control: &NSView = control;
@@ -107,6 +110,6 @@ impl LibraryBar {
 
     /// Says how many items the listing has in all.
     pub fn set_total(&self, total: u32) {
-        text::set(&self.count, &text::count(total, self.noun));
+        label::set(&self.count, &text::count(total, self.noun));
     }
 }

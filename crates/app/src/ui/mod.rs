@@ -6,6 +6,7 @@ mod callback;
 mod detail;
 mod episode;
 mod hover;
+mod label;
 mod layout;
 mod library_bar;
 mod menus;

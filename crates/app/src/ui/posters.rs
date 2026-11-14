@@ -21,9 +21,8 @@ use objc2_app_kit::{
     NSCollectionLayoutSpacing, NSCollectionView, NSCollectionViewCompositionalLayout,
     NSCollectionViewCompositionalLayoutConfiguration, NSCollectionViewDataSource,
     NSCollectionViewDelegate, NSCollectionViewItem, NSCollectionViewSupplementaryElementKind,
-    NSColor, NSEvent, NSEventType, NSFontWeightBold, NSFontWeightRegular,
-    NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem, NSRectAlignment, NSScrollView,
-    NSTextField, NSView,
+    NSColor, NSEvent, NSEventType, NSIndexPathNSCollectionViewAdditions, NSMenu, NSMenuItem,
+    NSRectAlignment, NSScrollView, NSTextField, NSView,
 };
 use objc2_foundation::{
     NSArray, NSIndexPath, NSInteger, NSMutableIndexSet, NSObject, NSObjectProtocol, NSPoint,
@@ -33,9 +32,9 @@ use plex::model::Item;
 
 use super::episode::EpisodeItem;
 use super::hover::HoverView;
+use super::label::{self, Weight};
 use super::layout;
 use super::poster::{self, PosterItem, Shape};
-use super::text;
 use super::theme;
 use crate::images::Images;
 
@@ -313,15 +312,13 @@ impl Posters {
         scroll.setHasVerticalScroller(true);
         scroll.setDrawsBackground(false);
 
-        // SAFETY: the weight is a constant that AppKit provides.
-        let regular = unsafe { NSFontWeightRegular };
-        let nothing_label = text::label(
+        let nothing_label = label::line(
             theme::FONT_HEADLINE,
-            regular,
+            Weight::Regular,
             &NSColor::secondaryLabelColor(),
             main_thread,
         );
-        text::set(&nothing_label, nothing);
+        label::set(&nothing_label, nothing);
         nothing_label.setHidden(true);
         scroll.addSubview(&nothing_label);
         nothing_label
@@ -517,10 +514,12 @@ impl Posters {
         let label = match reused.and_then(|label| label.downcast::<NSTextField>().ok()) {
             Some(label) => label,
             None => {
-                // SAFETY: the weight is a constant that AppKit provides.
-                let bold = unsafe { NSFontWeightBold };
-                let label =
-                    text::label(theme::FONT_TITLE, bold, &NSColor::labelColor(), self.mtm());
+                let label = label::line(
+                    theme::FONT_TITLE,
+                    Weight::Bold,
+                    &NSColor::labelColor(),
+                    self.mtm(),
+                );
                 view.addSubview(&label);
                 // At the bottom of its strip, close to the shelf it names.
                 label
@@ -535,7 +534,7 @@ impl Posters {
             }
         };
         let (shelf, _) = position(index_path);
-        text::set(&label, self.ivars().content.borrow().title(shelf));
+        label::set(&label, self.ivars().content.borrow().title(shelf));
     }
 
     /// Return and Space open the item the keyboard is on.

@@ -8,8 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFontWeightBold, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSLayoutAttribute, NSLayoutConstraint,
+    NSButton, NSCellImagePosition, NSColor, NSControlSize, NSLayoutAttribute, NSLayoutConstraint,
     NSPopUpButton, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGSize;
@@ -20,6 +19,7 @@ use plex::model::{Item, Kind, Media, RatingKey, StreamKind};
 use super::artwork::{self, ArtView};
 use super::backdrop::Backdrop;
 use super::hover::HoverView;
+use super::label::{self, Weight};
 use super::layout;
 use super::posters::{Action, Header, OnAction, Outline, Posters, Shelf, Style};
 use super::text;
@@ -258,7 +258,7 @@ impl Detail {
             .cloned()
             .collect();
         let size = u32::try_from(episodes.len()).unwrap_or(u32::MAX);
-        text::set(&ivars.hero.season_size, &text::count(size, "episode"));
+        label::set(&ivars.hero.season_size, &text::count(size, "episode"));
         ivars.hero.season_size.setHidden(episodes.is_empty());
         ivars.list.show(vec![Shelf { title: String::new(), style: Style::List, items: episodes }]);
     }
@@ -291,7 +291,7 @@ impl Detail {
         };
         hero.play.setTitle(&NSString::from_str(&title));
         let remaining = text::remaining(&playable);
-        text::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
+        label::set(&hero.remaining, remaining.as_deref().unwrap_or_default());
         hero.remaining.setHidden(remaining.is_none());
     }
 
@@ -323,12 +323,8 @@ impl Hero {
     /// clicked.
     fn new(main_thread: MainThreadMarker, open_show: impl Fn() + 'static) -> Self {
         let open_show: Rc<dyn Fn()> = Rc::new(open_show);
-        // SAFETY: the weights are constants that AppKit provides.
-        let (bold, semibold, medium, regular) = unsafe {
-            (NSFontWeightBold, NSFontWeightSemibold, NSFontWeightMedium, NSFontWeightRegular)
-        };
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
-        let line = |size, weight, color| text::label(size, weight, color, main_thread);
+        let line = |size, weight, color| label::line(size, weight, color, main_thread);
 
         let poster = Rc::new(ArtView::new(main_thread, theme::RADIUS_L));
         let (lifted, follow) = (Rc::clone(&poster), Rc::clone(&open_show));
@@ -346,10 +342,10 @@ impl Hero {
         }
         let (show_link, show_name) = text_link(Rc::clone(&open_show), main_thread);
         let (season_link, season_name) = text_link(open_show, main_thread);
-        let episode_number = line(theme::FONT_HEADLINE, semibold, &secondary);
+        let episode_number = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
         let dot = || {
-            let dot = line(theme::FONT_HEADLINE, semibold, &secondary);
-            text::set(&dot, "·");
+            let dot = line(theme::FONT_HEADLINE, Weight::Semibold, &secondary);
+            label::set(&dot, "·");
             dot
         };
         let (first_dot, second_dot) = (dot(), dot());
@@ -357,11 +353,8 @@ impl Hero {
             [&show_link, &first_dot, &season_link, &second_dot, &episode_number];
         let eyebrow = NSStackView::stackViewWithViews(&NSArray::from_slice(&eyebrow), main_thread);
         eyebrow.setSpacing(theme::SPACE_S);
-        let title = text::paragraph(theme::FONT_LARGE_TITLE, &primary, 2, main_thread);
-        title.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(
-            theme::FONT_LARGE_TITLE,
-            bold,
-        )));
+        let title =
+            label::paragraph(theme::FONT_LARGE_TITLE, Weight::Bold, &primary, 2, main_thread);
         let badges = NSStackView::new(main_thread);
         badges.setSpacing(theme::SPACE_S);
 
@@ -372,7 +365,7 @@ impl Hero {
         play.setBezelColor(Some(&NSColor::controlAccentColor()));
         let watched = button("Mark as Watched", Some("checkmark"), main_thread);
         watched.setControlSize(NSControlSize::Large);
-        let remaining = line(theme::FONT_BODY, regular, &secondary);
+        let remaining = line(theme::FONT_BODY, Weight::Regular, &secondary);
         let buttons: [&NSView; 3] = [&play, &watched, &remaining];
         let buttons = NSStackView::stackViewWithViews(&NSArray::from_slice(&buttons), main_thread);
         buttons.setSpacing(theme::SPACE_M);
@@ -386,25 +379,32 @@ impl Hero {
             season_name,
             episode_number,
             title,
-            facts: line(theme::FONT_HEADLINE, medium, &secondary),
+            facts: line(theme::FONT_HEADLINE, Weight::Medium, &secondary),
             badges,
-            genres: line(theme::FONT_BODY, regular, &secondary),
+            genres: line(theme::FONT_BODY, Weight::Regular, &secondary),
             play,
             watched,
             remaining,
-            summary: text::paragraph(
+            summary: label::paragraph(
                 theme::FONT_HEADLINE,
+                Weight::Regular,
                 &primary,
                 theme::HERO_SUMMARY_LINES,
                 main_thread,
             ),
-            credits: text::paragraph(theme::FONT_BODY, &secondary, 2, main_thread),
+            credits: label::paragraph(
+                theme::FONT_BODY,
+                Weight::Regular,
+                &secondary,
+                2,
+                main_thread,
+            ),
             seasons: NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(main_thread),
                 NSRect::ZERO,
                 false,
             ),
-            season_size: line(theme::FONT_BODY, regular, &secondary),
+            season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
         };
         hero.seasons.setControlSize(NSControlSize::Large);
         hero.seasons.setHidden(true);
@@ -472,7 +472,7 @@ impl Hero {
 
     fn show(&self, item: &Item, images: &Rc<Images>) {
         let set = |label: &NSTextField, words: &str| {
-            text::set(label, words);
+            label::set(label, words);
             label.setHidden(words.is_empty());
         };
         let is_episode = item.kind == Kind::Episode;
@@ -521,10 +521,12 @@ fn text_link(
     on_click: Rc<dyn Fn()>,
     main_thread: MainThreadMarker,
 ) -> (Retained<HoverView>, Retained<NSTextField>) {
-    // SAFETY: the weight is a constant that AppKit provides.
-    let weight = unsafe { NSFontWeightSemibold };
-    let label =
-        text::label(theme::FONT_HEADLINE, weight, &NSColor::secondaryLabelColor(), main_thread);
+    let label = label::line(
+        theme::FONT_HEADLINE,
+        Weight::Semibold,
+        &NSColor::secondaryLabelColor(),
+        main_thread,
+    );
     let lit = label.clone();
     let link = HoverView::link(
         main_thread,
@@ -608,11 +610,13 @@ fn badge(words: &str, main_thread: MainThreadMarker) -> Retained<NSView> {
         layer.setBorderWidth(theme::ARTWORK_OUTLINE_WIDTH);
         layer.setBorderColor(Some(&theme::white(theme::FACT_BADGE_BORDER_OPACITY).CGColor()));
     }
-    // SAFETY: the weight is a constant that AppKit provides.
-    let weight = unsafe { NSFontWeightSemibold };
-    let label =
-        text::label(theme::FONT_CAPTION, weight, &NSColor::secondaryLabelColor(), main_thread);
-    text::set(&label, words);
+    let label = label::line(
+        theme::FONT_CAPTION,
+        Weight::Semibold,
+        &NSColor::secondaryLabelColor(),
+        main_thread,
+    );
+    label::set(&label, words);
     frame.addSubview(&label);
     let (across, down) = (theme::SPACE_S - theme::SPACE_XXS, theme::SPACE_XXS);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[

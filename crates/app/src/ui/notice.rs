@@ -4,14 +4,14 @@
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlSize, NSFontWeightBold, NSImageView, NSLayoutAttribute,
-    NSLayoutConstraint, NSStackView, NSTextAlignment, NSUserInterfaceLayoutOrientation, NSView,
+    NSButton, NSColor, NSControlSize, NSImageView, NSLayoutAttribute, NSLayoutConstraint,
+    NSStackView, NSTextAlignment, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSString, ns_string};
 
 use super::artwork;
 use super::callback::Callback;
-use super::text;
+use super::label::{self, Weight};
 use super::theme;
 
 pub struct Notice {
@@ -36,12 +36,11 @@ impl Notice {
         glyph.setImage(artwork::symbol(symbol, theme::NOTICE_SYMBOL_SIZE).as_deref());
         glyph.setContentTintColor(Some(&secondary));
 
-        // SAFETY: the weight is a constant that AppKit provides.
-        let bold = unsafe { NSFontWeightBold };
-        let heading = text::label(theme::FONT_TITLE, bold, &NSColor::labelColor(), main_thread);
-        text::set(&heading, title);
-        let body = text::paragraph(theme::FONT_BODY, &secondary, 6, main_thread);
-        text::set(&body, detail);
+        let heading =
+            label::line(theme::FONT_TITLE, Weight::Bold, &NSColor::labelColor(), main_thread);
+        label::set(&heading, title);
+        let body = label::paragraph(theme::FONT_BODY, Weight::Regular, &secondary, 6, main_thread);
+        label::set(&body, detail);
         body.setAlignment(NSTextAlignment::Center);
         body.setPreferredMaxLayoutWidth(theme::NOTICE_WIDTH);
         // An error names addresses the viewer may want to copy.

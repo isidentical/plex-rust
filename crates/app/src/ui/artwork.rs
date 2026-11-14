@@ -8,8 +8,8 @@ use std::rc::Rc;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAnimationContext, NSColor, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration,
-    NSImageView, NSLayoutConstraint, NSTextField, NSView,
+    NSAnimationContext, NSColor, NSImage, NSImageSymbolConfiguration, NSImageView,
+    NSLayoutConstraint, NSTextField, NSView,
 };
 use objc2_core_foundation::{CGAffineTransform, CGSize};
 use objc2_foundation::{NSArray, NSPoint, NSString, ns_string};
@@ -18,8 +18,8 @@ use objc2_quartz_core::{
     kCATransitionFade,
 };
 
+use super::label::{self, Weight};
 use super::layout;
-use super::text;
 use super::theme;
 use crate::images::{Artwork, Images};
 
@@ -209,7 +209,7 @@ impl ArtView {
         self.dot.setHidden(badge != Badge::Unwatched);
         self.pill.setHidden(!matches!(badge, Badge::Left(_)));
         if let Badge::Left(episodes) = badge {
-            text::set(&self.count, &episodes.to_string());
+            label::set(&self.count, &episodes.to_string());
         }
     }
 
@@ -336,9 +336,10 @@ pub fn symbol(name: &str, size: f64) -> Option<Retained<NSImage>> {
         &NSString::from_str(name),
         None,
     )?;
-    // SAFETY: the weight is a constant that AppKit provides.
-    let weight = unsafe { NSFontWeightSemibold };
-    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(size, weight);
+    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(
+        size,
+        Weight::Semibold.value(),
+    );
     image.imageWithSymbolConfiguration(&configuration)
 }
 
@@ -357,9 +358,8 @@ fn count_pill(main_thread: MainThreadMarker) -> (Retained<NSView>, Retained<NSTe
     if let Some(layer) = pill.layer() {
         layer.setCornerRadius(theme::BADGE_HEIGHT / 2.0);
     }
-    // SAFETY: the weight is a constant that AppKit provides.
-    let weight = unsafe { NSFontWeightSemibold };
-    let count = text::label(theme::FONT_CAPTION, weight, &NSColor::whiteColor(), main_thread);
+    let count =
+        label::line(theme::FONT_CAPTION, Weight::Semibold, &NSColor::whiteColor(), main_thread);
     pill.addSubview(&count);
     let padding = theme::BADGE_PADDING;
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
