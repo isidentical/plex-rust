@@ -1,61 +1,81 @@
-# Spec: plex-rust, a native macOS Plex client in Rust
+# plex-rust design document
 
-The app is named plex-rust at its owner's choice. It is a personal, third-party
-client: it uses no Plex logo or artwork, and its icon is its own.
+plex-rust is a native macOS client for Plex, written in Rust. The interface
+is AppKit through the objc2 crates and playback is a statically linked mpv.
 
-Every claim below is tagged where it matters:
-- [V] verified against a primary source or on this Mac on 2026-11-13
-- [U] not verified. Each [U] is closed by a named check in Milestone 0 before
-  anything is built on top of it.
+plex-rust is an unofficial third-party client. It is not affiliated with,
+endorsed by or sponsored by Plex. Plex is a trademark of Plex, Inc. The app
+uses no Plex logo or artwork, and its icon is its own.
+
+This document records what the app does, why it is built the way it is, and
+what each decision rests on. Section numbers are stable: source comments and
+commit messages cite them. Where a claim comes from somewhere else, the
+source is named next to it. Where something has not been confirmed, the
+sentence says so, and section 12 collects those.
 
 ## 1. Context
 
-The official desktop app at /Applications/Plex.app (1.115.0) ships Qt Quick and
-QtWebEngine frameworks [V]. The goal is a personal replacement with a very
-similar layout that browses faster, always plays the original file, buffers far
-ahead, stays smooth at high playback speed, and uses as little battery as
-possible.
+Plex's own desktop app for macOS is built on Qt, with Qt Quick and
+QtWebEngine among the frameworks in its bundle (seen in version 1.115.0).
+plex-rust is a client built from the platform's own parts instead. Its aims:
+browse without waiting, always play the original file, buffer far ahead,
+stay smooth at high playback speed, and use as little energy as that allows.
 
 ## 2. Decisions
 
 | Topic | Decision |
 | --- | --- |
-| Language | Rust only, stable (rustc 1.100.0 via rustup, already installed) |
+| Language | Rust only, stable, 1.100 or later, edition 2024 |
 | UI | AppKit through objc2 0.6.5 and objc2-app-kit 0.3.2. No Swift, no web view |
-| Playback | libmpv 0.42.0 embedded in our own NSView through the OpenGL render API |
-| v1 scope | Movies + TV, offline downloads of original files |
-| Not in v1 | Music, Live TV / DVR, Photos, transcoding, relay connections, Picture in Picture |
-| Network | LAN or Tailscale. Direct connections only |
-| Audience | Personal use, Apple Silicon, macOS 26+, no sandbox, ad hoc signed |
+| Playback | libmpv 0.42.0 embedded in the app's own NSView through mpv's OpenGL render API |
+| Scope | Movies and TV, offline downloads of original files |
+| Out of scope | Music, Live TV / DVR, Photos, transcoding, relay connections, Picture in Picture |
+| Network | Direct connections only: on the local network, to an address given by hand such as one on a VPN, or to the server's remote HTTPS address. Plex's relay is never used |
+| Platform | Apple Silicon, macOS 26 or later, no sandbox, ad hoc signed |
 | Packaging | One self-contained plex-rust.app holding one executable that links only macOS system libraries. Nothing to install to run it |
-| Quality vs power | Quality is always first. The app never reads the macOS Low Power Mode state. One in-app "Low power" switch, off by default |
-| Execution | Built end to end without a human, after two one-time actions listed in section 11 |
+| Quality vs power | Quality is always first. The app never reads the macOS Low Power Mode state. One in-app Low Power switch, off by default |
 
-### Known limits of these decisions (accepted)
+### What these decisions cost
 
-- mpv's render API offers only OpenGL, Direct3D 11 and software, and its OpenGL
-  backend runs the older `vo=gpu` renderer, not `gpu-next` [V]. So: no Dolby
-  Vision reshaping, no `target-colorspace-hint`, and no direct-to-display
-  presentation (that needs fullscreen + an opaque CAMetalLayer [V]).
-- `--wid` embedding was removed on macOS [V].
-- Upstream PRs #16818 and #18607 would bring the newer renderer to the same
-  render API. Both are open, not merged [V]. Nothing in this spec depends on
-  them.
-- No credible watt-level comparison of mpv/IINA against AVPlayer exists [V].
-  Power is therefore measured in Milestone 0, not assumed.
-- Ad hoc signed apps may not keep the Local Network permission reliably [V].
-  If the prompt keeps returning, the fix is an Apple Development certificate.
-- Native PiP needs an AVSampleBufferDisplayLayer [V], which this path lacks.
+- mpv's render API offers three backends: OpenGL, Direct3D 11 and software
+  ([`render.h`](https://github.com/mpv-player/mpv/blob/v0.42.0/include/mpv/render.h)).
+  Its OpenGL backend draws with `gl_video`, the renderer of `vo=gpu`
+  ([`libmpv_gpu.c`](https://github.com/mpv-player/mpv/blob/v0.42.0/video/out/gpu/libmpv_gpu.c)),
+  not with `gpu-next`. So there is no Dolby Vision reshaping (section 7),
+  and no `target-colorspace-hint`, which mpv's manual says requires
+  `--vo=gpu-next`
+  ([options](https://mpv.io/manual/stable/#options-target-colorspace-hint)).
+- mpv's manual describes `--wid`, which attaches mpv to an existing window,
+  for X11, Windows and Android, and not for macOS
+  ([options](https://mpv.io/manual/stable/#options-wid)). The render API is
+  the way to put mpv's picture in an AppKit view.
+- Two upstream pull requests would bring the newer renderer to the render
+  API: [#16818](https://github.com/mpv-player/mpv/pull/16818) and
+  [#18607](https://github.com/mpv-player/mpv/pull/18607). Both were open
+  and unmerged when this was written. Nothing here depends on them.
+- Picture in Picture takes its content from an `AVPlayerLayer` or an
+  `AVSampleBufferDisplayLayer`
+  ([`AVPictureInPictureController.ContentSource`](https://developer.apple.com/documentation/avkit/avpictureinpicturecontroller/contentsource-swift.class)),
+  and this render path has neither.
+- macOS tracks the Local Network permission by code signature, and Apple
+  says that reliable tracking needs an Apple-issued signing identity, which
+  an ad hoc signature is not
+  ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)).
+  If the prompt keeps coming back for the bundled app, signing it with an
+  Apple Development certificate is the fix.
 
-## 3. Engineering rules (binding)
+## 3. Engineering rules
+
+These are the project's contribution standard. Every change is held to
+them.
 
 The Zen of Python is the north star. The code should read as if a Rust core
 developer wrote it.
 
 - One obvious way to do each thing. No second code path for the same job.
-- Explicit over implicit: no hidden global state, no macros of our own, types
-  that say what they hold (`RatingKey`, `Millis`, `ServerUrl`, not bare
-  strings and integers).
+- Explicit over implicit: no hidden global state, no macros of the project's
+  own, types that say what they hold (`RatingKey`, `Millis`, `ServerUrl`,
+  not bare strings and integers).
 - Flat over nested: early returns, small modules, shallow call trees.
 - Errors never pass silently. Fallible calls return a typed error
   (`thiserror`) that is handled or shown in the UI. No `unwrap`/`expect`
@@ -81,25 +101,52 @@ developer wrote it.
   implementation step that builds and runs. Imperative subject, body says why.
   Work happens on a branch that is pushed before merging to `main`.
 
-## 4. Setup (first actions after approval)
+## 4. Building from source
 
-1. Save the engineering rules to project memory (could not be done in plan
-   mode).
-2. `brew install meson ninja nasm cmake` (none are installed [V]). They are
-   build tools only and are not needed to run the app.
-3. `scripts/build-libmpv.sh` builds a static libmpv from pinned source
-   tarballs: FFmpeg, dav1d, libass with its text stack, libplacebo, mpv
-   0.42.0. Minimal feature set: no Lua, no JavaScript, no VapourSynth, no
-   rubberband, no yt-dlp, no Vulkan. Output goes to `vendor/libmpv/`, which is
-   gitignored and cached between builds.
-   - Homebrew's mpv is not used: its formula depends on vapoursynth, yt-dlp,
-     luajit, mujs, rubberband, libbluray, vulkan-loader and molten-vk [V], and
-     that whole tree would have to ship with the app.
-   - mpv is GPL by default [V]. Fine for personal use.
-4. `git init`, private GitHub repo `plex-rust`, one branch per milestone, pushed
-   before merging to `main`.
-5. Already present [V]: rustfmt, clippy, rust-analyzer, clang 21, pkg-config,
-   codesign, install_name_tool, plutil.
+Needed: an Apple Silicon Mac on macOS 26 or later, Rust 1.100 or later with
+rustfmt and clippy, Apple's developer tools for clang and swiftc (mpv has
+Swift sources, and the build finds the compiler through `xcrun`), and
+pkg-config, meson, ninja, nasm and cmake on the `PATH`. Those are build
+tools only. None is needed to run the app.
+
+```sh
+brew install meson ninja nasm cmake
+scripts/build-libmpv.sh    # once: mpv and what it needs, into vendor/
+scripts/bundle.sh          # builds target/plex-rust.app
+```
+
+`scripts/build-libmpv.sh` downloads pinned releases, checks each archive
+against a SHA-256 written in the script, and builds static libraries into
+`vendor/libmpv/`: dav1d 1.5.4, FreeType 2.15.0, FriBidi 1.0.18, HarfBuzz
+15.1.0, libass 0.17.5, FFmpeg 9.0.2, libplacebo 7.387.0 (cloned at its tag,
+because the release archive lacks the submodules the build needs) and mpv
+0.42.0. `vendor/` is gitignored, so the repository holds no mpv or FFmpeg
+source. Each library is built once, and deleting `vendor/libmpv` starts
+over.
+
+- The feature set is minimal. FFmpeg is built for playback only: no
+  encoders, muxers, devices or command line tools. mpv is built without
+  Lua, JavaScript, VapourSynth, rubberband, Vulkan, libarchive, libbluray,
+  lcms2, zimg, uchardet, JPEG, CDDA and DVD support. mpv does its HTTP through the
+  libcurl that ships with macOS.
+- Four patches in `scripts/patches/` are applied to the unpacked sources,
+  three to mpv and one to FFmpeg. `scripts/patches/README.md` says what
+  each changes, where it came from and under what license it is
+  distributed. A patch added later reaches a tree that was built before it:
+  the script applies what is missing and rebuilds that library.
+- Homebrew's mpv is not used. Its formula depends on libraries the player
+  has no use for, among them vapoursynth, yt-dlp, luajit and a Vulkan stack
+  ([formula](https://formulae.brew.sh/formula/mpv)), and all of them would
+  have to ship with the app.
+- mpv's installed static archive comes out empty, because mpv compiles its
+  Swift sources into an archive that `ar` cannot nest. The script assembles
+  `libmpv.a` with `libtool` instead.
+
+The `player` crate's build script links what is in `vendor/libmpv` through
+pkg-config and fails with a message naming `scripts/build-libmpv.sh` when it
+is not there. `cargo build`, `cargo test` and `cargo clippy` over the whole
+workspace therefore need the vendor build first. `cargo test -p plex` does
+not.
 
 ## 5. Architecture
 
@@ -122,7 +169,7 @@ crates/
     src/image.rs       photo transcode requests
     src/model.rs       typed serde models and newtypes
     src/error.rs
-    tests/fixtures/    recorded JSON from the real server, titles replaced
+    tests/fixtures/    JSON recorded from a real server, titles replaced
   player/      safe wrapper over libmpv
     src/core.rs        handle, options, commands, typed properties, events
     src/render.rs      OpenGL render context
@@ -156,7 +203,7 @@ crates/
                        input, media keys (remote), up next, zoom, info,
                        failure, and a theme of its own
 scripts/build-libmpv.sh  builds the static libmpv into vendor/
-scripts/patches/       three patches to mpv 0.42.0
+scripts/patches/       three patches to mpv 0.42.0, one to FFmpeg 9.0.2
 scripts/bundle.sh      builds plex-rust.app, writes Info.plist, ad hoc signs
 ```
 
@@ -198,8 +245,8 @@ if it decoded, and a kept picture that no longer decodes is fetched again.
 
 ## 6. Plex API surface
 
-Source: Plex's official OpenAPI spec 1.2.3 at https://developer.plex.tv/pms/
-[V] unless marked.
+Source, unless another is named: Plex's OpenAPI description of the media
+server, version 1.2.3, at https://developer.plex.tv/pms/.
 
 **Headers on every request:** `X-Plex-Client-Identifier` (a UUID generated
 once), `X-Plex-Token`, `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`,
@@ -214,19 +261,24 @@ once), `X-Plex-Token`, `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`,
   every rebuild of an ad hoc signed app asks for the login password again.
   `GET https://plex.tv/api/v2/user` gives the account's `uuid`, which keeps
   one account's cache apart from another's.
-- The newer JWT flow is not used: Plex's doc recommends it, but developers on
-  Plex's forum report that the media server only accepts legacy tokens. The
-  PIN flow is the one both sources agree works.
+- The newer JWT flow is not used. Plex's documentation recommends it, but
+  developers on Plex's forum report that the media server only accepts
+  legacy tokens. The project did not test the JWT flow itself. The PIN flow
+  is the one both sources agree works.
 
 **Discovery:** `GET https://clients.plex.tv/api/v2/resources?includeHttps=1`.
-Use each server's `accessToken`. Candidates are its non-relay `connections`
-plus one optional address given by hand (for Tailscale), which only
-`plex-rust servers <address>` passes today: the app has no field for it.
-All candidates are probed in parallel; the first reachable one in this order
-wins: local https, local http, manual address, remote https. No candidate
-reachable is an error screen that names what was tried. The server found is
-saved, and the next launch asks it directly, going back to plex.tv only if
-it does not answer within 3 seconds.
+Each server is asked with its own `accessToken`. Candidates are its
+non-relay `connections` plus one optional address given by hand, for a
+network plex.tv does not know about, such as a VPN. Only
+`plex-rust servers <address>` passes one today: the app has no field for it.
+A remote address without TLS is not a candidate, since it would carry the
+token in clear. All candidates are probed in parallel with `GET /identity`,
+each given 3 seconds, and one counts only if the machine identifier in its
+answer is the server's. The first to answer in this order wins: local https,
+local http, manual address, remote https. No candidate reachable is an error
+screen that names what was tried. The server found is saved, and the next
+launch asks it directly, going back to plex.tv only if it does not answer
+within 3 seconds.
 
 **Browsing:** `/hubs`, `/library/sections/all`,
 `/library/sections/{id}/all` (paged with `X-Plex-Container-Start` and
@@ -247,69 +299,79 @@ as a header, never in the URL.
 10 seconds while playing. `PUT /:/scrobble` and `/:/unscrobble` for the manual
 watched toggle.
 
-**Markers:** `includeMarkers=1` on the item request (present in the community
-spec and python-plexapi, not the official spec). Marker type is matched as
-`intro`, and both `credit` and `credits`, because Plex's own spec is
-inconsistent on that name [V].
+**Markers:** `includeMarkers=1` on the item request. The parameter is not in
+Plex's description. It is in the community-maintained description and in
+[python-plexapi](https://github.com/pkkid/python-plexapi). Marker type is
+matched as `intro`, and both `credit` and `credits`, because Plex's
+description is not consistent on that name.
 
 **Stream choice:** `PUT /library/parts/{partId}?audioStreamID=&subtitleStreamID=`
 so the choice is remembered server side.
 
-**Downloads:** `GET {Part.key}?download=1`.
+**Downloads:** `GET {Part.key}?download=1`. An account can be denied
+downloads, and a server that refuses is asked again without the parameter,
+as a player asks.
 
 ## 7. Playback
 
-Options are from the mpv 0.42 manual [V].
+Options are from the [mpv manual](https://mpv.io/manual/stable/), read at
+0.42. File names are in the mpv 0.42.0 source.
 
 **Pipeline:** `vo=libmpv`, `hwdec=videotoolbox`. With the OpenGL render API on
-macOS the VideoToolbox frames reach the renderer without a copy
-(`CGLTexImageIOSurface2D`) [V]. The video view hosts a `CAOpenGLLayer`
-subclass that draws only when mpv has a new frame. A display link times each
-frame to the display refresh nearest the moment mpv wants it shown. The link
-ticks only while frames are coming, and pauses about a second after the last
-one, so a paused player wakes nothing.
+macOS the VideoToolbox frames reach the renderer without a copy, bound as
+textures with `CGLTexImageIOSurface2D` (video/out/hwdec/hwdec_mac_gl.c).
+The video view hosts a `CAOpenGLLayer` subclass that draws only when mpv has
+a new frame. A display link times each frame to the display refresh nearest
+the moment mpv wants it shown. The link ticks only while frames are coming,
+and pauses about a second after the last one, so a paused player wakes
+nothing.
 
 **Quality:** always the original file, no server transcode. mpv scaler
 defaults stay (`scale=lanczos`, `dscale=hermite`). If a file cannot be played
-the user sees mpv's error, not a silent fallback.
+the viewer sees mpv's error, not a silent fallback.
 
-**HDR:** HDR10 and HLG follow IINA's working method [V]: when the picture is
-PQ/HLG and the screen reports EDR headroom, the layer sets
-`wantsExtendedDynamicRangeContent` with a PQ colorspace and mpv gets
-`target-trc=pq` and `target-prim`. `target-peak` stays at mpv's default.
+**HDR:** HDR10 and HLG are shown the way [IINA](https://github.com/iina/iina)
+shows them: when the picture is PQ or HLG and the screen reports EDR
+headroom, the layer sets `wantsExtendedDynamicRangeContent` with a PQ
+colorspace and mpv gets `target-trc=pq` and `target-prim`. `target-peak`
+stays at mpv's default.
 
 **Dolby Vision:** the OpenGL renderer applies none of it. `init_video` in
 mpv's video/out/gpu/video.c puts the picture's own colour tags back, and
 `mp_get_csp_matrix` in video/csputils.c marks the Dolby Vision matrix "Not
-supported" [V]. mpv applies it only in `gpu-next`, which the render API does
-not offer, and FFmpeg's `libplacebo` filter needs Vulkan, which this build
-leaves out [V]. So `vf=format:dolbyvision=no` takes the metadata off the
-frames, which stay in the hardware decoder's buffers, and what mpv then
-reports in `video-out-params` is the picture that is drawn. That picture
-decides between HDR and SDR output.
-- Profile 8.1 plays as the HDR10 underneath it. A frame of a public sample
-  is within 0.002 on average, in PQ code values from 0 to 1, of the same
-  frame decoded by AVFoundation [V]. The rendered frame is the same with and
-  without the filter [V].
-- Profile 8.4 plays as the HLG underneath it, converted to PQ by mpv [V].
-- Profile 7 has HDR10 underneath and is expected to play as that [U]: no
-  sample was at hand. mpv decodes its enhancement layer with a second
-  decoder even though this renderer has no use for it
+supported". mpv applies it only in `gpu-next`, which the render API does
+not offer, and FFmpeg's `libplacebo` filter depends on Vulkan (`configure`:
+`libplacebo_filter_deps="libplacebo vulkan"`), which this build leaves out.
+So `vf=format:dolbyvision=no` takes the metadata off the frames, which stay
+in the hardware decoder's buffers, and what mpv then reports in
+`video-out-params` is the picture that is drawn. That picture decides
+between HDR and SDR output.
+- Profile 8.1 plays as the HDR10 underneath it. Measured once, on one
+  frame of a public sample: the rendered frame was within 0.002 on average,
+  in PQ code values from 0 to 1, of the same frame decoded by AVFoundation,
+  and it was the same with and without the filter.
+- Profile 8.4 plays as the HLG underneath it, converted to PQ by mpv.
+- Profile 7 has HDR10 underneath and is expected to play as that. This has
+  not been checked: no sample was at hand. mpv decodes its enhancement
+  layer with a second decoder even though this renderer has no use for it
   (filters/f_enhancement_pair.c).
 - Profile 5 has no picture underneath that stands on its own, and comes out
-  in the wrong colours [V]. When
+  in the wrong colours. When
   `current-tracks/video/dolby-vision-profile` is 5 the player says so in a
   notice for 8 seconds after the file opens.
 - `plex-rust play ... --unattended` reports `dolby_vision_profile`.
 
 **Buffering:** `cache=yes`, `demuxer-max-bytes=2GiB`,
-`demuxer-max-back-bytes=512MiB`, `demuxer-hysteresis-secs=10` (the manual
-names this option for "significant power savings"). In RAM, not on disk. The
-scrubber draws the buffered range from `demuxer-cache-state`. The three values
-are starting points, tuned once in Milestone 0.
+`demuxer-max-back-bytes=512MiB`, `demuxer-hysteresis-secs=10`. The manual
+says of the last one that it "can provide significant power savings", by
+having the demuxer read ahead in chunks, and that 10 seconds "probably
+works well for most usecases". The buffer is in RAM, not on disk. The
+scrubber draws the buffered range from `demuxer-cache-state`.
 
-**Speed:** `speed` from 0.25 to 4.0 in fixed steps. mpv inserts `scaletempo2`
-for pitch correction by default and mutes above 8x [V]. `video-sync=audio`
+**Speed:** `speed` from 0.1 to 4.0. The keys move it by 0.1 and the menu
+offers fixed speeds from 0.5 to 3.0. mpv inserts `scaletempo2` for pitch
+correction by default, and that filter mutes the sound below 0.25x and
+above 8x unless told otherwise (manual, audio filters). `video-sync=audio`
 and `framedrop=vo` stay at defaults. No interpolation.
 
 **Power:**
@@ -323,10 +385,10 @@ and `framedrop=vo` stay at defaults. No interpolation.
 - The system Low Power Mode is never consulted, so picture quality is the
   same whether it is on or off.
 - The plex-rust menu has one Low Power item, off by default and checked
-  while on. On, it applies mpv's built in `fast` profile (bilinear scaling,
-  no dither, no HDR peak computation [V]). It takes effect on the playing
-  file immediately. A menu item and not a Settings window, because one
-  switch does not fill a window.
+  while on. On, it applies mpv's built in `fast` profile: bilinear scaling,
+  no dither, no HDR peak computation (`[fast]` in mpv's etc/builtin.conf).
+  It takes effect on the playing file immediately. A menu item and not a
+  Settings window, because one switch does not fill a window.
 - Display sleep is held off with `NSProcessInfo.beginActivity` only while
   playing, released on pause.
 
@@ -338,8 +400,11 @@ Resume starts on the keyframe before the saved position. Three patches in
 picture restarts before the sound, which joins in sync once it can be heard,
 and a short jump forward decodes on from the current frame without going
 back to the keyframe. One is to FFmpeg 9.0.2: the hardware decoder is handed
-the next frame without a wait for the one before, which halves the time it
-takes to decode from a keyframe up to the target.
+the next frame without a wait for the one before. An exact seek decodes
+from the keyframe before its target, so its length is that decode. On one
+machine, an M5 Max, a 4K HEVC frame took 2.35 ms to decode before the patch
+and 1.2 ms with it. Each patch's header and the commit that added it carry
+the measurements and their conditions.
 `plex-rust play item:<key> --seeks 3x10,-3x10` measures all of it.
 
 **Subtitles and audio:** mpv renders embedded text and image subtitles
@@ -355,36 +420,34 @@ the show, into the next season when a season ends. Specials stay apart.
 
 ## 8. UI
 
-Same layout as the Plex desktop app, with a current macOS look, dark
-appearance.
+A sidebar, shelves, poster grids and detail pages, with a current macOS
+look and a dark appearance.
 
-**Design language.** Web component kits (shadcn, Radix and similar) cannot
-run in AppKit, so "reuse" here means the platform's own modern kit plus open
-icon and font assets:
-- **Liquid Glass**, the macOS 26/27 design. Sidebar and toolbar get it from
-  AppKit automatically [V]. The player controls and the skip button sit on
-  `NSGlassEffectView`, which objc2-app-kit 0.3.2 exposes [V].
+**Design language.** Everything is the platform's own kit:
+- **Liquid Glass**, the macOS 26 design. Standard AppKit components such as
+  sidebars and toolbars take the material by themselves
+  ([Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass)).
+  The player controls and the skip button sit on `NSGlassEffectView`, which
+  objc2-app-kit 0.3.2 exposes.
 - **Icons:** SF Symbols through `NSImage(systemSymbolName:)`. They ship with
-  macOS, scale with text and match the system weight. Where SF Symbols has no
-  fitting glyph, the icon comes from Lucide (open source SVG set), embedded
-  in the binary.
+  macOS, scale with text and match the system weight.
 - **Type:** the system font (SF Pro), with fixed sizes and weights defined
   once in `ui/theme.rs` along with spacing, corner radii and colours. No
   literal sizes or colours anywhere else.
 - **Colour from the artwork:** detail pages and the home hero use the
-  `UltraBlurColors` four-corner gradient that Plex returns per item [V], the
-  same source the current Plex apps use for their backgrounds.
+  `UltraBlurColors` four-corner gradient that the server returns per item.
 - **Motion:** system animations only: poster hover lift, shelf scrolling,
   cross fade between pages, controls fade. Nothing custom runs while idle.
 - Poster cells: rounded corners, progress bar for partly watched, a tick once
   watched, the number of episodes left on a show, title and year below.
 
 - **Window:** `NSSplitViewController`. Sidebar: Home, one row per Movie/TV
-  library, Downloads. Toolbar: back, search field. No `NSVisualEffectView` in
-  the sidebar (Apple: it blocks the system glass) [V].
+  library, Downloads. Toolbar: back, search field. The sidebar has no
+  `NSVisualEffectView` under it: it is the system's glass, laid over the
+  content.
 - **Home:** `NSCollectionView` with a compositional layout, one horizontally
   scrolling shelf per hub: Continue Watching, On Deck, Recently Added.
-- **Library:** poster grid, paged as you scroll, sort menu.
+- **Library:** poster grid, paged while scrolling, sort menu.
 - **Detail:** backdrop, poster, title, year, rating, summary, Play / Resume,
   watched toggle, download button, audio and subtitle pickers. Shows add a
   season picker and episode list.
@@ -399,7 +462,7 @@ icon and font assets:
 
 Collection views use the classic `NSCollectionViewDataSource` protocol.
 `NSCollectionViewDiffableDataSource` has no usable initializer in
-objc2-app-kit 0.3.2 [V].
+objc2-app-kit 0.3.2.
 
 **Why it feels fast:** every screen draws first from the response cache,
 then asks the server and updates in place where the answer differs. Posters
@@ -452,19 +515,19 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
   file, when there is no server and whenever the server does not take a
   report, and sent as one timeline call with `state=stopped` and
   `offline=1` when the server is next reached.
-  - `offline` is in Plex's OpenAPI spec 1.2.3 for `POST /:/timeline`, as an
-    integer that is 0 or 1: "Also used by sync clients, used to indicate
-    that a timeline is being synced from being offline, as opposed to being
-    \"live\"" [V]. What the server does differently on seeing it is not
-    written there, and was not tried: it would have meant a write to the
-    real server [U].
-  - The same spec has `updated` next to it, an integer: "Used when a sync
-    client comes online and is syncing media timelines, holds the time at
-    which the playback state was last updated" [V]. It gives no unit, and
+  - `offline` is in Plex's OpenAPI description 1.2.3 for `POST /:/timeline`,
+    as an integer that is 0 or 1: "Also used by sync clients, used to
+    indicate that a timeline is being synced from being offline, as opposed
+    to being \"live\"". What the server does differently on seeing it is not
+    written there and has not been tried, since trying it means a write to
+    a real server's watch state.
+  - The same description has `updated` next to it, an integer: "Used when a
+    sync client comes online and is syncing media timelines, holds the time
+    at which the playback state was last updated". It gives no unit, and
     its example, 14200000, reads as neither seconds nor milliseconds since
     1970. It is not sent, so the server takes the viewing to have ended
     when it hears of it. python-plexapi's `updateTimeline` sends neither
-    parameter [V].
+    parameter.
 
 ## 10. Packaging: one self-contained app
 
@@ -473,113 +536,171 @@ ImageIO, kept in a memory cache and a disk cache. Cells are reused.
   executable and no bundled dylibs: libmpv and everything under it are linked
   statically. `otool -L` on the executable must list only `/usr/lib` and
   `/System/Library` paths. That is the acceptance check.
-- Copy it to another Apple Silicon Mac and it runs. No Homebrew, no mpv.
-- [U] mpv 0.42.0 builds as a static library on macOS with the minimal
-  feature set. Fallback if it does not: build the same minimal set as dylibs,
-  copy them into `Contents/Frameworks`, rewrite install names with
-  `install_name_tool`, sign inside out. Still self-contained, just not one
-  file inside the bundle.
-- [U] An open upstream bug says mpv master fails to build with Vulkan
-  disabled (#18817). Whether the 0.42.0 tag is affected is checked first.
-  Fallback: apply the fix from upstream PR #18818 as a patch file in
-  `scripts/patches/`.
+- The app is meant to run on another Apple Silicon Mac as copied, with no
+  Homebrew and no mpv installed there.
+- `scripts/bundle.sh` builds the release binary, makes the `.icns` from
+  `assets/icon.png`, writes an Info.plist (`LSMinimumSystemVersion` 26.0,
+  `NSHighResolutionCapable`, `NSLocalNetworkUsageDescription`) and signs
+  the bundle ad hoc with `codesign --sign -`. It is not notarized and not
+  sandboxed.
+- mpv 0.42.0 as released does not compile with Vulkan disabled (upstream
+  issue [#18817](https://github.com/mpv-player/mpv/issues/18817)). The fix
+  from upstream pull request
+  [#18818](https://github.com/mpv-player/mpv/pull/18818) is applied as a
+  patch file in `scripts/patches/`.
+- **License:** plex-rust is distributed under GPL-2.0-or-later. The
+  executable statically links mpv built with `-Dgpl=true` and FFmpeg built
+  with `--enable-gpl`, and both are under the GPL, version 2 or later, when
+  built that way (mpv's `Copyright` file, FFmpeg's `LICENSE.md`). A binary
+  that contains them has to be distributed under the same terms, so the
+  whole project is.
 
-## 11. Running the whole project unattended
+## 11. Testing without a person
 
-Two actions need you, both before work starts. After them nothing does.
+The binary carries its own checks, as subcommands of `plex-rust`. They let
+a change be checked from a terminal, with nobody watching a window. All
+but the unit tests need a signed-in account (`plex-rust login`) and a Plex
+Media Server to ask. `play` and `pacing` also take a plain file or URL and
+then need neither.
 
-1. **`gh auth login`.** GitHub CLI is not logged in on this Mac [V], and your
-   rule is that every change is pushed to a branch before merging.
-2. **One Plex approval.** Kickoff runs the PIN login and prints one link. You
-   approve it in the browser once. The token is stored outside the repo and
-   is never printed or committed. No Plex server runs on this Mac [V], so the
-   real server on your LAN or tailnet is the test target.
+| Need | Command | What it captures |
+| --- | --- | --- |
+| The Plex client is right | `cargo test` | Response parsing against the recorded fixtures, connection ordering, download resume, the cache, and the app's own logic where it has any |
+| What the servers say | `plex-rust servers [<address>]`, `plex-rust api [--post] <path>` | Each server of the account with the address it answers at, and the first server's raw answer to a request |
+| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Downloads, the sign-in or the player |
+| Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` | A line on stderr with the milliseconds since launch for each step taken and each thing shown, then a PNG |
+| Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds> [--low-power]` | One line of JSON after that long: position, buffer, hardware decoder, dropped frames, colours, Dolby Vision profile, whether the layer asked for HDR, drawn size, scaler settings, tracks, `cpu_share`, the seconds to the first picture, and whether the window was visible |
+| Jumps are short | `plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],... [speed=<rate>] [subtitles=<id>\|off] [paused]` | For each step, as p50, p90 and max over its presses: milliseconds from the press to the picture shown, to mpv's restart, to sound handed over, and to the picture moving, plus the A/V offset after, jumps that missed their target and jumps that did not finish |
+| Frames are even | `plex-rust pacing <file-url-or-item> <seconds> <speed>\|paused...` | One JSON report for each stage: the display's refresh intervals, the gaps between drawn frames against the gaps in the content, how late frames were, processor time in all and by thread, and mpv's own drop and delay counters. `paused` measures that nothing is drawn and no processor time is used while the picture stands still, and how soon the picture of a jump made then is drawn |
 
-One thing may need a click later: the macOS Local Network prompt the first
-time the bundled app reaches a LAN address. Runs started from a terminal are
-exempt [V], so development and tests do not hit it.
+How they work, and where they stop:
 
-How each step is checked without a person:
+- **Snapshots.** The window is put on screen in the window server's sense
+  at a place no display reaches, and the PNG is the window server's own
+  picture of it, glass, sidebar and toolbar included. A process may read
+  back its own windows, so no Screen Recording permission is asked for.
+  The window takes no keyboard focus and gets no Dock icon. Tweaks put the
+  screen in a state first: narrow or wide, scrolled, hovered, keys pressed,
+  a sort order, a failure (`fault=...`), the server away, or the system's
+  Accessibility settings as if they were on. A snapshot leaves the server
+  as it found it. It shows what the server holds at that moment, so two
+  snapshots can only be compared against the same library. Nothing
+  compares pictures: someone, or something, has to look at the PNG.
+- **Walks.** Steps are taken 1.5 seconds apart, so that what one started
+  has answered before the next. The times are those of one run against one
+  server on one network.
+- **`play --unattended`.** The run is muted, takes no focus, reports
+  nothing to the server so that a check never moves anyone's place in a
+  film, prints its JSON and exits. macOS does not draw a window that is
+  covered or on another Space, and mpv counts every frame that was not
+  drawn as dropped, so the drop count means something only when
+  `window_visible` is true.
+- **`play --seeks`.** The video is drawn off screen, because a covered
+  window is not drawn at all and that changes the timings. `3x20` presses
+  3 seconds forward 20 times and waits for each to finish. `-3x30@80`
+  holds 3 seconds back: 30 presses, 80 ms apart. The run is muted, so when
+  sound is heard rests on the audio device's own report of its latency.
+- **`pacing`.** It times frames against the refreshes the display link
+  reports and records whether the window was visible. Every figure is a
+  distribution over the frames of the measured stretch.
 
-| Need | Mechanism |
-| --- | --- |
-| Plex API works | `plex` crate tests against recorded fixtures, plus a live run against the real server when signed in |
-| Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds>` prints JSON: the hardware decoder, dropped frames, the buffer, the colours, the tracks. `--seeks` times jumps, off screen, and `plex-rust pacing` measures how evenly frames reach the display |
-| UI looks right | `plex-rust snapshot <screen> <out.png>` puts the window where no display shows it and saves the window server's picture of it, glass included. An app may read back its own window, so no Screen Recording permission is needed. I read the PNGs and compare them with the design in section 8 |
-| Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` takes a scripted walk off screen and prints the milliseconds from each step to each thing shown |
-| Power | `top -l 30 -o power -stats pid,command,cpu,power` works without sudo on this Mac [V]. Same file, Plex.app vs plex-rust. `sudo powermetrics` needs a password [V] and stays optional |
-| Packaging | `otool -L`, then launch the bundled app and run the same play report |
+The checks measure processor time, never watts. `top -o power` and
+`powermetrics` are the system's tools for that. The second needs
+administrator rights and calls its own figures estimates, so only a
+comparison on one Mac under the same conditions says anything.
 
-Every [U] in this spec has a written fallback, so no check can stall the run
-waiting for a decision. If a fallback also fails, work stops on that
-milestone with the evidence and the rest continues where it does not depend
-on it.
+Runs started from a terminal do not meet the Local Network prompt: macOS
+allows command line tools run from Terminal or over SSH, and their child
+processes, by itself (TN3179, linked in section 2). The bundled app, opened
+from Finder, does meet it the first time it reaches an address on the local
+network.
 
-The test-only code paths in the app are `snapshot`, with its walk, the
-checks of `play` (`--unattended` and `--seeks`), and `pacing`. `servers` and
-`api` print what plex.tv and the server say.
+The code that exists only for checks is `snapshot` with its walk, the
+checks of `play` (`--unattended` and `--seeks`), and `pacing`.
 
-## 12. Milestones
+## 12. Status and known limits
 
-Each milestone is a branch. Each bullet is roughly one commit.
+**What works.** Signing in, finding a server and choosing an address.
+Home, libraries with sorting and filtering, detail pages, search. Playing
+the original file with hardware decoding, HDR10 and HLG output, track
+choice, subtitles in the file and beside it, markers, next episode, speed,
+media keys. Downloads, playing them with no server, and telling the server
+afterwards how far the viewer got. One self-contained app bundle.
 
-**M0. Player core and proof.** Closes every [U] before UI work starts.
-- `scripts/build-libmpv.sh` and the static link.
-- `player` crate: mpv handle, options, typed properties, events.
-- OpenGL render context in a bare AppKit window: `plex-rust <file-or-url>` plays.
-- HDR layer setup.
-- Checks, results written into the commit bodies:
-  - [U] libmpv2 7.0.1 links against the static libmpv 0.42 (its headers are
-    client API 2.5, mpv is 2.6). Fallback: our own bindings for the roughly
-    20 C functions used, in `player/src/ffi.rs`. As built: the raw bindings
-    of libmpv2-sys 4.0.1, under a wrapper of our own in `player/src/core.rs`.
-  - [U] `CAOpenGLLayer` and CGL are reachable from the objc2 crates.
-    Fallback: hand-written `extern_class!` bindings for that one class.
-  - [U] `hwdec-current` reports `videotoolbox` for H.264, HEVC 10-bit, AV1.
-    Fallback: none needed, mpv decodes in software; the report records it.
-  - [U] `target-peak` source without private APIs. Fallback: leave
-    `target-peak=auto`.
-  - [U] The server answers `Range` on `Part.key` with 206 and plays without
-    a decision call. Fallback: call
-    `/video/:/transcode/universal/decision` with `directPlay=1` first.
-  - [U] The server allows `download=1` for this account. Fallback: download
-    through the plain `Part.key` URL.
-  - Power: `top` power score for the same 4K HEVC file, 5 minutes each at 1x
-    and 2x: Plex.app and plex-rust. The numbers go in the commit body. If plex-rust is
-    not below Plex.app the result is reported and M1 still proceeds, since
-    the Plex and UI work does not depend on the video path.
+**Not built.**
+- Music, Live TV / DVR, Photos.
+- Transcoding. A file that mpv cannot play does not play.
+- Relay connections. A server reachable only through Plex's relay is not
+  reachable here.
+- A field in the app for a server address given by hand. Discovery takes
+  one (section 6), but only `plex-rust servers <address>` passes it.
+- A choice among several servers. The app uses the first server the
+  account lists.
+- A Settings window.
+- Notarization, a sandbox, and a build for Intel Macs.
 
-**M1. Plex core.** `plex` crate: models and client, PIN login, discovery and
-connection choice, hubs / sections / items / search, timeline and scrobble.
-Fixtures recorded from the real server.
+**Not possible on this render path** (reasons in sections 2 and 7).
+- Dolby Vision is not applied. Profile 5 plays in the wrong colours, and
+  the player says so. Profiles 8.1 and 8.4 play as the HDR10 or HLG
+  underneath them.
+- Picture in Picture.
+- `gpu-next` and what only it has, `target-colorspace-hint` among them.
 
-**M2. Browse.** App shell and sidebar, login screen, response cache, image
-cache, Home shelves, library grid, detail page, search.
+**Not confirmed.**
+- Dolby Vision profile 7 is expected to play as its HDR10 layer. No sample
+  was tried.
+- The measurements in the repository's history were made on H.264 and HEVC
+  files. No commit records an AV1 file being played. The build includes
+  dav1d to decode it.
+- What a server does on `offline=1` in a timeline report, beyond accepting
+  the parameter its description lists (section 9).
+- Whether the JWT sign-in works against a media server (section 6).
+- Whether an ad hoc signed bundle keeps the Local Network permission
+  across rebuilds (section 2).
+- Energy use. Processor time is measured by the checks in section 11. No
+  measurement in watts, and no comparison with another player, is
+  recorded.
 
-**M3. Watch.** Player view and controls, resume and timeline reporting, track
-menus and sidecar subtitles, markers and skip button, next episode, speed
-controls, media keys, sleep assertion, the Low Power menu item.
+Every measurement quoted in this document or in a commit message was taken
+on one machine, with the file kind, the audio output and the number of
+runs given where it is quoted. They describe that run and promise nothing
+about another machine.
 
-**M4. Offline.** Download engine with resume, Downloads screen, offline
-playback and progress sync.
+## 13. Verifying a change
 
-**M5. Ship.** `scripts/bundle.sh` (Info.plist with `NSHighResolutionCapable`,
-`LSMinimumSystemVersion`, `NSLocalNetworkUsageDescription`; ad hoc
-`codesign -s -`), the `otool -L` check from section 10, app icon, README.
+On every commit, after `scripts/build-libmpv.sh` has run once:
 
-## 13. Verification
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
 
-- Every commit: `cargo fmt --check`, `cargo clippy --all-targets -- -D
-  warnings`, `cargo test`.
-- Per milestone, the unattended checks in section 11.
-- Final pass against the real server, scripted: log in, snapshot every
-  screen, play a 4K HDR file with the report, seek, 2x and 3x speed, switch
-  audio and subtitle tracks, read the resume point back from the server after
-  quitting mid-episode, download an episode and play it from disk.
-- Speed: time from launch to Home drawn, and from each click to its
-  content, measured by `plex-rust snapshot walk`, cold and warm cache.
-- Left for you, optional: watch something for real, and a
-  `sudo powermetrics --samplers cpu_power,gpu_power,tasks --show-process-energy`
-  run on battery for wattage. `powermetrics` calls its values estimates [V],
-  so only a comparison on this one Mac means anything.
-- Instruments is not available without full Xcode [V].
+Then, by what the change touches, with the commands of section 11:
+
+- **The `plex` crate.** A response the client reads gets a test against a
+  recorded fixture. `plex-rust api <path>` prints what a server really
+  answers. Fixtures are recorded from a real server and their titles
+  replaced before they are committed.
+- **A screen.** A snapshot of it before and after, in the states the
+  change can reach: narrow and wide, a failure, the server away. Screens
+  that draw from saved answers are checked with the server away as well.
+- **Anything a viewer waits for.** A walk through it, with a cold cache
+  and with a warm one. The times go in the commit message with what was
+  walked.
+- **The player.** `play --unattended` on a file of each kind the change can
+  affect: the report has to name the hardware decoder, show no dropped
+  frames while `window_visible` is true, and show the colours expected. A
+  change near seeking runs `--seeks` forward, backward and held. A change
+  near drawing runs `pacing` at normal speed, at a high speed and paused.
+- **The mpv or FFmpeg build.** A change to a patch, a version or a build
+  option is followed by the player checks above, and its patch file is
+  described in `scripts/patches/README.md`.
+- **Packaging.** `scripts/bundle.sh`, then `otool -L` on
+  `target/plex-rust.app/Contents/MacOS/plex-rust`, which must list only
+  `/usr/lib` and `/System/Library` paths, then the play report from the
+  bundled binary.
+
+A measurement in a commit message says what was played, on what class of
+machine, through which audio output, how many runs, and what was not
+measured.
