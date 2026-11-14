@@ -1,10 +1,10 @@
 //! The main window: sidebar on the left, the chosen place on the right,
 //! and the way from one place to the next.
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use objc2::rc::Retained;
@@ -77,11 +77,10 @@ struct Shell {
     window: Retained<NSWindow>,
     /// The area right of the sidebar. Its one subview is the current place.
     content: Retained<NSView>,
-    // The next three are set once, right after the shell exists, because
-    // what they call back into is the shell.
-    sidebar: OnceCell<Retained<Sidebar>>,
-    toolbar: OnceCell<Retained<Toolbar>>,
-    commands: OnceCell<Commands>,
+    sidebar: Retained<Sidebar>,
+    toolbar: Retained<Toolbar>,
+    /// What the menu bar's own entries do.
+    commands: Commands,
     /// The targets of the Go menu's entries for Home and the libraries.
     places: RefCell<Vec<menus::Place>>,
     /// Set once a server is known, from the last launch or from asking.
@@ -304,84 +303,84 @@ impl Shell {
         content.setWantsLayer(true);
         let content_controller = view_controller(main_thread);
         content_controller.setView(&content);
-        let shell = Rc::new(Self {
-            main_thread,
-            background,
-            window: window(main_thread),
-            content,
-            sidebar: OnceCell::new(),
-            toolbar: OnceCell::new(),
-            commands: OnceCell::new(),
-            places: RefCell::new(Vec::new()),
-            session: RefCell::new(None),
-            history: RefCell::new(Vec::new()),
-            position: Cell::new(0),
-            moves: Cell::new(0),
-            notice: RefCell::new(None),
-            split: NSSplitViewController::new(main_thread),
-            playing: RefCell::new(None),
-            opening_player: Cell::new(false),
-            settings: Cell::new(settings),
-            listings: RefCell::new(listings),
-        });
+        let window = window(main_thread);
+        let split = NSSplitViewController::new(main_thread);
 
-        let selected = Rc::downgrade(&shell);
-        let sidebar = Sidebar::new(main_thread, move |destination| {
-            if let Some(shell) = selected.upgrade() {
-                shell.go_to(destination);
-            }
-        });
-        let sidebar_controller = view_controller(main_thread);
-        sidebar_controller.setView(sidebar.view());
-        let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar_controller);
-        sidebar_item.setMinimumThickness(theme::SIDEBAR_WIDTH);
-        sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
-
-        shell.split.addSplitViewItem(&sidebar_item);
-        shell.split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
-            &content_controller,
-        ));
-        shell.window.setContentViewController(Some(&shell.split));
-        shell.window.setContentSize(theme::WINDOW_SIZE);
-        shell.window.center();
-
-        let searched = Rc::downgrade(&shell);
-        let toolbar = Toolbar::new(
-            main_thread,
-            shell.command(Self::back),
-            shell.command(Self::forward),
-            move |query: &str| {
-                if let Some(shell) = searched.upgrade() {
-                    shell.search(query);
+        // The sidebar, the toolbar and the menus call back into the shell,
+        // which is made of them: they get it before it exists.
+        Rc::new_cyclic(|shell: &Weak<Self>| {
+            let selected = Weak::clone(shell);
+            let sidebar = Sidebar::new(main_thread, move |destination| {
+                if let Some(shell) = selected.upgrade() {
+                    shell.go_to(destination);
                 }
-            },
-        );
-        toolbar.install(&shell.window);
+            });
+            let sidebar_controller = view_controller(main_thread);
+            sidebar_controller.setView(sidebar.view());
+            let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar_controller);
+            sidebar_item.setMinimumThickness(theme::SIDEBAR_WIDTH);
+            sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
+            split.addSplitViewItem(&sidebar_item);
+            split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
+                &content_controller,
+            ));
+            window.setContentViewController(Some(&split));
+            window.setContentSize(theme::WINDOW_SIZE);
+            window.center();
 
-        let menu = |act: fn(&Rc<Self>)| {
-            let act = shell.command(act);
-            Callback::new(main_thread, move |_| act())
-        };
-        let commands = Commands {
-            back: menu(Self::back),
-            forward: menu(Self::forward),
-            reload: menu(Self::reload),
-            find: menu(Self::focus_search),
-            play: menu(Self::play_current),
-            toggle_watched: menu(Self::toggle_watched_current),
-        };
-        menus::install(main_thread, &commands, &[]);
+            let searched = Weak::clone(shell);
+            let toolbar = Toolbar::new(
+                main_thread,
+                Self::command(shell, Self::back),
+                Self::command(shell, Self::forward),
+                move |query: &str| {
+                    if let Some(shell) = searched.upgrade() {
+                        shell.search(query);
+                    }
+                },
+            );
+            toolbar.install(&window);
 
-        // None of these can fail: the cells were created empty above.
-        let _ = shell.sidebar.set(sidebar);
-        let _ = shell.toolbar.set(toolbar);
-        let _ = shell.commands.set(commands);
-        shell
+            let menu = |act: fn(&Rc<Self>)| {
+                let act = Self::command(shell, act);
+                Callback::new(main_thread, move |_| act())
+            };
+            let commands = Commands {
+                back: menu(Self::back),
+                forward: menu(Self::forward),
+                reload: menu(Self::reload),
+                find: menu(Self::focus_search),
+                play: menu(Self::play_current),
+                toggle_watched: menu(Self::toggle_watched_current),
+            };
+            menus::install(main_thread, &commands, &[]);
+
+            Self {
+                main_thread,
+                background,
+                window,
+                content,
+                sidebar,
+                toolbar,
+                commands,
+                places: RefCell::new(Vec::new()),
+                session: RefCell::new(None),
+                history: RefCell::new(Vec::new()),
+                position: Cell::new(0),
+                moves: Cell::new(0),
+                notice: RefCell::new(None),
+                split,
+                playing: RefCell::new(None),
+                opening_player: Cell::new(false),
+                settings: Cell::new(settings),
+                listings: RefCell::new(listings),
+            }
+        })
     }
 
-    /// A closure that runs `act` on the shell for as long as there is one.
-    fn command(self: &Rc<Self>, act: fn(&Rc<Self>)) -> impl Fn() + 'static {
-        let shell = Rc::downgrade(self);
+    /// A closure that runs `act` on `shell` for as long as there is one.
+    fn command(shell: &Weak<Self>, act: fn(&Rc<Self>)) -> impl Fn() + 'static {
+        let shell = Weak::clone(shell);
         move || {
             if let Some(shell) = shell.upgrade() {
                 act(&shell);
@@ -490,9 +489,7 @@ impl Shell {
         let mut destinations = vec![Destination::Home];
         destinations.extend(sections.iter().cloned().map(Destination::Section));
         self.install_places(&destinations);
-        if let Some(sidebar) = self.sidebar.get() {
-            sidebar.show(destinations);
-        }
+        self.sidebar.show(destinations);
 
         let tweaks = snapshot.map(|snapshot| snapshot.tweaks.clone()).unwrap_or_default();
         match snapshot.map(|snapshot| &snapshot.subject) {
@@ -511,9 +508,7 @@ impl Shell {
                 });
             }
             Some(Subject::Search(query)) => {
-                if let Some(toolbar) = self.toolbar.get() {
-                    toolbar.set_search_text(query);
-                }
+                self.toolbar.set_search_text(query);
                 self.go(Route::Search(query.clone()));
             }
             Some(Subject::List(path)) => {
@@ -536,9 +531,7 @@ impl Shell {
             (title, go)
         };
         let places: Vec<menus::Place> = destinations.iter().map(place).collect();
-        if let Some(commands) = self.commands.get() {
-            menus::install(self.main_thread, commands, &places);
-        }
+        menus::install(self.main_thread, &self.commands, &places);
         *self.places.borrow_mut() = places;
     }
 
@@ -549,13 +542,13 @@ impl Shell {
     // Signing in.
 
     fn show_sign_in(self: &Rc<Self>) {
-        let pressed = self.command(Self::sign_in);
+        let pressed = Self::command(&Rc::downgrade(self), Self::sign_in);
         self.show_notice(Notice::new(
             self.main_thread,
             "person.crop.circle",
             "Sign in to Plex",
             "plex-rust opens plex.tv in your browser. Approve the sign-in there and come back.",
-            Some(("Sign In", Callback::new(self.main_thread, move |_| pressed()))),
+            Some(("Sign In", Box::new(pressed))),
         ));
     }
 
@@ -700,13 +693,9 @@ impl Shell {
         *self.notice.borrow_mut() = None;
         self.show_view(screen.view(), fade);
         self.window.setTitle(&NSString::from_str(title(&route)));
-        if let Some(toolbar) = self.toolbar.get() {
-            let position = self.position.get();
-            toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
-        }
-        if let Some(sidebar) = self.sidebar.get() {
-            sidebar.select(destination_of(&route).as_ref());
-        }
+        let position = self.position.get();
+        self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
+        self.sidebar.select(destination_of(&route).as_ref());
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.
         if !matches!(route, Route::Search(_)) {
@@ -979,9 +968,7 @@ impl Shell {
     }
 
     fn focus_search(self: &Rc<Self>) {
-        if let Some(toolbar) = self.toolbar.get() {
-            toolbar.focus_search();
-        }
+        self.toolbar.focus_search();
     }
 
     /// A new, empty collection that reports what the viewer does in it.
@@ -1251,13 +1238,13 @@ impl Shell {
             Outcome::Finished => {}
             Outcome::Previous => self.play_episode_before(screen.item(), purpose),
             Outcome::Failed(reason) => {
-                let dismiss = self.command(|shell| shell.display(true));
+                let dismiss = Self::command(&Rc::downgrade(self), |shell| shell.display(true));
                 self.show_notice(Notice::new(
                     self.main_thread,
                     "exclamationmark.triangle",
                     &format!("{} could not be played", screen.item().title),
                     &reason,
-                    Some(("Go Back", Callback::new(self.main_thread, move |_| dismiss()))),
+                    Some(("Go Back", Box::new(dismiss))),
                 ));
             }
         }
@@ -1265,9 +1252,7 @@ impl Shell {
 
     /// The toolbar belongs to browsing. The player has its own controls.
     fn set_toolbar_visible(&self, visible: bool) {
-        if let Some(toolbar) = self.toolbar.get() {
-            toolbar.set_visible(visible);
-        }
+        self.toolbar.set_visible(visible);
     }
 
     /// Takes over the speed and volume the viewer set in `screen`, for
@@ -1376,7 +1361,7 @@ impl Shell {
         error: &dyn std::error::Error,
         retry: fn(&Rc<Self>),
     ) {
-        let retry = self.command(retry);
+        let retry = Self::command(&Rc::downgrade(self), retry);
         let symbol = match title {
             UNREACHABLE => "wifi.exclamationmark",
             _ => "exclamationmark.triangle",
@@ -1386,7 +1371,7 @@ impl Shell {
             symbol,
             title,
             &with_causes(error),
-            Some(("Try Again", Callback::new(self.main_thread, move |_| retry()))),
+            Some(("Try Again", Box::new(retry))),
         ));
     }
 

@@ -14,6 +14,9 @@ use super::callback::Callback;
 use super::label::{self, Weight};
 use super::theme;
 
+/// The title of a notice's button and what pressing it does.
+pub type Button<'a> = (&'a str, Box<dyn Fn()>);
+
 pub struct Notice {
     view: Retained<NSView>,
     button: Option<Retained<NSButton>>,
@@ -29,7 +32,7 @@ impl Notice {
         symbol: &str,
         title: &str,
         detail: &str,
-        button: Option<(&str, Retained<Callback>)>,
+        button: Option<Button>,
     ) -> Self {
         let secondary = NSColor::secondaryLabelColor();
         let glyph = NSImageView::new(main_thread);
@@ -50,7 +53,8 @@ impl Notice {
 
         let mut views: Vec<&NSView> = vec![&glyph, &heading, &body];
         let (button, pressed) = match button {
-            Some((title, pressed)) => {
+            Some((title, on_press)) => {
+                let pressed = Callback::new(main_thread, move |_| on_press());
                 // SAFETY: the notice keeps the target for as long as it
                 // keeps the button.
                 let button = unsafe {
