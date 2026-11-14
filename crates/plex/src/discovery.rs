@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use futures_util::future::join_all;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use serde::Deserialize;
 
 use crate::client::{Client, Token, header};
@@ -16,8 +17,7 @@ const RESOURCES: &str = "https://clients.plex.tv/api/v2/resources";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A Plex Media Server the account can use, as listed by plex.tv.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct Server {
     pub name: String,
     /// The server's machine identifier.
@@ -38,12 +38,32 @@ pub struct Connection {
     pub relay: bool,
 }
 
+/// One entry of plex.tv's list, which also holds players and other
+/// devices. Those can lack what a server always has, so nothing beyond the
+/// roles is required until the entry is known to be a server.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Resource {
     /// Comma-separated roles, such as `server` or `client,player`.
     provides: String,
-    #[serde(flatten)]
-    server: Server,
+    name: String,
+    client_identifier: String,
+    access_token: Option<Token>,
+    #[serde(default)]
+    connections: Vec<Connection>,
+}
+
+impl Resource {
+    /// The server this entry describes, if it is one we can sign in to.
+    fn into_server(self) -> Option<Server> {
+        let is_server = self.provides.split(',').any(|role| role == "server");
+        Some(Server {
+            name: self.name,
+            client_identifier: self.client_identifier,
+            access_token: self.access_token.filter(|_| is_server)?,
+            connections: self.connections,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -65,41 +85,99 @@ pub async fn servers(client: &Client, token: &Token) -> Result<Vec<Server>> {
         .json()
         .await?;
 
-    let is_server = |resource: &Resource| resource.provides.split(',').any(|role| role == "server");
-    Ok(resources.into_iter().filter(is_server).map(|resource| resource.server).collect())
+    Ok(resources.into_iter().filter_map(Resource::into_server).collect())
 }
+
+/// An address worth trying, and how much it is preferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Candidate {
+    address: String,
+    tier: Tier,
+}
+
+/// Kinds of address, most preferred first. Relays are not a tier: they are
+/// never tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tier {
+    LocalSecure,
+    LocalPlain,
+    /// The address the user typed.
+    Manual,
+    RemoteSecure,
+}
+
+const TIERS: usize = 4;
 
 /// Finds an address at which `server` answers from this machine.
 ///
 /// `manual` is an address the user typed, for networks plex.tv does not
-/// know about, such as a VPN. All candidates are tried at once and the most
-/// preferred one that answers wins.
+/// know about, such as a VPN.
+///
+/// Every candidate is tried at once. The winner is the first to answer in
+/// the most preferred tier that has an answer, and it is returned as soon
+/// as no better tier can still produce one. A server often lists several
+/// local addresses of which only one is reachable from here, and waiting
+/// for the dead ones to time out would hold up every launch.
 pub async fn connect(client: &Client, server: &Server, manual: Option<&str>) -> Result<String> {
     let candidates = candidates(&server.connections, manual);
-    let answers = join_all(candidates.iter().map(|address| answers(client, server, address))).await;
+    let mut probes: FuturesUnordered<_> =
+        candidates
+            .iter()
+            .map(|candidate| async move {
+                (candidate, answers(client, server, &candidate.address).await)
+            })
+            .collect();
 
-    candidates.iter().zip(answers).find(|(_, answered)| *answered).map_or_else(
-        || Err(Error::Unreachable { server: server.name.clone(), tried: candidates.clone() }),
-        |(address, _)| Ok(address.clone()),
-    )
+    let mut pending = [0_usize; TIERS];
+    for candidate in &candidates {
+        pending[candidate.tier as usize] += 1;
+    }
+    let mut answered: [Option<&str>; TIERS] = [None; TIERS];
+
+    while let Some((candidate, did_answer)) = probes.next().await {
+        let tier = candidate.tier as usize;
+        pending[tier] -= 1;
+        if did_answer && answered[tier].is_none() {
+            answered[tier] = Some(&candidate.address);
+        }
+        for tier in 0..TIERS {
+            if let Some(address) = answered[tier] {
+                return Ok(address.to_owned());
+            }
+            if pending[tier] > 0 {
+                // A better tier than any answer so far is still undecided.
+                break;
+            }
+        }
+    }
+    let tried = candidates.iter().map(|candidate| candidate.address.clone()).collect();
+    Err(Error::Unreachable { server: server.name.clone(), tried })
 }
 
-/// The addresses worth trying, most preferred first: local over TLS, local
-/// without, the manual address, then remote over TLS. Relays are left out.
-fn candidates(connections: &[Connection], manual: Option<&str>) -> Vec<String> {
-    let direct = || connections.iter().filter(|connection| !connection.relay);
-    let secure = |connection: &&Connection| connection.uri.starts_with("https://");
+/// The addresses worth trying, most preferred first.
+fn candidates(connections: &[Connection], manual: Option<&str>) -> Vec<Candidate> {
+    let tier = |connection: &Connection| {
+        let secure = connection.uri.starts_with("https://");
+        match (connection.relay, connection.local, secure) {
+            (true, ..) => None,
+            (false, true, true) => Some(Tier::LocalSecure),
+            (false, true, false) => Some(Tier::LocalPlain),
+            (false, false, true) => Some(Tier::RemoteSecure),
+            // A remote address without TLS would send the token in clear.
+            (false, false, false) => None,
+        }
+    };
+    let listed = connections.iter().filter_map(|connection| {
+        Some(Candidate { address: connection.uri.clone(), tier: tier(connection)? })
+    });
+    let manual = manual.map(|address| Candidate {
+        address: address.trim_end_matches('/').to_owned(),
+        tier: Tier::Manual,
+    });
 
-    let local_secure = direct().filter(|c| c.local).filter(secure);
-    let local_plain = direct().filter(|c| c.local).filter(|c| !secure(c));
-    let remote_secure = direct().filter(|c| !c.local).filter(secure);
-
-    local_secure
-        .chain(local_plain)
-        .map(|connection| connection.uri.clone())
-        .chain(manual.map(|address| address.trim_end_matches('/').to_owned()))
-        .chain(remote_secure.map(|connection| connection.uri.clone()))
-        .collect()
+    let mut candidates: Vec<Candidate> = listed.chain(manual).collect();
+    candidates.sort_by_key(|candidate| candidate.tier);
+    candidates
 }
 
 /// Whether `server` itself, and not some other machine, answers at `address`.
@@ -138,14 +216,36 @@ mod tests {
             connection("https://192-168-1-10.abc.plex.direct:32400", true, false),
         ];
 
+        let candidates = candidates(&connections, Some("http://100.64.0.5:32400/"));
+        let tried: Vec<(Tier, &str)> = candidates
+            .iter()
+            .map(|candidate| (candidate.tier, candidate.address.as_str()))
+            .collect();
         assert_eq!(
-            candidates(&connections, Some("http://100.64.0.5:32400/")),
+            tried,
             [
-                "https://192-168-1-10.abc.plex.direct:32400",
-                "http://192.168.1.10:32400",
-                "http://100.64.0.5:32400",
-                "https://remote.plex.direct:32400",
+                (Tier::LocalSecure, "https://192-168-1-10.abc.plex.direct:32400"),
+                (Tier::LocalPlain, "http://192.168.1.10:32400"),
+                (Tier::Manual, "http://100.64.0.5:32400"),
+                (Tier::RemoteSecure, "https://remote.plex.direct:32400"),
             ]
         );
+    }
+
+    #[test]
+    fn devices_that_are_not_servers_are_skipped_whatever_they_lack() {
+        let resources: Vec<Resource> = serde_json::from_value(serde_json::json!([
+            { "name": "TV", "clientIdentifier": "a", "provides": "client,player",
+              "accessToken": null },
+            { "name": "homelab", "clientIdentifier": "b", "provides": "server",
+              "accessToken": "secret",
+              "connections": [{ "uri": "http://192.168.1.10:32400", "local": true, "relay": false }] },
+        ]))
+        .unwrap();
+
+        let servers: Vec<Server> =
+            resources.into_iter().filter_map(Resource::into_server).collect();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "homelab");
     }
 }
