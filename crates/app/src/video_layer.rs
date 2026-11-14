@@ -192,7 +192,10 @@ impl VideoLayer {
     /// frame is due. The frame clock takes it without drawing it, and
     /// draws it once the output is right for it. Drawn first and matched
     /// after, it went out through shaders built for SDR, which took 26 ms
-    /// to build and were built again for HDR.
+    /// to build and were built again for HDR, and into a layer that was
+    /// still in the colour space it is made with, extended linear sRGB.
+    /// There an sRGB picture is several times too bright: every file
+    /// opened with a flash.
     pub fn match_video(&self, player: &Player, display_has_headroom: bool) -> player::Result<()> {
         let pace = &self.ivars().pace;
         let video = player.video_colors()?;
