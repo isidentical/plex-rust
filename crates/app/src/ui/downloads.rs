@@ -17,10 +17,12 @@ use objc2_app_kit::{
     NSTableViewStyle, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{
-    NSArray, NSInteger, NSObject, NSObjectProtocol, NSPoint, NSSize, NSString, ns_string,
+    NSArray, NSEdgeInsets, NSInteger, NSObject, NSObjectProtocol, NSPoint, NSSize, NSString,
+    ns_string,
 };
 use plex::model::{Item, RatingKey};
 
+use super::artwork;
 use super::callback::Callback;
 use super::label::{self, Weight};
 use super::layout;
@@ -37,6 +39,8 @@ pub enum Act {
     Resume(RatingKey),
     /// Delete a download, stopping it first if it is on its way.
     Remove(RatingKey),
+    /// Look for the server again.
+    Reconnect,
 }
 
 /// Which of its three looks a row has. One look differs from another in
@@ -85,12 +89,18 @@ struct Row {
 
 pub struct Ivars {
     root: Retained<NSView>,
+    /// Holds the list, or `nothing` in its place.
+    body: Retained<NSView>,
     scroll: Retained<NSScrollView>,
     table: Retained<NSTableView>,
     /// Shown in place of the list while it is empty.
     nothing: Notice,
+    /// A strip across the top that says the server is away.
+    away: Retained<NSView>,
     rows: RefCell<Vec<Row>>,
     on_act: Rc<dyn Fn(Act)>,
+    /// Kept because a button does not retain its target.
+    _reconnect: Retained<Callback>,
 }
 
 define_class!(
@@ -156,16 +166,33 @@ impl DownloadList {
             "Download a film or an episode from its page to watch it without your server.",
             None,
         );
-        let root = NSView::new(main_thread);
-        layout::centre(&root, nothing.view());
+        let on_act: Rc<dyn Fn(Act)> = Rc::new(on_act);
+        let pressed = Rc::clone(&on_act);
+        let reconnect = Callback::new(main_thread, move |_| pressed(Act::Reconnect));
+        let away = away_strip(&reconnect, main_thread);
+        away.setHidden(true);
+
+        let (root, body) = (NSView::new(main_thread), NSView::new(main_thread));
+        layout::fill(&root, &body);
+        layout::centre(&body, nothing.view());
+        root.addSubview(&away);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            away.topAnchor().constraintEqualToAnchor(&root.safeAreaLayoutGuide().topAnchor()),
+            away.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()),
+            away.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()),
+            away.heightAnchor().constraintEqualToConstant(theme::DOWNLOAD_STRIP_HEIGHT),
+        ]));
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
+            body,
             scroll,
             table,
             nothing,
+            away,
             rows: RefCell::new(Vec::new()),
-            on_act: Rc::new(on_act),
+            on_act,
+            _reconnect: reconnect,
         });
         // SAFETY: `init` is NSObject's designated initializer.
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -199,11 +226,21 @@ impl DownloadList {
         self.ivars().table.scrollPoint(NSPoint { x: 0.0, y: y - under_toolbar });
     }
 
-    /// Shows `entries`. While they are the downloads already listed, each
-    /// in the state it was in, only the progress in their rows changes, so
-    /// that a button is not replaced under the pointer once a second.
-    pub fn show(&self, entries: &[Entry]) {
+    /// Shows `entries`, and with `away` that the server is not there.
+    /// While the entries are the downloads already listed, each in the
+    /// state it was in, only the progress in their rows changes, so that a
+    /// button is not replaced under the pointer once a second.
+    pub fn show(&self, entries: &[Entry], away: bool) {
         let ivars = self.ivars();
+        ivars.away.setHidden(!away);
+        // The list starts below the strip.
+        let top = if away { theme::DOWNLOAD_STRIP_HEIGHT } else { 0.0 };
+        ivars.scroll.setAdditionalSafeAreaInsets(NSEdgeInsets {
+            top,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        });
         let listed = |(row, entry): (&Row, &Entry)| {
             row.key == *entry.download.key() && row.look == Look::of(&entry.state)
         };
@@ -216,8 +253,8 @@ impl DownloadList {
             *ivars.rows.borrow_mut() = entries.iter().map(row).collect();
             ivars.table.reloadData();
             match entries.is_empty() {
-                true => layout::centre(&ivars.root, ivars.nothing.view()),
-                false => layout::fill(&ivars.root, &ivars.scroll),
+                true => layout::centre(&ivars.body, ivars.nothing.view()),
+                false => layout::fill(&ivars.body, &ivars.scroll),
             }
         }
         for (row, entry) in ivars.rows.borrow().iter().zip(entries) {
@@ -346,6 +383,45 @@ impl Row {
             self.has_poster.set(image.is_some());
         }
     }
+}
+
+/// The strip that says the server is away, with a button that looks for
+/// it again.
+fn away_strip(reconnect: &Callback, main_thread: MainThreadMarker) -> Retained<NSView> {
+    let words = label::line(
+        theme::FONT_BODY,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+        main_thread,
+    );
+    label::set(&words, "Your server is not answering. Downloads play without it.");
+    // SAFETY: the list keeps the target for as long as it keeps the strip.
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            ns_string!("Try Again"),
+            Some(reconnect),
+            Some(Callback::action()),
+            main_thread,
+        )
+    };
+    button.setTranslatesAutoresizingMaskIntoConstraints(false);
+
+    let strip = artwork::layered(main_thread);
+    // Rows scroll under the strip and must not show through it.
+    artwork::fill_with(&strip, &theme::page_background());
+    strip.addSubview(&words);
+    strip.addSubview(&button);
+    let margin = theme::PAGE_MARGIN;
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        words.leadingAnchor().constraintEqualToAnchor_constant(&strip.leadingAnchor(), margin),
+        words.centerYAnchor().constraintEqualToAnchor(&strip.centerYAnchor()),
+        button.trailingAnchor().constraintEqualToAnchor_constant(&strip.trailingAnchor(), -margin),
+        button.centerYAnchor().constraintEqualToAnchor(&strip.centerYAnchor()),
+        words
+            .trailingAnchor()
+            .constraintLessThanOrEqualToAnchor_constant(&button.leadingAnchor(), -theme::SPACE_M),
+    ]));
+    strip
 }
 
 /// What a film or an episode is besides its title: "A Show · S2 · E7" or

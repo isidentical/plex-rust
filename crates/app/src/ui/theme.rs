@@ -180,6 +180,8 @@ pub const HOME_HERO_TRACK_OPACITY: f64 = 0.3;
 pub const DOWNLOAD_ROW_HEIGHT: f64 = 112.0;
 pub const DOWNLOAD_POSTER_WIDTH: f64 = 56.0;
 pub const DOWNLOAD_BAR_WIDTH: f64 = 240.0;
+/// The strip above the list that says the server is away.
+pub const DOWNLOAD_STRIP_HEIGHT: f64 = 44.0;
 
 /// The bar above a library's grid: its size on the left, order on the right.
 pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;

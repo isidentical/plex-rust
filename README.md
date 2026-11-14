@@ -60,6 +60,10 @@ says about the item beside it. Downloads, in the sidebar, lists what is there
 and what is on its way. A download that was cut short, by quitting or by the
 network, carries on from where it stopped when it is resumed.
 
+A downloaded item plays from disk. When the server cannot be reached the app
+opens on Downloads, and how far you got in what you watch is kept on the Mac
+and told to the server the next time it answers.
+
 ## Keys in the player
 
 | Key | Action |

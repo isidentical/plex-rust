@@ -49,6 +49,7 @@ impl Progress {
             state,
             position,
             duration,
+            offline: false,
         };
         Ok(self.runtime.block_on(self.server.report(&progress))?)
     }

@@ -7,12 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use objc2::MainThreadMarker;
-use plex::model::{Kind, RatingKey};
+use objc2_foundation::NSUUID;
+use plex::model::{Item, Kind, RatingKey};
+use plex::playback::{PlaybackState, Progress};
 use plex::{MediaServer, Transfer};
 
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
-use crate::store::{Download, OnDisk, Store};
+use crate::store::{Download, OnDisk, Store, Unsent};
 
 /// The size the poster of a download is kept at, in pixels: the one a
 /// detail page asks for, which is the largest a poster is shown.
@@ -80,12 +82,56 @@ impl Downloads {
         *self.on_change.borrow_mut() = Some(Rc::new(on_change));
     }
 
+    /// The folder the downloads are in.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// The item of `download` as it was last left: where a viewing on
+    /// this Mac stopped, if the server has yet to hear of that.
+    pub fn as_left(&self, download: &Download) -> Result<Item> {
+        self.store.as_left(download)
+    }
+
+    /// The downloaded episodes of `show` in the order they are watched
+    /// in, each as it was last left. They are what one episode leads on
+    /// to while the server is not there to list the show.
+    pub fn episodes(&self, show: &RatingKey) -> Result<Vec<Item>> {
+        let of_show = |entry: &&Entry| {
+            matches!(entry.state, State::Downloaded)
+                && entry.download.item.grandparent_rating_key.as_ref() == Some(show)
+        };
+        let entries = self.entries.borrow();
+        let episodes = entries.iter().filter(of_show).map(|entry| self.as_left(&entry.download));
+        let mut episodes = episodes.collect::<Result<Vec<Item>>>()?;
+        episodes.sort_by_key(|episode| (episode.parent_index, episode.index));
+        Ok(episodes)
+    }
+
+    /// Keeps where a viewing of the download with `key` stopped, for the
+    /// server to hear of when it is next there.
+    pub fn keep_position(&self, key: &RatingKey, position: Duration, duration: Duration) {
+        let Some(entry) = self.find(key) else {
+            return;
+        };
+        let unsent = Unsent::new(position, duration);
+        if let Err(error) = self.store.set_unsent(&entry.download, Some(unsent)) {
+            eprintln!("plex-rust: progress was not kept: {}", with_causes(&error));
+        }
+    }
+
     pub fn entries(&self) -> Vec<Entry> {
         self.entries.borrow().clone()
     }
 
     pub fn find(&self, key: &RatingKey) -> Option<Entry> {
         self.entries.borrow().iter().find(|entry| entry.download.key() == key).cloned()
+    }
+
+    /// The download of the item with `key`, if all of its file is here.
+    pub fn whole(&self, key: &RatingKey) -> Option<Arc<Download>> {
+        let entry = self.find(key)?;
+        matches!(entry.state, State::Downloaded).then_some(entry.download)
     }
 
     /// Starts downloading `item`, the server's full description of a film
@@ -221,4 +267,91 @@ pub async fn fetch(server: &MediaServer, download: &Download, transfer: &Transfe
     tokio::fs::rename(&download.partial, &download.file)
         .await
         .map_err(file_error(&download.partial))
+}
+
+/// Tells `server` where each viewing it could not hear of stopped, with
+/// one report each, and forgets each one the server has taken.
+pub async fn send_unsent(server: &MediaServer, store: &Store) -> Result<()> {
+    for download in store.list()? {
+        let Some(unsent) = store.unsent(&download)? else {
+            continue;
+        };
+        let session = NSUUID::UUID().UUIDString().to_string();
+        let progress = Progress {
+            item: download.key(),
+            session: &session,
+            state: PlaybackState::Stopped,
+            position: Duration::from_millis(unsent.position_ms),
+            duration: Duration::from_millis(unsent.duration_ms),
+            offline: true,
+        };
+        server.report(&progress).await?;
+        store.set_unsent(&download, None)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use plex::{Client, Identity, Token};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::store::Unsent;
+    use crate::store::tests::{episode, store};
+
+    /// Answers every request on a local port with `status` and no body.
+    /// Returns the server and the request lines as they arrive.
+    async fn serve(status: &'static str) -> (MediaServer, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(socket.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(head).unwrap();
+                log.lock().unwrap().push(head.lines().next().unwrap().to_owned());
+                let answer = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n");
+                socket.write_all(answer.as_bytes()).await.unwrap();
+            }
+        });
+        let identity = Identity { client_identifier: "test".into(), device_name: "test".into() };
+        let client = Client::new(identity).unwrap();
+        (MediaServer::at(&client, address, Token::new("token")), seen)
+    }
+
+    #[tokio::test]
+    async fn the_server_hears_once_where_a_viewing_without_it_stopped() {
+        let store = store("sent");
+        let download = store.add(&episode()).unwrap();
+        let left = Unsent { position_ms: 900_000, duration_ms: 1_500_000 };
+        store.set_unsent(&download, Some(left)).unwrap();
+
+        // A server that is there but refuses is told again later.
+        let (refusing, _) = serve("500 Internal Server Error").await;
+        assert!(send_unsent(&refusing, &store).await.is_err());
+        assert_eq!(store.unsent(&download).unwrap(), Some(left));
+
+        let (server, seen) = serve("200 OK").await;
+        send_unsent(&server, &store).await.unwrap();
+        send_unsent(&server, &store).await.unwrap();
+        assert_eq!(store.unsent(&download).unwrap(), None);
+        let seen = seen.lock().unwrap();
+        let [told] = seen.as_slice() else {
+            panic!("the server was told {} times", seen.len());
+        };
+        assert!(told.starts_with("POST /:/timeline?ratingKey=5640&"), "{told}");
+        for said in ["state=stopped", "time=900000", "duration=1500000", "offline=1"] {
+            assert!(told.contains(said), "{said} is not in {told}");
+        }
+        std::fs::remove_dir_all(download.file.parent().unwrap()).unwrap();
+    }
 }

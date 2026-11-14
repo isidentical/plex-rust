@@ -36,7 +36,7 @@ usage: plex-rust
        plex-rust snapshot item <rating-key> <png-path> [<tweak>...]
        plex-rust snapshot search <query> <png-path> [<tweak>...]
        plex-rust snapshot list <server-path> <png-path> [<tweak>...]
-       plex-rust snapshot downloads <png-path>
+       plex-rust snapshot downloads <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path> [approving]
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
          keys: space, left, d, ..., and idle, end, hover, drag, bright,
@@ -47,7 +47,7 @@ usage: plex-rust
                  keys=<left|right|up|down|return>,...,
                  sort=title|added|released|rating|watched,
                  fault=unanswered|signed-out|missing|no-server|other,
-                 unanswered, looking
+                 unanswered, looking, away
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
@@ -87,7 +87,7 @@ fn run(args: &[&str]) -> Result<()> {
         ["snapshot", "list", list, path, tweaks @ ..] => {
             snapshot(Subject::List((*list).to_owned()), path, tweaks)
         }
-        ["snapshot", "downloads", path] => snapshot(Subject::Downloads, path, &[]),
+        ["snapshot", "downloads", path, tweaks @ ..] => snapshot(Subject::Downloads, path, tweaks),
         ["snapshot", "signin", path, tweaks @ ..] => snapshot(Subject::SignIn, path, tweaks),
         ["snapshot", "play", key, path, keys @ ..] => {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
@@ -130,6 +130,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "link" => parsed.follow = Some(Link::Show),
             None if *tweak == "season" => parsed.follow = Some(Link::Season),
             None if *tweak == "download" => parsed.download = true,
+            None if *tweak == "away" => parsed.away = true,
             None if *tweak == "download" => parsed.download = true,
             None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
             None if *tweak == "unanswered" => parsed.unanswered = true,

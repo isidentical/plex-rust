@@ -1,37 +1,33 @@
 //! The downloads on disk.
 //!
-//! Each one is up to three files side by side in `~/Movies/plex-rust`,
-//! named after the item: the original file, which ends in `.part` until
-//! all of it is there, a `.json` with what the server said about the item,
-//! and a `.jpg` poster. Nothing else records a download, so the folder can
-//! be looked at, backed up and tidied by hand.
+//! Each one is a few files side by side in `~/Movies/plex-rust`, named
+//! after the item: the original file, which ends in `.part` until all of
+//! it is there, a `.json` with the item as the server described it, a
+//! `.jpg` poster, and for as long as the server has yet to hear where a
+//! viewing stopped, a `.position` that says where. Nothing else records a
+//! download, so the folder can be looked at, backed up and tidied by hand.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use plex::library::item_from;
-use plex::model::{Item, Kind, Part, RatingKey};
+use plex::model::{Item, Kind, Millis, Part, RatingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
 /// The folder the downloads are in.
+#[derive(Debug, Clone)]
 pub struct Store {
     directory: PathBuf,
-}
-
-/// What the `.json` next to a download holds.
-#[derive(Serialize, Deserialize)]
-struct Record {
-    /// The item in full, as the server described it when it was asked for.
-    item: serde_json::Value,
 }
 
 /// One item kept on disk, whole or in part.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Download {
-    /// The item as the server described it.
+    /// The item as the server described it when it was asked for.
     pub item: Item,
     /// The file on the server.
     pub part: Part,
@@ -43,6 +39,7 @@ pub struct Download {
     pub partial: PathBuf,
     pub poster: PathBuf,
     record: PathBuf,
+    position: PathBuf,
 }
 
 /// How much of a download is on disk.
@@ -51,6 +48,20 @@ pub enum OnDisk {
     Whole,
     /// This many bytes of it.
     Partial(u64),
+}
+
+/// Where a viewing stopped that the server could not be told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unsent {
+    pub position_ms: u64,
+    pub duration_ms: u64,
+}
+
+impl Unsent {
+    pub fn new(position: Duration, duration: Duration) -> Self {
+        let millis = |time: Duration| u64::try_from(time.as_millis()).unwrap_or(u64::MAX);
+        Self { position_ms: millis(position), duration_ms: millis(duration) }
+    }
 }
 
 impl Store {
@@ -75,7 +86,7 @@ impl Store {
             if path.extension().is_none_or(|extension| extension != "json") {
                 continue;
             }
-            match read(&path).and_then(|record| self.download(&record)) {
+            match read(&path).and_then(|item| self.download(item)) {
                 Ok(download) => downloads.push(download),
                 Err(error) => eprintln!("plex-rust: {}", crate::error::with_causes(&error)),
             }
@@ -87,33 +98,60 @@ impl Store {
     /// Makes room for a download of `item`, the server's full description
     /// of a film or an episode, by writing its record. Its file follows.
     ///
-    /// Fails if the item already has one, which may hold what this one
-    /// would not.
+    /// Fails if the item already has a download.
     pub fn add(&self, item: &serde_json::Value) -> Result<Download> {
-        let record = Record { item: item.clone() };
-        let download = self.download(&record)?;
-        let json = json(&download.record, &record)?;
+        let download = self.download(item.clone())?;
         let created = fs::OpenOptions::new().write(true).create_new(true).open(&download.record);
         created
-            .and_then(|mut file| file.write_all(json.as_bytes()))
+            .and_then(|mut file| file.write_all(item.to_string().as_bytes()))
             .map_err(|source| Error::File { path: download.record.clone(), source })?;
         Ok(download)
     }
 
     /// Deletes every file of `download`.
     pub fn remove(&self, download: &Download) -> Result<()> {
-        for path in [&download.file, &download.partial, &download.poster, &download.record] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(source) => return Err(Error::File { path: path.clone(), source }),
-            }
-        }
-        Ok(())
+        let Download { file, partial, poster, record, position, .. } = download;
+        [file, partial, poster, record, position].into_iter().try_for_each(|path| remove(path))
     }
 
-    fn download(&self, record: &Record) -> Result<Download> {
-        let item = item_from(record.item.clone())?;
+    /// Keeps where a viewing of `download` stopped until the server can
+    /// be told, or with `None` forgets it once the server has been.
+    pub fn set_unsent(&self, download: &Download, unsent: Option<Unsent>) -> Result<()> {
+        let path = &download.position;
+        let Some(unsent) = unsent else {
+            return remove(path);
+        };
+        let json = serde_json::to_string(&unsent)
+            .map_err(|source| Error::Record { path: path.clone(), source })?;
+        fs::write(path, json).map_err(|source| Error::File { path: path.clone(), source })
+    }
+
+    /// Where a viewing of `download` stopped, if the server has yet to
+    /// hear of it.
+    pub fn unsent(&self, download: &Download) -> Result<Option<Unsent>> {
+        let path = &download.position;
+        let json = match fs::read_to_string(path) {
+            Ok(json) => json,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(Error::File { path: path.clone(), source }),
+        };
+        let unsent = serde_json::from_str(&json);
+        unsent.map(Some).map_err(|source| Error::Record { path: path.clone(), source })
+    }
+
+    /// The item of `download` as it was last left: where a viewing on
+    /// this Mac stopped, if the server has yet to hear of that, and
+    /// otherwise where the server said it was when it was downloaded.
+    pub fn as_left(&self, download: &Download) -> Result<Item> {
+        let mut item = download.item.clone();
+        if let Some(unsent) = self.unsent(download)? {
+            item.view_offset = Some(Millis(unsent.position_ms));
+        }
+        Ok(item)
+    }
+
+    fn download(&self, item: serde_json::Value) -> Result<Download> {
+        let item = item_from(item)?;
         let part = item.media.first().and_then(|media| media.parts.first()).cloned();
         let (Some(part), Kind::Movie | Kind::Episode) = (part, item.kind) else {
             return Err(Error::NotPlayable(item.title));
@@ -134,6 +172,7 @@ impl Store {
             file: at(file),
             poster: at(format!("{name}.jpg")),
             record: at(format!("{name}.json")),
+            position: at(format!("{name}.position")),
             item,
             part,
             size,
@@ -181,22 +220,27 @@ fn name(item: &Item) -> String {
     format!("{} [{}]", title.trim_start_matches('.'), item.rating_key)
 }
 
-fn read(path: &Path) -> Result<Record> {
+fn read(path: &Path) -> Result<serde_json::Value> {
     let json =
         fs::read_to_string(path).map_err(|source| Error::File { path: path.to_owned(), source })?;
     serde_json::from_str(&json).map_err(|source| Error::Record { path: path.to_owned(), source })
 }
 
-fn json(path: &Path, record: &Record) -> Result<String> {
-    serde_json::to_string(record).map_err(|source| Error::Record { path: path.to_owned(), source })
+/// Deletes the file at `path`, if there is one.
+fn remove(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::File { path: path.to_owned(), source }),
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     /// An empty folder that no other test uses.
-    fn store(test: &str) -> Store {
+    pub fn store(test: &str) -> Store {
         let name = format!("plex-rust-store-{}-{test}", std::process::id());
         let directory = std::env::temp_dir().join(name);
         let _ = fs::remove_dir_all(&directory);
@@ -204,7 +248,7 @@ mod tests {
         Store { directory }
     }
 
-    fn episode() -> serde_json::Value {
+    pub fn episode() -> serde_json::Value {
         serde_json::json!({
             "ratingKey": "5640", "type": "episode", "title": "Who/What: Why?",
             "grandparentTitle": "A Show", "parentIndex": 2, "index": 7,
@@ -223,12 +267,10 @@ mod tests {
     fn the_files_are_named_after_the_item() {
         let store = store("names");
         let download = store.add(&episode()).unwrap();
-        assert_eq!(file_name(&download.file), "A Show - S02E07 - Who-What- Why? [5640].mkv");
-        assert_eq!(
-            file_name(&download.partial),
-            "A Show - S02E07 - Who-What- Why? [5640].mkv.part"
-        );
-        assert_eq!(file_name(&download.poster), "A Show - S02E07 - Who-What- Why? [5640].jpg");
+        let name = "A Show - S02E07 - Who-What- Why? [5640]";
+        assert_eq!(file_name(&download.file), format!("{name}.mkv"));
+        assert_eq!(file_name(&download.partial), format!("{name}.mkv.part"));
+        assert_eq!(file_name(&download.poster), format!("{name}.jpg"));
 
         let film = serde_json::json!({
             "ratingKey": "370", "type": "movie", "title": "...And a Film", "year": 2015,
@@ -270,9 +312,27 @@ mod tests {
         assert!(matches!(store.add(&episode()), Err(Error::File { .. })));
 
         // Removing it leaves what is not its own.
+        store.set_unsent(&download, Some(Unsent { position_ms: 1, duration_ms: 2 })).unwrap();
         store.remove(&download).unwrap();
         let left: Vec<_> = fs::read_dir(&store.directory).unwrap().collect();
         assert_eq!(left.len(), 1);
+        fs::remove_dir_all(&store.directory).unwrap();
+    }
+
+    #[test]
+    fn a_download_resumes_where_it_was_left_here_until_the_server_knows() {
+        let store = store("unsent");
+        let download = store.add(&episode()).unwrap();
+        assert_eq!(store.as_left(&download).unwrap().view_offset, Some(Millis(60_000)));
+
+        let left = Unsent::new(Duration::from_secs(900), Duration::from_secs(1500));
+        store.set_unsent(&download, Some(left)).unwrap();
+        assert_eq!(store.unsent(&download).unwrap(), Some(left));
+        assert_eq!(store.as_left(&download).unwrap().view_offset, Some(Millis(900_000)));
+
+        store.set_unsent(&download, None).unwrap();
+        assert_eq!(store.unsent(&download).unwrap(), None);
+        assert_eq!(store.as_left(&download).unwrap().view_offset, Some(Millis(60_000)));
         fs::remove_dir_all(&store.directory).unwrap();
     }
 }
