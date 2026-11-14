@@ -170,13 +170,18 @@ pub struct HeaderKeys {
     pub press: Box<dyn Fn(Press)>,
 }
 
-/// How the height of a header follows the page.
+/// What the height of a header follows, when not the one it was made with.
 #[derive(Debug, Clone, Copy)]
-struct HeaderFit {
-    /// Points of height for each point of the page's width.
-    per_width: f64,
-    /// The most of the height in view the header may take, from 0 to 1.
-    most: f64,
+enum HeaderFit {
+    /// The size of the page.
+    Page {
+        /// Points of height for each point of the page's width.
+        per_width: f64,
+        /// The most of the height in view the header may take, from 0 to 1.
+        most: f64,
+    },
+    /// Its content, which takes this many points.
+    Content(f64),
 }
 
 /// What the collection shows: grey outlines until the first answer, then
@@ -271,8 +276,8 @@ pub struct Ivars {
     awaiting_more: Cell<bool>,
     /// The item a context menu is open on.
     menu_item: RefCell<Option<Item>>,
-    /// Set for a header whose height follows the page, with the height it
-    /// was last given.
+    /// Set for a header whose height follows the page or its content,
+    /// with the height it was last given.
     header_fit: Cell<Option<HeaderFit>>,
     header_height: Cell<f64>,
     header_keys: OnceCell<HeaderKeys>,
@@ -519,7 +524,7 @@ impl Posters {
     /// height in view. For a header that holds a picture, which then keeps
     /// its proportions as the window grows without taking the page over.
     pub fn fit_header_to_page(&self, per_width: f64, most: f64) {
-        self.ivars().header_fit.set(Some(HeaderFit { per_width, most }));
+        self.ivars().header_fit.set(Some(HeaderFit::Page { per_width, most }));
     }
 
     /// Lets the arrow keys reach the header: Up from the first shelf puts
@@ -550,8 +555,17 @@ impl Posters {
         }
     }
 
-    /// Gives a header that follows the page the height the page now calls
-    /// for. Does nothing while that is the height it has, so it can be
+    /// Makes the header `height` points tall from now on, in place of the
+    /// height it was made with. For a header that knows how much room its
+    /// content takes, and may say so while it is being laid out: the
+    /// height is given at the next layout of the collection.
+    pub fn set_header_height(&self, height: f64) {
+        self.ivars().header_fit.set(Some(HeaderFit::Content(height)));
+        self.ivars().collection.setNeedsLayout(true);
+    }
+
+    /// Gives a header that follows the page or its content the height
+    /// that now calls for. Does nothing while that is the height it has, so it can be
     /// asked on every layout. Says whether the height changed under a page
     /// that was scrolled to its top, which then has to be
     /// [put back there](Self::scroll_to_top).
@@ -560,7 +574,12 @@ impl Posters {
         let (Some(fit), in_view) = (ivars.header_fit.get(), ivars.scroll.bounds().size) else {
             return false;
         };
-        let height = (in_view.width * fit.per_width).min(in_view.height * fit.most).round();
+        let height = match fit {
+            HeaderFit::Page { per_width, most } => {
+                (in_view.width * per_width).min(in_view.height * most).round()
+            }
+            HeaderFit::Content(height) => height,
+        };
         if height <= 0.0 || ivars.header_height.replace(height) == height {
             return false;
         }

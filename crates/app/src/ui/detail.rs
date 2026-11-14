@@ -3,7 +3,7 @@
 //! episodes season by season, for an episode the rest of its season, and
 //! for all of them the cast and whatever the server finds related.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
 use objc2::rc::{Allocated, Retained};
@@ -79,6 +79,9 @@ pub struct Detail {
     /// Where to scroll and what to select once the episodes are there.
     /// Taken when that is done, so it happens once.
     opening: RefCell<Option<Opening>>,
+    /// How tall the header is, which is as tall as its content takes at
+    /// the width of the window.
+    header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
     _targets: [Retained<Callback>; 4],
 }
@@ -152,10 +155,17 @@ impl Detail {
                 target(Self::press_download),
                 target(Self::season_chosen),
             ];
+            let sized = Weak::clone(page);
             let hero = Hero::new(
                 main_thread,
+                kind == Kind::Show,
                 on(|page| page.follow_link(Link::Show)),
                 on(|page| page.follow_link(Link::Season)),
+                move |height| {
+                    if let Some(page) = sized.upgrade() {
+                        page.fit_header(height);
+                    }
+                },
             );
             let [play, watched, download, season] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
@@ -175,7 +185,8 @@ impl Detail {
                 hero.seasons.setAction(Some(Callback::action()));
             }
 
-            // Only a show has seasons to pick from under its header.
+            // Until the header has been laid out and says how tall it is.
+            // Only a show has seasons to pick from under it.
             let height = match kind {
                 Kind::Show => theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT,
                 _ => theme::HERO_HEIGHT,
@@ -213,6 +224,7 @@ impl Detail {
                 related: RefCell::new(Vec::new()),
                 season: RefCell::new(opening.season.clone()),
                 opening: RefCell::new(Some(opening)),
+                header_height: Cell::new(height),
                 _targets: targets,
             }
         })
@@ -229,6 +241,13 @@ impl Detail {
     /// Scrolls the page so that the content `y` points down is at the top.
     pub fn scroll_to(&self, y: f64) {
         self.list.scroll_to(y);
+    }
+
+    /// Gives the header the height its content takes.
+    fn fit_header(&self, height: f64) {
+        if self.header_height.replace(height) != height {
+            self.list.set_header_height(height);
+        }
     }
 
     /// Plays the item, or for a show, the episode to watch next.
@@ -355,7 +374,11 @@ impl Detail {
         match item.kind {
             Kind::Show => {
                 if opening.at_episodes {
-                    self.list.scroll_to(theme::HERO_HEIGHT);
+                    // The header says how tall it is when it is laid out.
+                    if let Some(window) = self.hero.view.window() {
+                        window.layoutIfNeeded();
+                    }
+                    self.list.scroll_to(self.header_height.get() - theme::SEASON_BAR_HEIGHT);
                 }
                 if let Some(episode) = &opening.episode {
                     self.list.select(episode);
@@ -504,12 +527,16 @@ fn seasons(episodes: &[Item]) -> Vec<(RatingKey, String)> {
 }
 
 impl Hero {
-    /// `open_show` and `open_season` are called when the links from an
-    /// episode to its show and to its season are clicked.
+    /// `has_seasons` leaves room for the season picker. `open_show` and
+    /// `open_season` are called when the links from an episode to its show
+    /// and to its season are clicked, and `on_height` each time the header
+    /// is laid out, with the height its content takes.
     fn new(
         main_thread: MainThreadMarker,
+        has_seasons: bool,
         open_show: impl Fn() + 'static,
         open_season: impl Fn() + 'static,
+        on_height: impl Fn(f64) + 'static,
     ) -> Self {
         let open_show: Rc<dyn Fn()> = Rc::new(open_show);
         let (primary, secondary) = (NSColor::labelColor(), NSColor::secondaryLabelColor());
@@ -647,16 +674,25 @@ impl Hero {
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
         };
         hero.season_bar_hidden(true);
-        hero.place(&buttons, main_thread);
+        hero.place(&buttons, has_seasons, on_height);
         hero
     }
 
     /// The poster on the left, the text in a column beside it, and for a
     /// show the season picker in a strip along the bottom, where the
     /// episode list begins.
-    fn place(&self, buttons: &NSStackView, main_thread: MainThreadMarker) {
+    fn place(&self, buttons: &NSStackView, has_seasons: bool, on_height: impl Fn(f64) + 'static) {
+        let main_thread = self.view.mtm();
+        let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
+        let season_bar = if has_seasons { theme::SEASON_BAR_HEIGHT } else { 0.0 };
         let (summary, more) = (self.summary.clone(), self.more.clone());
-        let column = Column::new(main_thread, move || offer_more(&summary, &more));
+        let column = Column::new(main_thread, move |column| {
+            offer_more(&summary, &more);
+            // The text may run past the poster: a long title in a narrow
+            // window takes three lines and leaves the rest no less room.
+            let content = column.frame().size.height.max(poster_height).ceil();
+            on_height(2.0 * theme::SPACE_L + content + season_bar);
+        });
         let lines: [&NSView; 9] = [
             &self.eyebrow,
             &self.title,
@@ -692,13 +728,8 @@ impl Hero {
         view.addSubview(&column);
         view.addSubview(&season);
         let margin = theme::PAGE_MARGIN;
-        let poster_height = (theme::HERO_POSTER_WIDTH * theme::POSTER_ASPECT).round();
-        // The strip starts where the header of a page without one ends.
-        let bar_middle = theme::HERO_HEIGHT + theme::SEASON_BAR_HEIGHT / 2.0;
-        self.summary.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow,
-            NSLayoutConstraintOrientation::Vertical,
-        );
+        // The strip is the last thing in the header.
+        let bar_middle = -theme::SEASON_BAR_HEIGHT / 2.0;
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             poster.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
             poster.topAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), theme::SPACE_L),
@@ -714,12 +745,11 @@ impl Hero {
             // A title has the width of the page. Only running text is
             // kept to a width that reads well.
             self.summary.widthAnchor().constraintLessThanOrEqualToConstant(theme::HERO_TEXT_WIDTH),
-            // The text never runs past the poster. When a long title takes
-            // three lines, the summary gives up lines of its own.
-            column.bottomAnchor().constraintLessThanOrEqualToAnchor(&poster.bottomAnchor()),
             buttons.trailingAnchor().constraintLessThanOrEqualToAnchor(&column.trailingAnchor()),
             season.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), margin),
-            season.centerYAnchor().constraintEqualToAnchor_constant(&view.topAnchor(), bar_middle),
+            season
+                .centerYAnchor()
+                .constraintEqualToAnchor_constant(&view.bottomAnchor(), bar_middle),
         ]));
     }
 
@@ -805,7 +835,7 @@ define_class!(
     #[unsafe(super(NSStackView))]
     #[thread_kind = MainThreadOnly]
     #[name = "PlexRustDetailColumn"]
-    #[ivars = OnceCell<Box<dyn Fn()>>]
+    #[ivars = OnceCell<Box<dyn Fn(&Column)>>]
     struct Column;
 
     impl Column {
@@ -821,16 +851,16 @@ define_class!(
             // SAFETY: forwards the call unchanged.
             let () = unsafe { msg_send![super(self), layout] };
             if let Some(on_layout) = self.ivars().get() {
-                on_layout();
+                on_layout(self);
             }
         }
     }
 );
 
 impl Column {
-    /// A stack that calls `on_layout` each time it has placed its lines,
-    /// which is when it is known how much room each one got.
-    fn new(main_thread: MainThreadMarker, on_layout: impl Fn() + 'static) -> Retained<Self> {
+    /// A stack that calls `on_layout` with itself each time it has placed
+    /// its lines, which is when it is known how much room each one got.
+    fn new(main_thread: MainThreadMarker, on_layout: impl Fn(&Self) + 'static) -> Retained<Self> {
         let column: Retained<Self> =
             // SAFETY: `initWithFrame:` is NSView's designated initializer.
             unsafe { msg_send![Self::alloc(main_thread), initWithFrame: NSRect::ZERO] };
