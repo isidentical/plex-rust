@@ -111,6 +111,7 @@ pub struct Ivars {
     /// until the screen is in a window, and again once it has closed.
     chrome: RefCell<Option<Chrome>>,
     ticks_of_notice_left: Cell<u32>,
+    notice_shown: Cell<bool>,
     /// In tenths: 15 is one and a half times normal speed.
     speed: Cell<u32>,
     controls_shown: Cell<bool>,
@@ -215,6 +216,7 @@ impl PlayerScreen {
             controls,
             chrome: RefCell::new(None),
             ticks_of_notice_left: Cell::new(0),
+            notice_shown: Cell::new(false),
             speed: Cell::new(speed),
             controls_shown: Cell::new(true),
             pointer_on_controls: Cell::new(false),
@@ -463,6 +465,15 @@ impl PlayerScreen {
     }
 
     fn act_on(&self, key: Key, press: Press) -> bool {
+        // Only the arrows mean something again and again while held. A
+        // held Space must not pause and resume thirty times a second.
+        let repeats = matches!(
+            key,
+            Key::Left | Key::Right | Key::ShiftLeft | Key::ShiftRight | Key::Up | Key::Down
+        );
+        if press == Press::Held && !repeats {
+            return true;
+        }
         let is_episode = self.ivars().item.kind == Kind::Episode;
         let result = match key {
             Key::Space | Key::Character('k') => self.toggle_pause(),
@@ -579,14 +590,24 @@ impl PlayerScreen {
     fn jump(&self, seconds: f64, press: Press) -> player::Result<()> {
         let player = &self.ivars().player;
         match press {
-            Press::First => player.seek_by(seconds)?,
+            Press::First => {
+                player.seek_by(seconds)?;
+                // U+2212 is the minus sign, as wide as the plus.
+                let sign = if seconds < 0.0 { '\u{2212}' } else { '+' };
+                self.notify(&format!("{sign}{} s", seconds.abs()));
+            }
             // An exact jump takes longer than the gap between repeats, so a
             // held key would stand still. Keyframe to keyframe keeps up.
-            Press::Held => player.scan_by(seconds)?,
+            Press::Held => {
+                player.scan_by(seconds)?;
+                // Where a held key has got to says more than the size of
+                // one step, repeated for as long as the key is down.
+                if let Some(position) = player.position()? {
+                    self.notify(&clock(position));
+                    self.show_progress(position, self.length_shown());
+                }
+            }
         }
-        // U+2212 is the minus sign, as wide as the plus.
-        let sign = if seconds < 0.0 { '\u{2212}' } else { '+' };
-        self.notify(&format!("{sign}{} s", seconds.abs()));
         Ok(())
     }
 
@@ -866,6 +887,10 @@ impl PlayerScreen {
     }
 
     fn set_notice_shown(&self, shown: bool) {
+        // A notice that is renewed while it is up is not faded in again.
+        if self.ivars().notice_shown.replace(shown) == shown {
+            return;
+        }
         let notice = &self.ivars().controls.notice;
         notice.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
     }
