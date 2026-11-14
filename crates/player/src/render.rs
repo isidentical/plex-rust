@@ -149,6 +149,11 @@ impl Renderer {
         // OpenGL's origin is bottom-left; without the flip the picture is
         // upside down.
         let mut flip_y: libc::c_int = 1;
+        // By default mpv sleeps inside the render call until the frame is
+        // due: 37 ms on average for 24 fps video. The call runs on the main
+        // thread, so it must return at once. mpv already signals each frame
+        // close to when it should be shown.
+        let mut wait_until_due: libc::c_int = 0;
         let mut params = [
             param(
                 sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO,
@@ -157,6 +162,10 @@ impl Renderer {
             param(
                 sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y,
                 &mut flip_y,
+            ),
+            param(
+                sys::mpv_render_param_type_MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                &mut wait_until_due,
             ),
             END,
         ];
