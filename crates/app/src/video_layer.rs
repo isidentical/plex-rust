@@ -133,6 +133,7 @@ impl VideoLayer {
             layer: OnceLock::new(),
             cadence: Mutex::new(Cadence::default()),
             idle_refreshes: AtomicU32::new(0),
+            ticks: AtomicU64::new(0),
             drawing_for: AtomicU64::new(0),
             drew: AtomicBool::new(false),
         });
@@ -163,6 +164,12 @@ impl VideoLayer {
     /// The draws since [`record_timings`](Self::record_timings).
     pub fn take_timings(&self) -> Vec<FrameTiming> {
         self.ivars().pace.renderer.take_timings()
+    }
+
+    /// How often the frame clock has ticked so far. It stands still while
+    /// the clock rests.
+    pub fn clock_ticks(&self) -> u64 {
+        self.ivars().pace.ticks.load(Ordering::Relaxed)
     }
 
     /// Sets up the layer and the player for the colours of the video that
@@ -280,6 +287,8 @@ struct Pace {
     cadence: Mutex<Cadence>,
     /// Refreshes in a row at which mpv held nothing out.
     idle_refreshes: AtomicU32,
+    /// Every refresh the clock was woken for, for measuring.
+    ticks: AtomicU64,
     /// The refresh a draw in progress is timed for, in host nanoseconds,
     /// or 0.
     drawing_for: AtomicU64,
@@ -293,6 +302,7 @@ impl Pace {
     /// clock's thread ahead of every refresh. Returns whether the clock
     /// should go on ticking: not once mpv has had nothing for a while.
     fn tick(&self, refresh: Refresh) -> bool {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
         let due = match self.renderer.pending() {
             Pending::Nothing => {
                 return self.idle_refreshes.fetch_add(1, Ordering::AcqRel) + 1 < IDLE_REFRESHES;

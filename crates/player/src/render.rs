@@ -24,15 +24,17 @@ use crate::error::{Error, Result, check};
 /// What mpv's frame signal reaches, on a thread of mpv's choosing.
 struct Signal {
     on_frame: Box<dyn Fn() + Send + Sync>,
-    /// When the signal last fired, in host nanoseconds.
-    at: AtomicU64,
+    /// When the signal first fired since the last draw, in host
+    /// nanoseconds, or 0 if it has not.
+    since: AtomicU64,
 }
 
 /// The times of one draw, for measuring how evenly frames are shown.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameTiming {
-    /// When mpv last asked for a draw.
-    pub signalled: HostTime,
+    /// When mpv first asked for a draw after the one before. `None` when
+    /// it did not ask, as when a resized window is redrawn.
+    pub signalled: Option<HostTime>,
     /// When mpv wants the frame on screen. `None` when the draw repeated a
     /// frame that was already shown.
     pub due: Option<HostTime>,
@@ -152,7 +154,7 @@ impl Renderer {
             }
         };
 
-        let signal = Box::new(Signal { on_frame: Box::new(on_frame), at: AtomicU64::new(0) });
+        let signal = Box::new(Signal { on_frame: Box::new(on_frame), since: AtomicU64::new(0) });
         // SAFETY: the render context is valid. The callback data points into
         // a box that `Renderer` keeps until after the context is freed.
         unsafe {
@@ -265,6 +267,10 @@ impl Renderer {
     /// is what [`pending`](Self::pending) and `Cadence` are for.
     pub fn render(&self, refresh: Option<HostTime>) -> Result<()> {
         let began = HostTime::now();
+        let signalled = match self.signal.since.swap(0, Ordering::AcqRel) {
+            0 => None,
+            nanos => Some(HostTime::from_nanos(nanos)),
+        };
         let _current = self.current();
         let pending = self.pending_while_current();
         let mut framebuffer = 0;
@@ -315,7 +321,6 @@ impl Renderer {
             sys::mpv_render_context_report_swap(self.mpv.as_ptr());
         }
         if let Some(timings) = &mut *self.timings.lock().unwrap_or_else(PoisonError::into_inner) {
-            let signalled = HostTime::from_nanos(self.signal.at.load(Ordering::Relaxed));
             let due = match pending {
                 Pending::Due(due) => Some(due),
                 Pending::Nothing | Pending::Now => None,
@@ -331,6 +336,7 @@ impl Renderer {
     /// thread for 200 ms and be counted as dropped (vo_libmpv.c,
     /// `flip_page`).
     pub fn skip(&self) -> Result<()> {
+        self.signal.since.store(0, Ordering::Release);
         let _current = self.current();
         let mut skip: libc::c_int = 1;
         let mut wait_until_due: libc::c_int = 0;
@@ -444,6 +450,13 @@ unsafe extern "C" fn frame_ready(data: *mut c_void) {
     // SAFETY: `data` is the pointer to the boxed signal registered in
     // `Renderer::new`, which stays alive until the render context is freed.
     let signal = unsafe { &*data.cast::<Signal>() };
-    signal.at.store(HostTime::now().nanos(), Ordering::Relaxed);
+    // A failed exchange means an earlier signal is still waiting for its
+    // draw, and that one is when the wait began.
+    let _ = signal.since.compare_exchange(
+        0,
+        HostTime::now().nanos(),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
     (signal.on_frame)();
 }

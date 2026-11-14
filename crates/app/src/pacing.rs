@@ -1,9 +1,13 @@
 //! `plex-rust pacing`: measures how evenly video frames reach the screen.
 //!
 //! Plays muted in a window that takes no focus, tells the server nothing,
-//! and prints one JSON report. Every figure in it is a distribution over
-//! the frames of the measured stretch, in milliseconds unless named
-//! otherwise.
+//! and prints one JSON report for each speed it is given. Every figure in
+//! it is a distribution over the frames of the measured stretch, in
+//! milliseconds unless named otherwise.
+//!
+//! `paused` in place of a speed measures the opposite: that nothing is
+//! drawn and no processor time is used while the picture stands still, and
+//! how soon the picture of a jump made then is on screen.
 
 #![expect(
     deprecated,
@@ -27,7 +31,9 @@ use objc2_app_kit::{
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{CVDisplayLink, CVOptionFlags, CVReturn, CVTimeStamp};
 use objc2_foundation::{NSPoint, NSRect, NSSize, ns_string};
-use player::{EndReason, Event, FrameTiming, HostTime, Player, Source, cpu_time};
+use player::{
+    EndReason, Event, FrameTiming, HostTime, Player, Source, cpu_time, cpu_time_by_thread,
+};
 use plex::model::RatingKey;
 use serde_json::{Value, json};
 
@@ -38,6 +44,16 @@ use crate::{USAGE, account, source};
 /// Playback settles for this long before frames are counted, after the
 /// file opens and after each change of speed.
 const SETTLE: Duration = Duration::from_secs(2);
+
+/// The jumps made while paused, in seconds: what the arrow keys do.
+/// Forward first, so that the jumps back stay inside what has been read
+/// and none of them waits for the network.
+const PAUSED_JUMPS: [f64; 6] = [3.0, 3.0, 3.0, -3.0, -3.0, -3.0];
+
+/// How long a paused jump is given. It is longer than the jump takes and
+/// than the frame clock then keeps ticking, so that every jump finds the
+/// clock at rest, as a viewer's would.
+const PAUSED_JUMP_WAIT: Duration = Duration::from_millis(1500);
 
 /// The mpv counters whose growth over the measured stretch is reported.
 const COUNTERS: [&str; 4] = [
@@ -61,12 +77,29 @@ const READINGS: [&str; 7] = [
 /// The times the display refreshed, as the display link reported them.
 type Refreshes = Mutex<Vec<HostTime>>;
 
-/// Plays `what` at each of `speeds` in turn, in one window, and reports
-/// on `seconds` of each.
-pub fn run(what: &str, seconds: &str, speeds: &[&str]) -> Result<()> {
+/// One stretch of a run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Stage {
+    /// Playing at this rate.
+    Playing(f64),
+    Paused,
+}
+
+impl Stage {
+    fn named(name: &str) -> Option<Self> {
+        match name {
+            "paused" => Some(Self::Paused),
+            speed => speed.parse().ok().map(Self::Playing),
+        }
+    }
+}
+
+/// Plays `what` through each of `stages` in turn, in one window, and
+/// reports on `seconds` of each.
+pub fn run(what: &str, seconds: &str, stages: &[&str]) -> Result<()> {
     let seconds: u64 = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
-    let speeds: Option<Vec<f64>> = speeds.iter().map(|speed| speed.parse().ok()).collect();
-    let speeds = speeds.filter(|speeds| !speeds.is_empty()).ok_or(Error::Usage(USAGE))?;
+    let stages: Option<Vec<Stage>> = stages.iter().map(|stage| Stage::named(stage)).collect();
+    let stages = stages.filter(|stages| !stages.is_empty()).ok_or(Error::Usage(USAGE))?;
     let source = resolve(what)?;
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
@@ -87,8 +120,11 @@ pub fn run(what: &str, seconds: &str, speeds: &[&str]) -> Result<()> {
     thread::spawn(move || follow_events(&events));
     thread::spawn(move || {
         let length = Duration::from_secs(seconds);
-        let reports: player::Result<Vec<Value>> =
-            speeds.iter().map(|speed| measure(&player, refreshes, *speed, length)).collect();
+        let measured = |stage: &Stage| match *stage {
+            Stage::Playing(speed) => measure(&player, refreshes, speed, length),
+            Stage::Paused => measure_paused(&player, length),
+        };
+        let reports: player::Result<Vec<Value>> = stages.iter().map(measured).collect();
         match reports {
             Ok(reports) => {
                 println!("{}", Value::Array(reports));
@@ -232,6 +268,7 @@ fn measure(
     length: Duration,
 ) -> player::Result<Value> {
     player.set_speed(speed)?;
+    player.set_paused(false)?;
     let start = player.position()?;
     while player.position()? == start {
         thread::sleep(Duration::from_millis(50));
@@ -239,19 +276,8 @@ fn measure(
     thread::sleep(SETTLE);
 
     let before = counters(player)?;
-    let (clock, cpu) = (Instant::now(), cpu_time());
     refreshes.lock().unwrap_or_else(PoisonError::into_inner).clear();
-    on_layer(|layer, _| layer.record_timings());
-    // macOS does not draw a window that is covered or on another Space, so
-    // the figures only mean something if it was in view all along.
-    let mut visible = true;
-    let end = Instant::now() + length;
-    while Instant::now() < end {
-        visible &= window_is_visible();
-        thread::sleep(Duration::from_millis(100));
-    }
-    let cpu_share = (cpu_time() - cpu).as_secs_f64() / clock.elapsed().as_secs_f64();
-    let timings = on_layer(|layer, _| layer.take_timings()).unwrap_or_default();
+    let stretch = Stretch::watch(length);
     let refreshes = refreshes.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let after = counters(player)?;
 
@@ -267,14 +293,118 @@ fn measure(
     Ok(json!({
         "speed": speed,
         "seconds": length.as_secs(),
-        "window_visible": visible,
-        // Of one core, by the whole process: decoding, drawing, this report.
-        "cpu_percent": (cpu_share * 1000.0).round() / 10.0,
+        "window_visible": stretch.visible,
+        "cpu_percent": stretch.cpu_percent,
+        "cpu_percent_by_thread": stretch.cpu_percent_by_thread,
+        "clock_ticks": stretch.clock_ticks,
         "display": display(&refreshes),
-        "frames": frames(&timings, &refreshes),
+        "frames": frames(&stretch.timings, &refreshes),
         "mpv_counters_grown": grown,
         "mpv": readings,
     }))
+}
+
+/// What a stretch of time cost and what was drawn in it.
+struct Stretch {
+    /// macOS does not draw a window that is covered or on another Space,
+    /// so the figures only mean something if it was in view all along.
+    visible: bool,
+    /// Of one core, by the whole process: reading the file, drawing, this
+    /// report. Decoding happens in a process of the system's and is not in
+    /// this figure.
+    cpu_percent: f64,
+    /// The same for each thread that used a tenth of a percent or more, by
+    /// its name.
+    cpu_percent_by_thread: BTreeMap<String, f64>,
+    /// How often the frame clock was woken.
+    clock_ticks: u64,
+    timings: Vec<FrameTiming>,
+}
+
+impl Stretch {
+    /// Lets `length` pass and reports on it.
+    fn watch(length: Duration) -> Self {
+        let (clock, cpu, threads) = (Instant::now(), cpu_time(), cpu_time_by_thread());
+        let ticks = on_layer(|layer, _| layer.clock_ticks()).unwrap_or(0);
+        on_layer(|layer, _| layer.record_timings());
+        let mut visible = true;
+        let end = Instant::now() + length;
+        while Instant::now() < end {
+            visible &= window_is_visible();
+            thread::sleep(Duration::from_millis(100));
+        }
+        let elapsed = clock.elapsed().as_secs_f64();
+        let cpu_share = (cpu_time() - cpu).as_secs_f64() / elapsed;
+        Self {
+            visible,
+            cpu_percent: (cpu_share * 1000.0).round() / 10.0,
+            cpu_percent_by_thread: shares(&threads, &cpu_time_by_thread(), elapsed),
+            clock_ticks: on_layer(|layer, _| layer.clock_ticks()).unwrap_or(0) - ticks,
+            timings: on_layer(|layer, _| layer.take_timings()).unwrap_or_default(),
+        }
+    }
+}
+
+/// Pauses, reports on `length` of standing still, and then on jumps.
+///
+/// `press_to_drawn` is the time from asking for a jump until its picture
+/// was drawn, and `signal_to_draw` the part of it between mpv having the
+/// picture and the frame clock, woken from its rest, starting to draw it.
+/// `draws_per_jump` counts every draw a jump caused.
+fn measure_paused(player: &Player, length: Duration) -> player::Result<Value> {
+    player.set_paused(true)?;
+    // Long enough for the frame clock to come to rest.
+    thread::sleep(SETTLE);
+    let still = Stretch::watch(length);
+
+    let mut visible = still.visible;
+    let (mut drawn, mut woken, mut draws) = (Vec::new(), Vec::new(), Vec::new());
+    for seconds in PAUSED_JUMPS {
+        on_layer(|layer, _| layer.record_timings());
+        let pressed = HostTime::now();
+        player.seek_by(seconds)?;
+        thread::sleep(PAUSED_JUMP_WAIT);
+        visible &= window_is_visible();
+        let timings = on_layer(|layer, _| layer.take_timings()).unwrap_or_default();
+        // mpv also has the picture from before the jump drawn again while
+        // it works on the jump. The new one is the draw with a due time.
+        if let Some(new) = timings.iter().find(|timing| timing.due.is_some()) {
+            drawn.push(millis(new.ended.nanos(), pressed.nanos()));
+            woken.extend(new.signalled.map(|at| millis(new.began.nanos(), at.nanos())));
+        }
+        draws.push(timings.len() as f64);
+    }
+    Ok(json!({
+        "paused": true,
+        "seconds": length.as_secs(),
+        "window_visible": visible,
+        "still": {
+            "cpu_percent": still.cpu_percent,
+            "cpu_percent_by_thread": still.cpu_percent_by_thread,
+            "clock_ticks": still.clock_ticks,
+            "draws": still.timings.len(),
+        },
+        "jumps": {
+            "press_to_drawn": spread(&drawn),
+            "signal_to_draw": spread(&woken),
+            "draws_per_jump": histogram(draws.into_iter()),
+        },
+    }))
+}
+
+/// The percentage of one core that each thread used between two readings
+/// of [`cpu_time_by_thread`] that were `elapsed` seconds apart.
+fn shares(
+    before: &BTreeMap<String, Duration>,
+    after: &BTreeMap<String, Duration>,
+    elapsed: f64,
+) -> BTreeMap<String, f64> {
+    let share = |(name, time): (&String, &Duration)| {
+        let used = time.saturating_sub(before.get(name).copied().unwrap_or_default());
+        let percent = (used.as_secs_f64() / elapsed * 1000.0).round() / 10.0;
+        (percent >= 0.1).then(|| (name.clone(), percent))
+    };
+    after.iter().filter_map(share).collect()
 }
 
 fn counters(player: &Player) -> player::Result<Vec<i64>> {
@@ -325,7 +455,8 @@ fn frames(timings: &[FrameTiming], refreshes: &[HostTime]) -> Value {
     let new: Vec<&FrameTiming> = timings.iter().filter(|timing| timing.due.is_some()).collect();
     let since = |later: HostTime, earlier: HostTime| millis(later.nanos(), earlier.nanos());
     let late: Vec<f64> = new.iter().filter_map(|t| t.due.map(|due| since(t.ended, due))).collect();
-    let waited: Vec<f64> = new.iter().map(|t| since(t.began, t.signalled)).collect();
+    let waited: Vec<f64> =
+        new.iter().filter_map(|t| t.signalled.map(|at| since(t.began, at))).collect();
     let drew: Vec<f64> = timings.iter().map(|t| since(t.ended, t.began)).collect();
     let content = gaps(new.iter().filter_map(|t| t.due));
     let drawn = gaps(new.iter().map(|t| t.ended));

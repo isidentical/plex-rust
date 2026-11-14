@@ -1,5 +1,7 @@
 //! The clock that frame times are measured on.
 
+use std::collections::BTreeMap;
+use std::ffi::CStr;
 use std::time::Duration;
 
 /// A moment on the host clock: nanoseconds the machine has been awake
@@ -81,4 +83,51 @@ struct Timebase {
 unsafe extern "C" {
     fn mach_absolute_time() -> u64;
     fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
+}
+
+/// The processor time used so far by each thread of this process that is
+/// still running, under the thread's name. Threads without a name, and
+/// threads that share one, are added up.
+pub fn cpu_time_by_thread() -> BTreeMap<String, Duration> {
+    let mut times = BTreeMap::new();
+    let (mut threads, mut count) = (std::ptr::null_mut(), 0);
+    // SAFETY: both out pointers are valid for the call, which on success
+    // stores an array of `count` thread ports that this process owns.
+    if unsafe { libc::task_threads(mach_task_self_, &mut threads, &mut count) } != 0 {
+        return times;
+    }
+    for index in 0..count as usize {
+        // SAFETY: `index` is within the array the kernel returned.
+        let thread = unsafe { *threads.add(index) };
+        // SAFETY: an all-zero `thread_extended_info` is a valid value for
+        // the call to overwrite, and `size` is its size in integers. The
+        // port is this process's own reference and is not used again.
+        let (status, info) = unsafe {
+            let mut info: libc::thread_extended_info = std::mem::zeroed();
+            let mut size = libc::THREAD_EXTENDED_INFO_COUNT;
+            let flavor = libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t;
+            let status =
+                libc::thread_info(thread, flavor, std::ptr::from_mut(&mut info).cast(), &mut size);
+            mach_port_deallocate(mach_task_self_, thread);
+            (status, info)
+        };
+        if status != 0 {
+            continue;
+        }
+        // SAFETY: the kernel NUL-terminates the name within its array.
+        let name = unsafe { CStr::from_ptr(info.pth_name.as_ptr()) };
+        let time = Duration::from_nanos(info.pth_user_time + info.pth_system_time);
+        *times.entry(name.to_string_lossy().into_owned()).or_default() += time;
+    }
+    let size = count as usize * size_of::<libc::thread_act_t>();
+    // SAFETY: the array was allocated by the kernel in this process's
+    // address space with this size, and is not used again.
+    unsafe { libc::vm_deallocate(mach_task_self_, threads as libc::vm_address_t, size) };
+    times
+}
+
+// From libSystem.
+unsafe extern "C" {
+    static mach_task_self_: libc::mach_port_t;
+    fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::c_int;
 }

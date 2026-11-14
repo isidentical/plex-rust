@@ -58,7 +58,7 @@ usage: plex-rust
        plex-rust play item:<rating-key> [--unattended <seconds> [--low-power]]
        plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],...
                       [speed=<rate>] [subtitles=<id>|off] [paused]
-       plex-rust pacing <file-or-url-or-item:<rating-key>> <seconds> <speed>...";
+       plex-rust pacing <file-or-url-or-item:<rating-key>> <seconds> <speed>|paused...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -118,7 +118,7 @@ fn run(args: &[&str]) -> Result<()> {
             let conditions = Conditions::parse(conditions).ok_or(Error::Usage(USAGE))?;
             play(what, Some(Check::Seeks(steps, conditions)))
         }
-        ["pacing", what, seconds, speeds @ ..] => pacing::run(what, seconds, speeds),
+        ["pacing", what, seconds, stages @ ..] => pacing::run(what, seconds, stages),
         _ => Err(Error::Usage(USAGE)),
     }
 }

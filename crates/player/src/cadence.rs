@@ -118,8 +118,9 @@ mod tests {
 
     #[test]
     fn faster_playback_uses_the_two_nearest_counts() {
-        // 1.5x, 2x and 3x of 24 fps: 3.33, 2.5 and 1.67 refreshes a frame.
-        for (speed, counts) in [(1.5, [3, 4]), (2.0, [2, 3]), (3.0, [1, 2])] {
+        // 1.5x, 1.6x, 2x and 3x of 24 fps: 3.33, 3.125, 2.5 and 1.67
+        // refreshes a frame.
+        for (speed, counts) in [(1.5, [3, 4]), (1.6, [3, 4]), (2.0, [2, 3]), (3.0, [1, 2])] {
             let (held, late) = play(&matroska(1.0 / 24.0 / speed, 3000));
             assert!(held.iter().all(|count| counts.contains(count)), "{speed}: {held:?}");
             let limit = PERIOD.as_nanos().cast_signed() as i64 * 5 / 8;

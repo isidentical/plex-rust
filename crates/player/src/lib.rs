@@ -14,7 +14,9 @@ mod probe;
 mod render;
 
 pub use crate::cadence::{Cadence, Refresh};
-pub use crate::clock::{HostTime, cpu_time, run_thread_at_interactive_priority};
+pub use crate::clock::{
+    HostTime, cpu_time, cpu_time_by_thread, run_thread_at_interactive_priority,
+};
 pub use crate::core::{
     Chapter, Colors, DolbyVision, EndReason, Event, Player, Source, Track, TrackKind,
 };
