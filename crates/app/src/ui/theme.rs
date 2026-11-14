@@ -1,42 +1,142 @@
-//! Sizes and spacing. No other file holds a literal measurement.
+//! Sizes, spacing and colours. No other file holds a literal measurement.
 
+use objc2::rc::Retained;
+use objc2_app_kit::NSColor;
 use objc2_foundation::NSSize;
 
 pub const WINDOW_SIZE: NSSize = NSSize { width: 1280.0, height: 800.0 };
 pub const WINDOW_MIN_SIZE: NSSize = NSSize { width: 880.0, height: 560.0 };
 
+// The type scale. Every label uses one of these sizes.
+pub const FONT_LARGE_TITLE: f64 = 34.0;
+pub const FONT_TITLE: f64 = 20.0;
+pub const FONT_HEADLINE: f64 = 15.0;
+pub const FONT_BODY: f64 = 13.0;
+pub const FONT_CAPTION: f64 = 11.0;
+
+// The spacing scale. Every gap and margin is one of these.
+pub const SPACE_XXS: f64 = 2.0;
+pub const SPACE_XS: f64 = 4.0;
+pub const SPACE_S: f64 = 8.0;
+pub const SPACE_M: f64 = 12.0;
+pub const SPACE_L: f64 = 16.0;
+pub const SPACE_XL: f64 = 24.0;
+pub const SPACE_XXL: f64 = 32.0;
+
+// The corner scale.
+pub const RADIUS_S: f64 = 4.0;
+pub const RADIUS_M: f64 = 8.0;
+pub const RADIUS_L: f64 = 12.0;
+
+pub const PAGE_MARGIN: f64 = SPACE_XXL;
+pub const CELL_SPACING: f64 = SPACE_L;
+/// Between the last row of one shelf and the heading of the next.
+pub const SHELF_SPACING: f64 = SPACE_XL;
+pub const SHELF_HEADING_HEIGHT: f64 = 44.0;
+
 pub const SIDEBAR_WIDTH: f64 = 220.0;
 pub const SIDEBAR_ROW_HEIGHT: f64 = 30.0;
-pub const SIDEBAR_ICON_GAP: f64 = 8.0;
+pub const SIDEBAR_ICON_GAP: f64 = SPACE_S;
 
 /// Artwork is requested at twice the point size so it is sharp on Retina
 /// displays, which is every display a current Mac ships with.
 pub const RETINA_SCALE: u32 = 2;
 
-pub const POSTER_WIDTH: u32 = 150;
-pub const POSTER_HEIGHT: u32 = 225;
-pub const STILL_WIDTH: u32 = 240;
-pub const STILL_HEIGHT: u32 = 135;
-pub const ARTWORK_CORNER_RADIUS: f64 = 8.0;
-pub const CAPTION_GAP: f64 = 4.0;
-/// The two lines of text under a cell's artwork, with the gaps around them.
-pub const CAPTIONS_HEIGHT: f64 = 47.0;
+/// Upright artwork is two wide to three tall.
+pub const POSTER_ASPECT: f64 = 1.5;
+/// Wide artwork is sixteen to nine.
+pub const LANDSCAPE_ASPECT: f64 = 9.0 / 16.0;
 
-pub const TITLE_FONT_SIZE: f64 = 13.0;
-pub const SUBTITLE_FONT_SIZE: f64 = 11.0;
-pub const HEADING_FONT_SIZE: f64 = 20.0;
+/// A poster in a shelf, and the narrowest a poster gets in a grid.
+pub const POSTER_WIDTH: f64 = 160.0;
+/// A wide card in a shelf, and the narrowest one gets in a grid.
+pub const LANDSCAPE_WIDTH: f64 = 288.0;
+/// The size posters are requested at, in points. One size for every grid
+/// width, so that resizing the window never downloads them again.
+pub const POSTER_REQUEST: (u32, u32) = (200, 300);
+pub const LANDSCAPE_REQUEST: (u32, u32) = (320, 180);
 
-pub const CELL_SPACING: f64 = 16.0;
-pub const SHELF_HEADING_HEIGHT: f64 = 40.0;
-pub const PAGE_MARGIN: f64 = 28.0;
+/// The two lines of text under a card's artwork, with the gaps around them.
+pub const CAPTIONS_HEIGHT: f64 = 46.0;
 
-pub const DETAIL_POSTER_WIDTH: u32 = 200;
-pub const DETAIL_POSTER_HEIGHT: u32 = 300;
-pub const DETAIL_TITLE_FONT_SIZE: f64 = 30.0;
-pub const DETAIL_TEXT_WIDTH: f64 = 620.0;
-pub const DETAIL_SUMMARY_LINES: isize = 8;
-pub const HOVER_OUTLINE_WIDTH: f64 = 3.0;
+/// An episode in a list: a still on the left, text beside it.
+pub const EPISODE_ROW_HEIGHT: f64 = 124.0;
+pub const EPISODE_STILL_WIDTH: f64 = 192.0;
+pub const EPISODE_TEXT_WIDTH: f64 = 640.0;
+pub const EPISODE_SUMMARY_LINES: isize = 3;
+/// How strongly white is laid over a row under the pointer.
+pub const ROW_HOVER_OPACITY: f64 = 0.06;
+
+// What a card does under the pointer and under a press.
+pub const HOVER_SCALE: f64 = 1.04;
+pub const PRESS_SCALE: f64 = 0.98;
+pub const HOVER_DURATION: f64 = 0.12;
+pub const HOVER_SHADOW_OPACITY: f32 = 0.6;
+pub const HOVER_SHADOW_RADIUS: f64 = 14.0;
+pub const HOVER_SHADOW_DROP: f64 = 8.0;
+pub const HOVER_SCRIM_OPACITY: f64 = 0.28;
+pub const PLAY_GLYPH_SIZE: f64 = 44.0;
+/// How long freshly loaded artwork takes to fade in.
+pub const ARTWORK_FADE: f64 = 0.18;
+pub const ARTWORK_OUTLINE_WIDTH: f64 = 1.0;
+pub const ARTWORK_OUTLINE_OPACITY: f64 = 0.10;
+pub const ARTWORK_HOVER_OUTLINE_OPACITY: f64 = 0.35;
+pub const ARTWORK_PLACEHOLDER_OPACITY: f64 = 0.06;
+pub const FOCUS_RING_WIDTH: f64 = 3.0;
+
 pub const PROGRESS_BAR_HEIGHT: f64 = 4.0;
-pub const BADGE_INSET: f64 = 6.0;
-pub const BADGE_SHADOW_OPACITY: f32 = 0.8;
-pub const BADGE_SHADOW_RADIUS: f64 = 2.0;
+pub const PROGRESS_BAR_INSET: f64 = SPACE_S;
+pub const PROGRESS_TRACK_OPACITY: f64 = 0.55;
+pub const BADGE_INSET: f64 = SPACE_S;
+pub const BADGE_DOT_SIZE: f64 = 12.0;
+pub const BADGE_HEIGHT: f64 = 20.0;
+pub const BADGE_PADDING: f64 = 7.0;
+pub const BADGE_BACKGROUND_OPACITY: f64 = 0.7;
+
+/// How long one screen takes to fade into the next.
+pub const SCREEN_FADE: f64 = 0.15;
+
+/// The top of a detail page: artwork on the left, text beside it.
+pub const HERO_HEIGHT: f64 = 424.0;
+pub const HERO_POSTER_WIDTH: f64 = 232.0;
+pub const HERO_POSTER_REQUEST: (u32, u32) = (232, 348);
+pub const HERO_TEXT_WIDTH: f64 = 640.0;
+pub const HERO_SUMMARY_LINES: isize = 4;
+pub const HERO_SHADOW_OPACITY: f32 = 0.5;
+pub const HERO_SHADOW_RADIUS: f64 = 24.0;
+pub const HERO_SHADOW_DROP: f64 = 12.0;
+pub const FACT_BADGE_BORDER_OPACITY: f64 = 0.4;
+
+/// The backdrop behind a detail page, in pixels. One size for every window.
+pub const BACKDROP_REQUEST: (u32, u32) = (1920, 1080);
+/// How much of the page's height the backdrop covers, from the top.
+pub const BACKDROP_HEIGHT_FRACTION: f64 = 0.8;
+pub const BACKDROP_OPACITY: f32 = 0.5;
+/// How dark the left of the backdrop is made, where the text is.
+pub const BACKDROP_SCRIM_OPACITY: f64 = 0.5;
+/// How far the page colours from the artwork are darkened, so that white
+/// text on them stays readable.
+pub const TINT_BRIGHTNESS: f64 = 0.45;
+
+/// The bar above a library's grid: its size on the left, order on the right.
+pub const LIBRARY_BAR_HEIGHT: f64 = 44.0;
+
+/// A message in the middle of an empty screen.
+pub const NOTICE_SYMBOL_SIZE: f64 = 44.0;
+pub const NOTICE_WIDTH: f64 = 420.0;
+
+/// Behind every screen that has no colours of its own. The window's own
+/// colour, which the shelves' sideways scrollers also draw.
+pub fn page_background() -> Retained<NSColor> {
+    NSColor::windowBackgroundColor()
+}
+
+/// White at `opacity`, for outlines and overlays on artwork.
+pub fn white(opacity: f64) -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(1.0, opacity)
+}
+
+/// Black at `opacity`, for scrims and tracks on artwork.
+pub fn black(opacity: f64) -> Retained<NSColor> {
+    NSColor::colorWithWhite_alpha(0.0, opacity)
+}

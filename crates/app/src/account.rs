@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 
 /// Signs in through the browser and stores the token.
 pub fn login() -> Result<()> {
-    let client = Client::new(identity()?)?;
+    let client = client()?;
     let token = crate::runtime()?.block_on(async {
         let pin = auth::request_pin(&client).await?;
         let url = pin.approval_url(&client);
@@ -31,7 +31,12 @@ pub fn login() -> Result<()> {
 /// A client and the token of the signed-in account.
 pub fn signed_in() -> Result<(Client, Token)> {
     let token = stored_token()?.ok_or(Error::SignedOut)?;
-    Ok((Client::new(identity()?)?, token))
+    Ok((client()?, token))
+}
+
+/// A client that presents itself to Plex as this installation.
+pub fn client() -> Result<Client> {
+    Ok(Client::new(identity()?)?)
 }
 
 /// Loads this installation's identity, creating it on first use.
@@ -76,12 +81,14 @@ fn stored_token() -> Result<Option<Token>> {
     }
 }
 
-fn store_token(token: &Token) -> Result<()> {
+/// Keeps the account's token for the next launch.
+pub fn store_token(token: &Token) -> Result<()> {
     write_private(token_path()?, token.secret().as_bytes())
 }
 
-fn open_in_browser(url: &str) {
-    // The link is also printed, so a browser that fails to open is not fatal.
+pub fn open_in_browser(url: &str) {
+    // A browser that fails to open is not fatal: the command line prints
+    // the link as well, and the window offers to try again.
     if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
         NSWorkspace::sharedWorkspace().openURL(&url);
     }

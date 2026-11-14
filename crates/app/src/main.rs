@@ -16,20 +16,25 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use player::Source;
+use plex::library::Sort;
 use plex::model::RatingKey;
 
 use crate::error::{Error, Result};
 use crate::play::Check;
 use crate::progress::Progress;
 use crate::ui::player::input::Key;
-use crate::ui::shell::Subject;
+use crate::ui::shell::{Snapshot, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
-       plex-rust snapshot home <png-path>
-       plex-rust snapshot library <index> <png-path>
-       plex-rust snapshot item <rating-key> <png-path>
+       plex-rust snapshot home <png-path> [<tweak>...]
+       plex-rust snapshot library <index> <png-path> [<tweak>...]
+       plex-rust snapshot item <rating-key> <png-path> [<tweak>...]
+       plex-rust snapshot search <query> <png-path> [<tweak>...]
+       plex-rust snapshot signin <png-path>
        plex-rust snapshot play <rating-key> <png-path> [<key>...]
+         tweaks: narrow, hover, scroll=<points>, unwatched,
+                 sort=title|added|released|rating|watched
        plex-rust login
        plex-rust servers [<address>]
        plex-rust api [--post] <path>
@@ -53,18 +58,22 @@ fn main() -> ExitCode {
 fn run(args: &[&str]) -> Result<()> {
     match args {
         [] => ui::shell::run(None),
-        ["snapshot", "home", path] => ui::shell::run(Some((Subject::Home, path.into()))),
-        ["snapshot", "library", index, path] => {
+        ["snapshot", "home", path, tweaks @ ..] => snapshot(Subject::Home, path, tweaks),
+        ["snapshot", "library", index, path, tweaks @ ..] => {
             let index = index.parse().map_err(|_| Error::Usage(USAGE))?;
-            ui::shell::run(Some((Subject::Library(index), path.into())))
+            snapshot(Subject::Library(index), path, tweaks)
         }
-        ["snapshot", "item", key, path] => {
-            ui::shell::run(Some((Subject::Item((*key).to_owned()), path.into())))
+        ["snapshot", "item", key, path, tweaks @ ..] => {
+            snapshot(Subject::Item((*key).to_owned()), path, tweaks)
         }
+        ["snapshot", "search", query, path, tweaks @ ..] => {
+            snapshot(Subject::Search((*query).to_owned()), path, tweaks)
+        }
+        ["snapshot", "signin", path] => snapshot(Subject::SignIn, path, &[]),
         ["snapshot", "play", key, path, keys @ ..] => {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
             let keys = keys.ok_or(Error::Usage(USAGE))?;
-            ui::shell::run(Some((Subject::Play((*key).to_owned(), keys), path.into())))
+            snapshot(Subject::Play((*key).to_owned(), keys), path, &[])
         }
         ["login"] => account::login(),
         ["servers"] => servers(None),
@@ -82,6 +91,28 @@ fn run(args: &[&str]) -> Result<()> {
         }
         _ => Err(Error::Usage(USAGE)),
     }
+}
+
+/// Draws `subject` into a PNG at `path`, in the state the tweaks describe.
+fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
+    let mut parsed = Tweaks::default();
+    for tweak in tweaks {
+        match tweak.split_once('=') {
+            None if *tweak == "narrow" => parsed.narrow = true,
+            None if *tweak == "hover" => parsed.hover = true,
+            None if *tweak == "unwatched" => parsed.listing.unwatched_only = true,
+            Some(("scroll", points)) => {
+                parsed.scroll = points.parse().map_err(|_| Error::Usage(USAGE))?;
+            }
+            Some(("sort", "title")) => parsed.listing.sort = Sort::Title,
+            Some(("sort", "added")) => parsed.listing.sort = Sort::DateAdded,
+            Some(("sort", "released")) => parsed.listing.sort = Sort::ReleaseDate,
+            Some(("sort", "rating")) => parsed.listing.sort = Sort::Rating,
+            Some(("sort", "watched")) => parsed.listing.sort = Sort::LastWatched,
+            _ => return Err(Error::Usage(USAGE)),
+        }
+    }
+    ui::shell::run(Some(Snapshot { subject, tweaks: parsed, path: path.into() }))
 }
 
 /// Plays a file, a URL, or with `item:<rating-key>` an item from the first

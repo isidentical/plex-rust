@@ -17,11 +17,10 @@ use plex::model::{Kind, Section};
 use super::theme;
 
 /// Somewhere the sidebar can take the user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Destination {
     Home,
     Section(Section),
-    Downloads,
 }
 
 impl Destination {
@@ -29,7 +28,6 @@ impl Destination {
         match self {
             Self::Home => "Home",
             Self::Section(section) => &section.title,
-            Self::Downloads => "Downloads",
         }
     }
 
@@ -39,7 +37,6 @@ impl Destination {
             Self::Home => "house",
             Self::Section(section) if section.kind == Kind::Show => "tv",
             Self::Section(_) => "film",
-            Self::Downloads => "arrow.down.circle",
         }
     }
 }
@@ -143,13 +140,23 @@ impl Sidebar {
         &self.ivars().scroll
     }
 
-    /// Replaces the list and selects the entry at `selected`.
-    pub fn show(&self, destinations: Vec<Destination>, selected: usize) {
+    /// Replaces the list. Nothing is selected until [`select`](Self::select).
+    pub fn show(&self, destinations: Vec<Destination>) {
         *self.ivars().destinations.borrow_mut() = destinations;
-        let table = &self.ivars().table;
-        table.reloadData();
-        let selected = NSIndexSet::indexSetWithIndex(selected);
-        table.selectRowIndexes_byExtendingSelection(&selected, false);
+        self.ivars().table.reloadData();
+    }
+
+    /// Selects the row of `destination`, or none when the place on screen
+    /// is not one of the sidebar's. `on_select` hears of it like of a click.
+    pub fn select(&self, destination: Option<&Destination>) {
+        let row = destination.and_then(|destination| {
+            self.ivars().destinations.borrow().iter().position(|row| row == destination)
+        });
+        let rows = match row {
+            Some(row) => NSIndexSet::indexSetWithIndex(row),
+            None => NSIndexSet::indexSet(),
+        };
+        self.ivars().table.selectRowIndexes_byExtendingSelection(&rows, false);
     }
 }
 
