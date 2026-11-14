@@ -92,7 +92,7 @@ impl Controls {
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread),
             spinner: NSProgressIndicator::new(main_thread),
-            notice: Chip::new(main_thread, Style::Caption),
+            notice: Chip::new(main_thread, Style::Notice),
         };
         controls.back.set_symbol("chevron.left", theme::BACK_SYMBOL_SIZE);
         controls.toggle.set_symbol("pause.fill", theme::MAIN_SYMBOL_SIZE);
@@ -237,6 +237,7 @@ impl Controls {
         let below_title_bar = root.safeAreaLayoutGuide().topAnchor();
         self.skip.setHidden(true);
         self.notice.setAlphaValue(0.0);
+        self.notice.limit_width(theme::NOTICE_MAX_WIDTH);
         self.spinner.setStyle(NSProgressIndicatorStyle::Spinning);
         self.spinner.setIndeterminate(true);
         self.spinner.setDisplayedWhenStopped(false);

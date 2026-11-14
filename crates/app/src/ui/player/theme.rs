@@ -46,6 +46,13 @@ pub const CHIP_PADDING: f64 = 12.0;
 pub const CHIP_CONTENT_SPACING: f64 = 6.0;
 /// The height of a chip that only says something.
 pub const CAPTION_HEIGHT: f64 = 28.0;
+/// The notice of what a key press did is read at a glance, often from
+/// the sofa and with nothing else on screen, so it is larger than a label.
+pub const NOTICE_HEIGHT: f64 = 40.0;
+pub const NOTICE_FONT_SIZE: f64 = 17.0;
+/// A longer notice than this, such as a track with a long name, ends in
+/// an ellipsis.
+pub const NOTICE_MAX_WIDTH: f64 = 440.0;
 pub const SYMBOL_SIZE: f64 = 18.0;
 /// The play and pause symbol, which is the control used most.
 pub const MAIN_SYMBOL_SIZE: f64 = 28.0;

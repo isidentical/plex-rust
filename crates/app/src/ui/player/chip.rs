@@ -9,9 +9,9 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSBezierPath, NSColor, NSEvent, NSFont,
-    NSFontWeightMedium, NSImage, NSImageSymbolConfiguration, NSImageView, NSLayoutConstraint,
-    NSLayoutPriorityDefaultLow, NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLineBreakMode,
+    NSStackView, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSString, ns_string};
 
@@ -29,6 +29,9 @@ pub enum Style {
     Quiet,
     /// Text on a dark fill that cannot be clicked: clicks pass through it.
     Caption,
+    /// A caption that has to be read in a glance from across the room,
+    /// such as what a key press just did.
+    Notice,
 }
 
 pub struct Ivars {
@@ -61,7 +64,7 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             // SAFETY: forwards the argument to the superclass unchanged.
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            let is_target = self.ivars().style != Style::Caption && self.ivars().enabled.get();
+            let is_target = self.ivars().style.is_button() && self.ivars().enabled.get();
             hit.filter(|_| is_target).map(|_| Retained::into_super(self.retain()))
         }
 
@@ -111,7 +114,7 @@ define_class!(
         /// VoiceOver pressing the chip. Returns whether it could be.
         #[unsafe(method(accessibilityPerformPress))]
         fn perform_press(&self) -> bool {
-            let can_press = self.ivars().style != Style::Caption && self.ivars().enabled.get();
+            let can_press = self.ivars().style.is_button() && self.ivars().enabled.get();
             if can_press {
                 self.click();
             }
@@ -120,10 +123,16 @@ define_class!(
     }
 );
 
+impl Style {
+    fn is_button(self) -> bool {
+        !matches!(self, Self::Caption | Self::Notice)
+    }
+}
+
 impl Chip {
     pub fn new(main_thread: MainThreadMarker, style: Style) -> Retained<Self> {
         let color = match style {
-            Style::Plain | Style::Quiet | Style::Caption => theme::text(),
+            Style::Plain | Style::Quiet | Style::Caption | Style::Notice => theme::text(),
             Style::Solid => theme::text_on_solid(),
         };
         let icon = NSImageView::new(main_thread);
@@ -131,14 +140,15 @@ impl Chip {
         icon.setHidden(true);
         let label = NSTextField::labelWithString(ns_string!(""), main_thread);
         label.setTextColor(Some(&color));
-        // SAFETY: the weight is a constant that AppKit provides.
-        let weight = unsafe { NSFontWeightMedium };
+        // SAFETY: the weights are constants that AppKit provides.
+        let (medium, semibold) = unsafe { (NSFontWeightMedium, NSFontWeightSemibold) };
+        let (size, weight) = match style {
+            Style::Notice => (theme::NOTICE_FONT_SIZE, semibold),
+            _ => (theme::FONT_SIZE, medium),
+        };
         // Digits of equal width keep a time or a speed from changing the
         // chip's width as it counts.
-        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            theme::FONT_SIZE,
-            weight,
-        )));
+        label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(size, weight)));
         label.setHidden(true);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
@@ -155,7 +165,7 @@ impl Chip {
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         let chip: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         chip.lay_out(main_thread);
-        if style != Style::Caption {
+        if style.is_button() {
             chip.track_pointer();
             // VoiceOver meets one button, not a picture and a text in a
             // group with no name.
@@ -254,6 +264,22 @@ impl Chip {
         self.describe();
     }
 
+    /// Keeps the chip from growing wider than `width`. Text that does not
+    /// fit ends in an ellipsis.
+    pub fn limit_width(&self, width: f64) {
+        let label = &self.ivars().label;
+        label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        // Gives way to the limit, but not to the chip's wish to be square,
+        // which is of the low priority itself.
+        label.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow + 1.0,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[self
+            .widthAnchor()
+            .constraintLessThanOrEqualToConstant(width)]));
+    }
+
     /// Puts the symbol and the text side by side in the middle, and makes
     /// the chip a square that widens to fit them.
     fn lay_out(&self, main_thread: MainThreadMarker) {
@@ -268,6 +294,7 @@ impl Chip {
         let height = match ivars.style {
             Style::Plain | Style::Solid | Style::Quiet => theme::CHIP_SIZE,
             Style::Caption => theme::CAPTION_HEIGHT,
+            Style::Notice => theme::NOTICE_HEIGHT,
         };
         let padded = content.widthAnchor();
         let square = self.widthAnchor().constraintEqualToConstant(height);
@@ -320,7 +347,7 @@ impl Chip {
         let ivars = self.ivars();
         let lit = ivars.enabled.get();
         match (ivars.style, lit && ivars.pressed.get(), lit && ivars.hovered.get()) {
-            (Style::Caption, ..) => Some(theme::backdrop()),
+            (Style::Caption | Style::Notice, ..) => Some(theme::backdrop()),
             (Style::Solid, true, _) => Some(theme::solid_pressed()),
             (Style::Solid, false, true) => Some(theme::solid_hovered()),
             (Style::Solid, false, false) => Some(theme::solid()),
