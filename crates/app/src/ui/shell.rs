@@ -788,20 +788,32 @@ impl Shell {
         self.show_view(screen.view(), fade);
         self.window.setTitle(&NSString::from_str(title(&route)));
         let position = self.position.get();
-        let (back, forward) = (position > 0, position + 1 < self.history.borrow().len());
-        self.toolbar.set_history(back, forward);
-        self.commands.back.set_enabled(back);
-        self.commands.forward.set_enabled(forward);
-        // Only an item's page has something to play or to mark.
-        let on_item = matches!(screen, Screen::Detail(_));
-        self.commands.play.set_enabled(on_item);
-        self.commands.toggle_watched.set_enabled(on_item);
+        self.toolbar.set_history(position > 0, position + 1 < self.history.borrow().len());
+        self.enable_commands();
         self.sidebar.select(destination_of(&route).as_ref());
         // Results arrive while the viewer is still typing in the search
         // field, which must keep the keyboard.
         if !matches!(route, Route::Search(_)) {
             screen.focus();
         }
+    }
+
+    /// Greys out the menu's commands that have nothing to do where the
+    /// viewer is. While the player has the window that is every one of these: the
+    /// menu bar stays up, and what is behind the player is not there to be
+    /// reloaded or marked as watched unseen.
+    fn enable_commands(&self) {
+        let browsing = self.playing.borrow().is_none();
+        let position = self.position.get();
+        // Only an item's page has something to play or to mark.
+        let on_item = self.current(|entry| matches!(entry.screen, Screen::Detail(_))) == Some(true);
+        let commands = &self.commands;
+        commands.back.set_enabled(browsing && position > 0);
+        commands.forward.set_enabled(browsing && position + 1 < self.history.borrow().len());
+        commands.reload.set_enabled(browsing);
+        commands.find.set_enabled(browsing);
+        commands.play.set_enabled(browsing && on_item);
+        commands.toggle_watched.set_enabled(browsing && on_item);
     }
 
     /// Makes `view` the content, optionally fading from what was there.
@@ -1359,6 +1371,7 @@ impl Shell {
                 self.set_window_content(&controller);
                 screen.focus();
                 *self.playing.borrow_mut() = Some(screen);
+                self.enable_commands();
             }
             Err(error) => self.fail(self.moves.get(), &error),
         }
@@ -1373,6 +1386,7 @@ impl Shell {
         self.keep_settings(&screen);
         self.set_window_content(&self.split);
         self.set_toolbar_visible(true);
+        self.enable_commands();
 
         let played = screen.item();
         let behind = self.current(|entry| (entry.route.clone(), entry.screen.clone()));
