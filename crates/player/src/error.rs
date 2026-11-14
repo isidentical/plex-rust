@@ -25,16 +25,11 @@ pub(crate) fn check(status: libc::c_int, action: impl FnOnce() -> String) -> Res
     if status >= 0 {
         return Ok(());
     }
-    Err(Error::Mpv {
-        action: action(),
-        message: message(status),
-    })
+    Err(Error::Mpv { action: action(), message: message(status) })
 }
 
 pub(crate) fn message(status: libc::c_int) -> String {
     // SAFETY: mpv_error_string returns a static NUL-terminated string for
     // every input, including unknown codes.
-    unsafe { CStr::from_ptr(sys::mpv_error_string(status)) }
-        .to_string_lossy()
-        .into_owned()
+    unsafe { CStr::from_ptr(sys::mpv_error_string(status)) }.to_string_lossy().into_owned()
 }

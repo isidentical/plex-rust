@@ -78,9 +78,7 @@ define_class!(
         #[unsafe(method(collectionView:numberOfItemsInSection:))]
         fn item_count(&self, _collection: &NSCollectionView, shelf: NSInteger) -> NSInteger {
             let shelves = self.ivars().shelves.borrow();
-            let shelf = usize::try_from(shelf)
-                .ok()
-                .and_then(|shelf| shelves.get(shelf));
+            let shelf = usize::try_from(shelf).ok().and_then(|shelf| shelves.get(shelf));
             shelf.map_or(0, |shelf| shelf.items.len().cast_signed())
         }
 
@@ -146,9 +144,8 @@ impl Posters {
     ) -> Retained<Self> {
         let collection = NSCollectionView::new(main_thread);
         collection.setCollectionViewLayout(Some(&layout(arrangement, main_thread)));
-        collection.setBackgroundColors(Some(&NSArray::from_retained_slice(&[
-            NSColor::clearColor(),
-        ])));
+        collection
+            .setBackgroundColors(Some(&NSArray::from_retained_slice(&[NSColor::clearColor()])));
         collection.setSelectable(true);
         // SAFETY: both classes are valid for their roles: an item class for
         // items, a view class for supplementary views.
@@ -215,21 +212,13 @@ impl Posters {
 
     /// How many items are shown, across all shelves.
     pub fn len(&self) -> usize {
-        self.ivars()
-            .shelves
-            .borrow()
-            .iter()
-            .map(|shelf| shelf.items.len())
-            .sum()
+        self.ivars().shelves.borrow().iter().map(|shelf| shelf.items.len()).sum()
     }
 
     fn item_at(&self, index_path: &NSIndexPath) -> Option<Item> {
         let shelves = self.ivars().shelves.borrow();
         let shelf = shelves.get(usize::try_from(index_path.section()).ok()?)?;
-        shelf
-            .items
-            .get(usize::try_from(index_path.item()).ok()?)
-            .cloned()
+        shelf.items.get(usize::try_from(index_path.item()).ok()?).cloned()
     }
 
     fn fill(&self, cell: &NSCollectionViewItem, index_path: &NSIndexPath) {
@@ -254,9 +243,7 @@ impl Posters {
 
     fn title(&self, view: &NSView, index_path: &NSIndexPath) {
         let shelves = self.ivars().shelves.borrow();
-        let shelf = usize::try_from(index_path.section())
-            .ok()
-            .and_then(|shelf| shelves.get(shelf));
+        let shelf = usize::try_from(index_path.section()).ok().and_then(|shelf| shelves.get(shelf));
         let (Some(shelf), Some(label)) = (shelf, view.downcast_ref::<NSTextField>()) else {
             return;
         };
@@ -267,10 +254,7 @@ impl Posters {
         label.setSelectable(false);
         // SAFETY: the weight is a constant that AppKit provides.
         let bold = unsafe { NSFontWeightBold };
-        label.setFont(Some(&NSFont::systemFontOfSize_weight(
-            theme::HEADING_FONT_SIZE,
-            bold,
-        )));
+        label.setFont(Some(&NSFont::systemFontOfSize_weight(theme::HEADING_FONT_SIZE, bold)));
         label.setStringValue(&NSString::from_str(&shelf.title));
     }
 }
@@ -309,10 +293,7 @@ fn layout(
                 NSCollectionLayoutSectionOrthogonalScrollingBehavior::Continuous,
             );
             shelf.setInterGroupSpacing(theme::CELL_SPACING);
-            shelf.setContentInsets(NSDirectionalEdgeInsets {
-                top: 0.0,
-                ..margins
-            });
+            shelf.setContentInsets(NSDirectionalEdgeInsets { top: 0.0, ..margins });
 
             let heading_size = NSCollectionLayoutSize::sizeWithWidthDimension_heightDimension(
                 &full_width,

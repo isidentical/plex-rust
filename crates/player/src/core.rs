@@ -62,10 +62,7 @@ pub struct Source {
 impl Source {
     /// A source that plays `location` from the beginning.
     pub fn new(location: impl Into<String>) -> Self {
-        Self {
-            location: location.into(),
-            ..Self::default()
-        }
+        Self { location: location.into(), ..Self::default() }
     }
 }
 
@@ -93,9 +90,7 @@ impl Player {
     pub fn new() -> Result<Self> {
         // SAFETY: mpv_create has no preconditions.
         let handle = NonNull::new(unsafe { sys::mpv_create() }).ok_or(Error::Create)?;
-        let player = Self {
-            handle: Arc::new(Handle(handle)),
-        };
+        let player = Self { handle: Arc::new(Handle(handle)) };
 
         for (name, value) in OPTIONS {
             let (c_name, c_value) = (c_string(name)?, c_string(value)?);
@@ -107,19 +102,14 @@ impl Player {
         }
 
         // SAFETY: the handle is valid and has not been initialized yet.
-        check(unsafe { sys::mpv_initialize(player.raw()) }, || {
-            "initialize mpv".into()
-        })?;
+        check(unsafe { sys::mpv_initialize(player.raw()) }, || "initialize mpv".into())?;
         Ok(player)
     }
 
     /// Starts playing `source`, replacing what is playing.
     pub fn load(&self, source: &Source) -> Result<()> {
-        let headers: Vec<String> = source
-            .headers
-            .iter()
-            .map(|(name, value)| format!("{name}: {value}"))
-            .collect();
+        let headers: Vec<String> =
+            source.headers.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         self.set_strings("http-header-fields", &headers)?;
 
         let start = format!("start={}", source.start.as_secs_f64());
@@ -176,9 +166,7 @@ impl Player {
 
     /// Frames dropped since the file was loaded because they came too late.
     pub fn dropped_frames(&self) -> Result<u64> {
-        let count = self
-            .string("frame-drop-count")?
-            .unwrap_or_else(|| "0".into());
+        let count = self.string("frame-drop-count")?.unwrap_or_else(|| "0".into());
         count.parse().map_err(|_| Error::Mpv {
             action: "read frame-drop-count".into(),
             message: format!("not a number: {count}"),
@@ -211,10 +199,7 @@ impl Player {
     }
 
     fn command(&self, args: &[&str]) -> Result<()> {
-        let owned = args
-            .iter()
-            .map(|arg| c_string(arg))
-            .collect::<Result<Vec<_>>>()?;
+        let owned = args.iter().map(|arg| c_string(arg)).collect::<Result<Vec<_>>>()?;
         let mut pointers: Vec<_> = owned.iter().map(|arg| arg.as_ptr()).collect();
         pointers.push(ptr::null());
         // SAFETY: the handle is valid and `pointers` is a NULL-terminated
@@ -235,16 +220,11 @@ impl Player {
     /// comma-separated string, keeps commas inside an item intact.
     fn set_strings(&self, name: &str, items: &[String]) -> Result<()> {
         let c_name = c_string(name)?;
-        let owned = items
-            .iter()
-            .map(|item| c_string(item))
-            .collect::<Result<Vec<_>>>()?;
+        let owned = items.iter().map(|item| c_string(item)).collect::<Result<Vec<_>>>()?;
         let mut nodes: Vec<sys::mpv_node> = owned
             .iter()
             .map(|item| sys::mpv_node {
-                u: sys::mpv_node__bindgen_ty_1 {
-                    string: item.as_ptr().cast_mut(),
-                },
+                u: sys::mpv_node__bindgen_ty_1 { string: item.as_ptr().cast_mut() },
                 format: sys::mpv_format_MPV_FORMAT_STRING,
             })
             .collect();
@@ -291,9 +271,7 @@ impl Player {
         check(status, || format!("read {name}"))?;
 
         // SAFETY: on success mpv stored a NUL-terminated string that we own.
-        let text = unsafe { CStr::from_ptr(value) }
-            .to_string_lossy()
-            .into_owned();
+        let text = unsafe { CStr::from_ptr(value) }.to_string_lossy().into_owned();
         // SAFETY: `value` was allocated by mpv and is not used again.
         unsafe { sys::mpv_free(value.cast()) };
         Ok(Some(text))

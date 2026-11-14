@@ -29,11 +29,7 @@ impl MediaServer {
         manual: Option<&str>,
     ) -> Result<Self> {
         let address = discovery::connect(client, server, manual).await?;
-        Ok(Self {
-            client: client.clone(),
-            address,
-            token: server.access_token.clone(),
-        })
+        Ok(Self { client: client.clone(), address, token: server.access_token.clone() })
     }
 
     /// The address in use, such as `https://192-168-1-10.abc.plex.direct:32400`.

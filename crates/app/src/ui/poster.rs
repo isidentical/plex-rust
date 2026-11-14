@@ -108,9 +108,7 @@ impl PosterItem {
         views.height.setConstant(f64::from(height));
         let (title, subtitle) = captions(item, shape);
         views.title.setStringValue(&NSString::from_str(&title));
-        views
-            .subtitle
-            .setStringValue(&NSString::from_str(&subtitle));
+        views.subtitle.setStringValue(&NSString::from_str(&subtitle));
         views.artwork.setImage(None);
 
         let path = artwork_path(item, shape);
@@ -147,29 +145,16 @@ fn artwork_path(item: &Item, shape: Shape) -> Option<&str> {
 
 /// The two lines under the artwork.
 fn captions(item: &Item, shape: Shape) -> (String, String) {
-    match (
-        item.kind,
-        shape,
-        &item.grandparent_title,
-        item.parent_index,
-        item.index,
-    ) {
+    match (item.kind, shape, &item.grandparent_title, item.parent_index, item.index) {
         (Kind::Episode, Shape::Poster, Some(show), Some(season), Some(episode)) => {
             (show.clone(), format!("S{season} · E{episode}"))
         }
         (Kind::Episode, Shape::Still, _, _, Some(episode)) => {
-            let minutes = item
-                .duration
-                .map(|duration| Duration::from(duration).as_secs() / 60);
-            let length = minutes
-                .map(|minutes| format!("{minutes} min"))
-                .unwrap_or_default();
+            let minutes = item.duration.map(|duration| Duration::from(duration).as_secs() / 60);
+            let length = minutes.map(|minutes| format!("{minutes} min")).unwrap_or_default();
             (format!("{episode}. {}", item.title), length)
         }
-        _ => (
-            item.title.clone(),
-            item.year.map(|year| year.to_string()).unwrap_or_default(),
-        ),
+        _ => (item.title.clone(), item.year.map(|year| year.to_string()).unwrap_or_default()),
     }
 }
 
@@ -193,25 +178,14 @@ impl Views {
 
         // SAFETY: the weights are constants that AppKit provides.
         let (medium, regular) = unsafe { (NSFontWeightMedium, NSFontWeightRegular) };
-        let title = caption(
-            theme::TITLE_FONT_SIZE,
-            medium,
-            &NSColor::labelColor(),
-            main_thread,
-        );
+        let title = caption(theme::TITLE_FONT_SIZE, medium, &NSColor::labelColor(), main_thread);
         let subtitle = caption(
             theme::SUBTITLE_FONT_SIZE,
             regular,
             &NSColor::secondaryLabelColor(),
             main_thread,
         );
-        Self {
-            artwork,
-            width,
-            height,
-            title,
-            subtitle,
-        }
+        Self { artwork, width, height, title, subtitle }
     }
 
     fn stack(&self) -> Retained<NSStackView> {

@@ -64,14 +64,8 @@ pub async fn request_pin(client: &Client) -> Result<Pin> {
 pub async fn wait_for_token(client: &Client, pin: &Pin) -> Result<Token> {
     let url = format!("{PINS}/{}", pin.id);
     loop {
-        let status: PinStatus = client
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let status: PinStatus =
+            client.http.get(&url).send().await?.error_for_status()?.json().await?;
         if let Some(secret) = status.auth_token {
             return Ok(Token::new(secret));
         }

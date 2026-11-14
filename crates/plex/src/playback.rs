@@ -50,10 +50,7 @@ impl MediaServer {
             url: format!("{}{}", self.address(), part.key),
             headers: vec![
                 ("X-Plex-Token".into(), self.token().secret().into()),
-                (
-                    "X-Plex-Client-Identifier".into(),
-                    identity.client_identifier.clone(),
-                ),
+                ("X-Plex-Client-Identifier".into(), identity.client_identifier.clone()),
                 ("X-Plex-Product".into(), "Reel".into()),
             ],
         }
@@ -88,11 +85,7 @@ impl MediaServer {
 
     /// Marks an item as watched or unwatched.
     pub async fn set_watched(&self, item: &RatingKey, watched: bool) -> Result<()> {
-        let path = if watched {
-            "/:/scrobble"
-        } else {
-            "/:/unscrobble"
-        };
+        let path = if watched { "/:/scrobble" } else { "/:/unscrobble" };
         self.request(Method::PUT, path)
             .query(&[("identifier", LIBRARY), ("key", item.as_str())])
             .send()

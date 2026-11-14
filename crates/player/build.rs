@@ -16,10 +16,7 @@ fn main() {
     // themselves; the linker only has to be told where those live.
     let sdk = xcrun(&["--show-sdk-path"]);
     let toolchain = xcrun(&["--find", "swiftc"]).join("../../lib/swift/macosx");
-    println!(
-        "cargo:rustc-link-search=native={}",
-        sdk.join("usr/lib/swift").display()
-    );
+    println!("cargo:rustc-link-search=native={}", sdk.join("usr/lib/swift").display());
     println!("cargo:rustc-link-search=native={}", toolchain.display());
 }
 

@@ -52,18 +52,11 @@ impl Client {
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(header("x-plex-product"), HeaderValue::from_static(PRODUCT));
         headers.insert(header("x-plex-platform"), HeaderValue::from_static("macOS"));
-        headers.insert(
-            header("x-plex-version"),
-            HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
-        );
-        headers.insert(
-            header("x-plex-client-identifier"),
-            header_value(&identity.client_identifier),
-        );
-        headers.insert(
-            header("x-plex-device-name"),
-            header_value(&identity.device_name),
-        );
+        headers
+            .insert(header("x-plex-version"), HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
+        headers
+            .insert(header("x-plex-client-identifier"), header_value(&identity.client_identifier));
+        headers.insert(header("x-plex-device-name"), header_value(&identity.device_name));
 
         let http = reqwest::Client::builder()
             .default_headers(headers)

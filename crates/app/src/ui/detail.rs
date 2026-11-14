@@ -68,18 +68,9 @@ impl Detail {
     ) -> Retained<Self> {
         // A season lists episodes, which are wide stills. A show lists
         // seasons, which have posters.
-        let shape = if item.kind == Kind::Season {
-            Shape::Still
-        } else {
-            Shape::Poster
-        };
-        let children = Posters::new(
-            main_thread,
-            Rc::clone(images),
-            Arrangement::Grid(shape),
-            on_open,
-            || {},
-        );
+        let shape = if item.kind == Kind::Season { Shape::Still } else { Shape::Poster };
+        let children =
+            Posters::new(main_thread, Rc::clone(images), Arrangement::Grid(shape), on_open, || {});
 
         let page = NSStackView::new(main_thread);
         page.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -116,10 +107,7 @@ impl Detail {
 
     /// Fills in the item's seasons or episodes.
     pub fn show_children(&self, children: Vec<Item>) {
-        self.ivars().children.show(vec![Shelf {
-            title: String::new(),
-            items: children,
-        }]);
+        self.ivars().children.show(vec![Shelf { title: String::new(), items: children }]);
     }
 
     /// "Play", or "Resume at 1:16:05" when the item was left partway. `None`
@@ -197,14 +185,8 @@ fn header(
         layer.setMasksToBounds(true);
     }
     let (width, height) = (theme::DETAIL_POSTER_WIDTH, theme::DETAIL_POSTER_HEIGHT);
-    poster
-        .widthAnchor()
-        .constraintEqualToConstant(f64::from(width))
-        .setActive(true);
-    poster
-        .heightAnchor()
-        .constraintEqualToConstant(f64::from(height))
-        .setActive(true);
+    poster.widthAnchor().constraintEqualToConstant(f64::from(width)).setActive(true);
+    poster.heightAnchor().constraintEqualToConstant(f64::from(height)).setActive(true);
     // An episode's own artwork is a wide still, so it borrows its show's.
     let artwork = match item.kind {
         Kind::Episode => item.grandparent_thumb.as_deref().or(item.thumb.as_deref()),
@@ -221,10 +203,7 @@ fn header(
     let title = NSTextField::labelWithString(&NSString::from_str(&item.title), main_thread);
     // SAFETY: the weight is a constant that AppKit provides.
     let bold = unsafe { NSFontWeightBold };
-    title.setFont(Some(&NSFont::systemFontOfSize_weight(
-        theme::DETAIL_TITLE_FONT_SIZE,
-        bold,
-    )));
+    title.setFont(Some(&NSFont::systemFontOfSize_weight(theme::DETAIL_TITLE_FONT_SIZE, bold)));
 
     let facts = NSTextField::labelWithString(&NSString::from_str(&facts(item)), main_thread);
     facts.setTextColor(Some(&NSColor::secondaryLabelColor()));
@@ -258,13 +237,9 @@ fn facts(item: &Item) -> String {
         facts.extend(item.index.map(|episode| format!("Episode {episode}")));
     }
     facts.extend(item.year.map(|year| year.to_string()));
+    facts.extend(item.leaf_count.map(|episodes| format!("{episodes} episodes")));
     facts.extend(
-        item.leaf_count
-            .map(|episodes| format!("{episodes} episodes")),
-    );
-    facts.extend(
-        item.duration
-            .map(|duration| format!("{} min", Duration::from(duration).as_secs() / 60)),
+        item.duration.map(|duration| format!("{} min", Duration::from(duration).as_secs() / 60)),
     );
     facts.join(" · ")
 }

@@ -129,8 +129,5 @@ fn api(path: &str) -> Result<()> {
 
 /// A runtime for commands that make a few requests and exit.
 fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(Error::Runtime)
+    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(Error::Runtime)
 }

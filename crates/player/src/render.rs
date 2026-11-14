@@ -64,10 +64,7 @@ impl Renderer {
                 sys::mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
                 sys::MPV_RENDER_API_TYPE_OPENGL.as_ptr().cast_mut(),
             ),
-            param(
-                sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
-                &mut init,
-            ),
+            param(sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &mut init),
             END,
         ];
         let mut mpv = ptr::null_mut();
@@ -76,10 +73,7 @@ impl Renderer {
         // outlives the call.
         let status =
             unsafe { sys::mpv_render_context_create(&mut mpv, player.raw(), params.as_mut_ptr()) };
-        let mpv = match (
-            check(status, || "create the render context".into()),
-            NonNull::new(mpv),
-        ) {
+        let mpv = match (check(status, || "create the render context".into()), NonNull::new(mpv)) {
             (Ok(()), Some(mpv)) => mpv,
             (result, _) => {
                 // SAFETY: both objects are valid and not used again.
@@ -102,13 +96,7 @@ impl Renderer {
             );
         }
 
-        Ok(Self {
-            mpv,
-            gl,
-            pixel_format,
-            _on_frame: on_frame,
-            _player: player.clone(),
-        })
+        Ok(Self { mpv, gl, pixel_format, _on_frame: on_frame, _player: player.clone() })
     }
 
     /// The OpenGL context frames are drawn with. Valid while `self` lives.
@@ -155,14 +143,8 @@ impl Renderer {
         // close to when it should be shown.
         let mut wait_until_due: libc::c_int = 0;
         let mut params = [
-            param(
-                sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO,
-                &mut fbo,
-            ),
-            param(
-                sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y,
-                &mut flip_y,
-            ),
+            param(sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO, &mut fbo),
+            param(sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y, &mut flip_y),
             param(
                 sys::mpv_render_param_type_MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
                 &mut wait_until_due,
@@ -220,9 +202,7 @@ fn choose_pixel_format() -> Result<CGLPixelFormatObj> {
         );
     }
     if format.is_null() {
-        return Err(Error::OpenGl(
-            "no hardware accelerated OpenGL 3.2 pixel format",
-        ));
+        return Err(Error::OpenGl("no hardware accelerated OpenGL 3.2 pixel format"));
     }
     Ok(format)
 }
@@ -253,10 +233,7 @@ const END: sys::mpv_render_param = sys::mpv_render_param {
 };
 
 fn param<T>(type_: sys::mpv_render_param_type, data: *mut T) -> sys::mpv_render_param {
-    sys::mpv_render_param {
-        type_,
-        data: data.cast(),
-    }
+    sys::mpv_render_param { type_, data: data.cast() }
 }
 
 /// Looks up an OpenGL function by name for mpv.

@@ -15,10 +15,7 @@ pub enum Error {
 
     /// The server answered, but not with what its API description promises.
     #[error("unexpected response from {path}: {source}")]
-    Shape {
-        path: &'static str,
-        source: serde_json::Error,
-    },
+    Shape { path: &'static str, source: serde_json::Error },
 
     #[error("the server has no item {0}")]
     Missing(crate::model::RatingKey),

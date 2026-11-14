@@ -36,10 +36,7 @@ pub fn signed_in() -> Result<(Client, Token)> {
 /// Loads this installation's identity, creating it on first use.
 fn identity() -> Result<Identity> {
     let path = support_directory()?.join("client-identifier");
-    let file_error = |source| Error::File {
-        path: path.clone(),
-        source,
-    };
+    let file_error = |source| Error::File { path: path.clone(), source };
 
     let client_identifier = match fs::read_to_string(&path) {
         Ok(identifier) => identifier.trim().to_owned(),
@@ -51,19 +48,13 @@ fn identity() -> Result<Identity> {
         Err(error) => return Err(file_error(error)),
     };
     let device_name = NSProcessInfo::processInfo().hostName().to_string();
-    Ok(Identity {
-        client_identifier,
-        device_name,
-    })
+    Ok(Identity { client_identifier, device_name })
 }
 
 fn support_directory() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
     let path = PathBuf::from(home).join("Library/Application Support/Reel");
-    fs::create_dir_all(&path).map_err(|source| Error::File {
-        path: path.clone(),
-        source,
-    })?;
+    fs::create_dir_all(&path).map_err(|source| Error::File { path: path.clone(), source })?;
     Ok(path)
 }
 

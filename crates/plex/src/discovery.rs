@@ -66,11 +66,7 @@ pub async fn servers(client: &Client, token: &Token) -> Result<Vec<Server>> {
         .await?;
 
     let is_server = |resource: &Resource| resource.provides.split(',').any(|role| role == "server");
-    Ok(resources
-        .into_iter()
-        .filter(is_server)
-        .map(|resource| resource.server)
-        .collect())
+    Ok(resources.into_iter().filter(is_server).map(|resource| resource.server).collect())
 }
 
 /// Finds an address at which `server` answers from this machine.
@@ -80,26 +76,12 @@ pub async fn servers(client: &Client, token: &Token) -> Result<Vec<Server>> {
 /// preferred one that answers wins.
 pub async fn connect(client: &Client, server: &Server, manual: Option<&str>) -> Result<String> {
     let candidates = candidates(&server.connections, manual);
-    let answers = join_all(
-        candidates
-            .iter()
-            .map(|address| answers(client, server, address)),
-    )
-    .await;
+    let answers = join_all(candidates.iter().map(|address| answers(client, server, address))).await;
 
-    candidates
-        .iter()
-        .zip(answers)
-        .find(|(_, answered)| *answered)
-        .map_or_else(
-            || {
-                Err(Error::Unreachable {
-                    server: server.name.clone(),
-                    tried: candidates.clone(),
-                })
-            },
-            |(address, _)| Ok(address.clone()),
-        )
+    candidates.iter().zip(answers).find(|(_, answered)| *answered).map_or_else(
+        || Err(Error::Unreachable { server: server.name.clone(), tried: candidates.clone() }),
+        |(address, _)| Ok(address.clone()),
+    )
 }
 
 /// The addresses worth trying, most preferred first: local over TLS, local
@@ -143,11 +125,7 @@ mod tests {
     use super::*;
 
     fn connection(uri: &str, local: bool, relay: bool) -> Connection {
-        Connection {
-            uri: uri.to_owned(),
-            local,
-            relay,
-        }
+        Connection { uri: uri.to_owned(), local, relay }
     }
 
     #[test]

@@ -8,18 +8,10 @@ use objc2_foundation::NSArray;
 pub fn fill(parent: &NSView, child: &NSView) {
     replace_content(parent, child);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child
-            .leadingAnchor()
-            .constraintEqualToAnchor(&parent.leadingAnchor()),
-        child
-            .trailingAnchor()
-            .constraintEqualToAnchor(&parent.trailingAnchor()),
-        child
-            .topAnchor()
-            .constraintEqualToAnchor(&parent.safeAreaLayoutGuide().topAnchor()),
-        child
-            .bottomAnchor()
-            .constraintEqualToAnchor(&parent.bottomAnchor()),
+        child.leadingAnchor().constraintEqualToAnchor(&parent.leadingAnchor()),
+        child.trailingAnchor().constraintEqualToAnchor(&parent.trailingAnchor()),
+        child.topAnchor().constraintEqualToAnchor(&parent.safeAreaLayoutGuide().topAnchor()),
+        child.bottomAnchor().constraintEqualToAnchor(&parent.bottomAnchor()),
     ]));
 }
 
@@ -27,12 +19,8 @@ pub fn fill(parent: &NSView, child: &NSView) {
 pub fn center(parent: &NSView, child: &NSView) {
     replace_content(parent, child);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child
-            .centerXAnchor()
-            .constraintEqualToAnchor(&parent.centerXAnchor()),
-        child
-            .centerYAnchor()
-            .constraintEqualToAnchor(&parent.centerYAnchor()),
+        child.centerXAnchor().constraintEqualToAnchor(&parent.centerXAnchor()),
+        child.centerYAnchor().constraintEqualToAnchor(&parent.centerYAnchor()),
     ]));
 }
 
@@ -47,18 +35,10 @@ pub fn cover(parent: &NSView, child: &NSView) {
     child.setTranslatesAutoresizingMaskIntoConstraints(false);
     parent.addSubview(child);
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child
-            .leadingAnchor()
-            .constraintEqualToAnchor(&parent.leadingAnchor()),
-        child
-            .trailingAnchor()
-            .constraintEqualToAnchor(&parent.trailingAnchor()),
-        child
-            .topAnchor()
-            .constraintEqualToAnchor(&parent.topAnchor()),
-        child
-            .bottomAnchor()
-            .constraintEqualToAnchor(&parent.bottomAnchor()),
+        child.leadingAnchor().constraintEqualToAnchor(&parent.leadingAnchor()),
+        child.trailingAnchor().constraintEqualToAnchor(&parent.trailingAnchor()),
+        child.topAnchor().constraintEqualToAnchor(&parent.topAnchor()),
+        child.bottomAnchor().constraintEqualToAnchor(&parent.bottomAnchor()),
     ]));
 }
 
@@ -69,15 +49,9 @@ pub fn dock_bottom(parent: &NSView, child: &NSView, margin: f64) {
     parent.addSubview(child);
     let (leading, trailing) = (parent.leadingAnchor(), parent.trailingAnchor());
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child
-            .leadingAnchor()
-            .constraintEqualToAnchor_constant(&leading, margin),
-        child
-            .trailingAnchor()
-            .constraintEqualToAnchor_constant(&trailing, -margin),
-        child
-            .bottomAnchor()
-            .constraintEqualToAnchor_constant(&parent.bottomAnchor(), -margin),
+        child.leadingAnchor().constraintEqualToAnchor_constant(&leading, margin),
+        child.trailingAnchor().constraintEqualToAnchor_constant(&trailing, -margin),
+        child.bottomAnchor().constraintEqualToAnchor_constant(&parent.bottomAnchor(), -margin),
     ]));
 }
 
@@ -88,11 +62,7 @@ pub fn dock_top_leading(parent: &NSView, child: &NSView, margin: f64) {
     parent.addSubview(child);
     let top = parent.safeAreaLayoutGuide().topAnchor();
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        child
-            .leadingAnchor()
-            .constraintEqualToAnchor_constant(&parent.leadingAnchor(), margin),
-        child
-            .topAnchor()
-            .constraintEqualToAnchor_constant(&top, margin),
+        child.leadingAnchor().constraintEqualToAnchor_constant(&parent.leadingAnchor(), margin),
+        child.topAnchor().constraintEqualToAnchor_constant(&top, margin),
     ]));
 }

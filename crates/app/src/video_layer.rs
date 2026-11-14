@@ -88,9 +88,7 @@ impl VideoLayer {
         let slot = Arc::new(MainThreadBound::new(OnceCell::new(), main_thread));
         let renderer = Renderer::new(player, redraw_request(Arc::clone(&slot)))?;
 
-        let this = Self::alloc().set_ivars(Ivars {
-            renderer: Rc::new(renderer),
-        });
+        let this = Self::alloc().set_ivars(Ivars { renderer: Rc::new(renderer) });
         // SAFETY: `init` is CALayer's designated initializer.
         let layer: Retained<Self> = unsafe { msg_send![super(this), init] };
         // Cannot fail: the slot was created empty a few lines up.

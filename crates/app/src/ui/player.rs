@@ -272,10 +272,8 @@ impl PlayerScreen {
         close.setRefusesFirstResponder(true);
         layout::dock_top_leading(&ivars.root, &close, theme::PAGE_MARGIN);
 
-        *ivars.controls.borrow_mut() = vec![
-            Retained::into_super(glass),
-            Retained::into_super(Retained::into_super(close)),
-        ];
+        *ivars.controls.borrow_mut() =
+            vec![Retained::into_super(glass), Retained::into_super(Retained::into_super(close))];
     }
 
     /// Connects the keyboard and the mouse to the screen.
@@ -334,9 +332,7 @@ impl PlayerScreen {
 
     fn show_speed(&self) {
         let speed = SPEEDS[self.ivars().speed.get()];
-        self.ivars()
-            .speed_readout
-            .setStringValue(&NSString::from_str(&format!("{speed}×")));
+        self.ivars().speed_readout.setStringValue(&NSString::from_str(&format!("{speed}×")));
     }
 
     /// Fades the controls in or out. Showing them also restarts the wait
@@ -350,9 +346,7 @@ impl PlayerScreen {
             return;
         }
         for control in ivars.controls.borrow().iter() {
-            control
-                .animator()
-                .setAlphaValue(if shown { 1.0 } else { 0.0 });
+            control.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
         }
         NSCursor::setHiddenUntilMouseMoves(!shown);
         if shown {
@@ -403,11 +397,7 @@ impl PlayerScreen {
         player.set_paused(pause)?;
         let image = symbol(if pause { "play.fill" } else { "pause.fill" });
         self.ivars().toggle.setImage(image.as_deref());
-        self.report(if pause {
-            PlaybackState::Paused
-        } else {
-            PlaybackState::Playing
-        });
+        self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         Ok(())
     }
 
@@ -420,13 +410,9 @@ impl PlayerScreen {
         };
         ivars.scrubber.setMaxValue(duration.as_secs_f64());
         ivars.scrubber.setDoubleValue(position.as_secs_f64());
-        ivars
-            .elapsed
-            .setStringValue(&NSString::from_str(&clock(position)));
+        ivars.elapsed.setStringValue(&NSString::from_str(&clock(position)));
         let left = duration.saturating_sub(position);
-        ivars
-            .remaining
-            .setStringValue(&NSString::from_str(&format!("-{}", clock(left))));
+        ivars.remaining.setStringValue(&NSString::from_str(&format!("-{}", clock(left))));
         Ok(())
     }
 
@@ -446,10 +432,7 @@ impl PlayerScreen {
                 return Ok(None);
             };
             // mpv has no position once a file has played to its end.
-            Ok(Some((
-                ivars.player.position()?.unwrap_or(duration),
-                duration,
-            )))
+            Ok(Some((ivars.player.position()?.unwrap_or(duration), duration)))
         });
         let (position, duration) = match times {
             Ok(Some(times)) => times,
@@ -458,19 +441,11 @@ impl PlayerScreen {
             Err(error) => return eprintln!("reel: {error}"),
         };
 
-        let (server, item, session) = (
-            ivars.server.clone(),
-            ivars.item.clone(),
-            ivars.session.clone(),
-        );
+        let (server, item, session) =
+            (ivars.server.clone(), ivars.item.clone(), ivars.session.clone());
         let send = async move {
-            let progress = playback::Progress {
-                item: &item,
-                session: &session,
-                state,
-                position,
-                duration,
-            };
+            let progress =
+                playback::Progress { item: &item, session: &session, state, position, duration };
             server.report(&progress).await
         };
         ivars.background.run(self.mtm(), send, |sent| {

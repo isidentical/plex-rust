@@ -86,9 +86,7 @@ define_class!(
         fn selection_changed(&self, _notification: &NSNotification) {
             let row = self.ivars().table.selectedRow();
             let destinations = self.ivars().destinations.borrow();
-            let selected = usize::try_from(row)
-                .ok()
-                .and_then(|row| destinations.get(row));
+            let selected = usize::try_from(row).ok().and_then(|row| destinations.get(row));
             if let Some(destination) = selected {
                 (self.ivars().on_select)(destination);
             }
@@ -129,14 +127,8 @@ impl Sidebar {
         // SAFETY: the table does not retain these. Whoever owns the sidebar
         // keeps it alive for as long as its view is on screen.
         unsafe {
-            sidebar
-                .ivars()
-                .table
-                .setDataSource(Some(ProtocolObject::from_ref(&*sidebar)));
-            sidebar
-                .ivars()
-                .table
-                .setDelegate(Some(ProtocolObject::from_ref(&*sidebar)));
+            sidebar.ivars().table.setDataSource(Some(ProtocolObject::from_ref(&*sidebar)));
+            sidebar.ivars().table.setDelegate(Some(ProtocolObject::from_ref(&*sidebar)));
         }
         sidebar
     }
@@ -168,9 +160,10 @@ fn row_view(destination: &Destination, main_thread: MainThreadMarker) -> Retaine
     let symbol = NSString::from_str(destination.symbol());
     if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol, None)
     {
-        views.push(Retained::into_super(Retained::into_super(
-            NSImageView::imageViewWithImage(&image, main_thread),
-        )));
+        views.push(Retained::into_super(Retained::into_super(NSImageView::imageViewWithImage(
+            &image,
+            main_thread,
+        ))));
     }
     views.push(Retained::into_super(Retained::into_super(label)));
 

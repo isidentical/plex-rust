@@ -88,10 +88,7 @@ impl MediaServer {
     pub async fn item(&self, key: &RatingKey) -> Result<Item> {
         let path = format!("/library/metadata/{key}");
         let Items { items, .. } = self.get(&path, &[("includeMarkers", "1")]).await?;
-        items
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Missing(key.clone()))
+        items.into_iter().next().ok_or_else(|| Error::Missing(key.clone()))
     }
 
     /// The seasons of a show, or the episodes of a season.
@@ -112,12 +109,7 @@ fn video_hubs(hubs: Hubs, path: &'static str) -> Result<Vec<Hub>> {
         .map(|hub| {
             let items = serde_json::from_value(serde_json::Value::Array(hub.items))
                 .map_err(|source| Error::Shape { path, source })?;
-            Ok(Hub {
-                title: hub.title,
-                identifier: hub.hub_identifier,
-                items,
-                more: hub.more,
-            })
+            Ok(Hub { title: hub.title, identifier: hub.hub_identifier, items, more: hub.more })
         })
         .collect()
 }
@@ -161,11 +153,7 @@ mod tests {
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total_size, Some(49));
         assert!(page.items.iter().all(|movie| movie.kind == Kind::Movie));
-        assert!(
-            page.items[0].media[0].parts[0]
-                .key
-                .starts_with("/library/parts/")
-        );
+        assert!(page.items[0].media[0].parts[0].key.starts_with("/library/parts/"));
     }
 
     #[test]
@@ -173,24 +161,9 @@ mod tests {
         let shows: Items = fixture!("shows");
         let seasons: Items = fixture!("seasons");
         let episodes: Items = fixture!("episodes");
-        assert!(
-            shows
-                .items
-                .iter()
-                .all(|show| show.kind == Kind::Show && show.media.is_empty())
-        );
-        assert!(
-            seasons
-                .items
-                .iter()
-                .all(|season| season.kind == Kind::Season)
-        );
-        assert!(
-            episodes
-                .items
-                .iter()
-                .all(|episode| episode.kind == Kind::Episode)
-        );
+        assert!(shows.items.iter().all(|show| show.kind == Kind::Show && show.media.is_empty()));
+        assert!(seasons.items.iter().all(|season| season.kind == Kind::Season));
+        assert!(episodes.items.iter().all(|episode| episode.kind == Kind::Episode));
     }
 
     #[test]
@@ -198,15 +171,9 @@ mod tests {
         let episode = fixture!("episode" as Items).items.remove(0);
 
         assert_eq!(episode.markers[0].kind, MarkerKind::Intro);
-        let kinds: Vec<StreamKind> = episode.media[0].parts[0]
-            .streams
-            .iter()
-            .map(|stream| stream.kind)
-            .collect();
-        assert_eq!(
-            kinds,
-            [StreamKind::Video, StreamKind::Audio, StreamKind::Subtitle]
-        );
+        let kinds: Vec<StreamKind> =
+            episode.media[0].parts[0].streams.iter().map(|stream| stream.kind).collect();
+        assert_eq!(kinds, [StreamKind::Video, StreamKind::Audio, StreamKind::Subtitle]);
     }
 
     #[test]
@@ -225,14 +192,7 @@ mod tests {
     fn home_keeps_only_rows_of_video() {
         let hubs = video_hubs(fixture!("home"), "/hubs").unwrap();
         let identifiers: Vec<&str> = hubs.iter().map(|hub| hub.identifier.as_str()).collect();
-        assert_eq!(
-            identifiers,
-            [
-                "home.continue",
-                "home.movies.recent",
-                "home.television.recent"
-            ]
-        );
+        assert_eq!(identifiers, ["home.continue", "home.movies.recent", "home.television.recent"]);
     }
 
     #[test]

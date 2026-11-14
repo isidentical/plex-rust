@@ -12,10 +12,7 @@ pub enum Error {
     Plex(#[from] plex::Error),
 
     #[error("{path}: {source}")]
-    File {
-        path: std::path::PathBuf,
-        source: std::io::Error,
-    },
+    File { path: std::path::PathBuf, source: std::io::Error },
 
     #[error("the async runtime did not start: {0}")]
     Runtime(std::io::Error),

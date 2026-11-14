@@ -70,10 +70,7 @@ enum Place {
     Message,
     Posters(Retained<Posters>),
     Detail(
-        #[expect(
-            dead_code,
-            reason = "held only to keep the page and its button target alive"
-        )]
+        #[expect(dead_code, reason = "held only to keep the page and its button target alive")]
         Retained<Detail>,
     ),
 }
@@ -134,9 +131,7 @@ pub fn run(snapshot: Option<(Subject, PathBuf)>) -> Result<()> {
             // A timer can only be created on the runtime's own threads.
             let wait = async { tokio::time::sleep(SNAPSHOT_SETTLE).await };
             let shell = Rc::clone(&loaded);
-            loaded
-                .background
-                .run(main_thread, wait, move |()| shell.snapshot_and_exit(&path));
+            loaded.background.run(main_thread, wait, move |()| shell.snapshot_and_exit(&path));
         }
     });
 
@@ -175,11 +170,9 @@ impl Shell {
         sidebar_item.setMaximumThickness(theme::SIDEBAR_WIDTH);
 
         shell.split.addSplitViewItem(&sidebar_item);
-        shell
-            .split
-            .addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
-                &content_controller,
-            ));
+        shell.split.addSplitViewItem(&NSSplitViewItem::splitViewItemWithViewController(
+            &content_controller,
+        ));
         shell.window.setContentViewController(Some(&shell.split));
         shell.window.setContentSize(theme::WINDOW_SIZE);
         shell.window.center();
@@ -196,16 +189,9 @@ impl Shell {
         sections: Vec<Section>,
         subject: Option<&Subject>,
     ) -> Result<()> {
-        let images = Images::new(
-            self.main_thread,
-            Rc::clone(&self.background),
-            server.clone(),
-        )?;
+        let images = Images::new(self.main_thread, Rc::clone(&self.background), server.clone())?;
         // Cannot fail: the server is connected to once per launch.
-        let _ = self.session.set(Session {
-            server,
-            images: Rc::new(images),
-        });
+        let _ = self.session.set(Session { server, images: Rc::new(images) });
 
         let mut destinations = vec![Destination::Home];
         destinations.extend(sections.into_iter().map(Destination::Section));
@@ -222,9 +208,7 @@ impl Shell {
         match subject {
             Some(Subject::Item(key)) => self.fetch(RatingKey::new(key.as_str()), Self::open),
             Some(Subject::Play(key)) => {
-                self.fetch(RatingKey::new(key.as_str()), |shell, item| {
-                    shell.play(item, true)
-                });
+                self.fetch(RatingKey::new(key.as_str()), |shell, item| shell.play(item, true));
             }
             _ => {}
         }
@@ -249,18 +233,12 @@ impl Shell {
         let server = session.server.clone();
         let load = async move { server.home(SHELF_LENGTH).await };
         let shell = Rc::clone(self);
-        self.background
-            .run(self.main_thread, load, move |hubs| match hubs {
-                Ok(hubs) => posters.show(
-                    hubs.into_iter()
-                        .map(|hub| Shelf {
-                            title: hub.title,
-                            items: hub.items,
-                        })
-                        .collect(),
-                ),
-                Err(error) => shell.show_message(&with_causes(&error)),
-            });
+        self.background.run(self.main_thread, load, move |hubs| match hubs {
+            Ok(hubs) => posters.show(
+                hubs.into_iter().map(|hub| Shelf { title: hub.title, items: hub.items }).collect(),
+            ),
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
     }
 
     fn show_library(self: &Rc<Self>, session: &Session, section: &Section) {
@@ -271,10 +249,7 @@ impl Shell {
                 shell.load_page(&more_of);
             }
         });
-        posters.show(vec![Shelf {
-            title: String::new(),
-            items: Vec::new(),
-        }]);
+        posters.show(vec![Shelf { title: String::new(), items: Vec::new() }]);
         self.load_page(section);
     }
 
@@ -289,11 +264,10 @@ impl Shell {
         let (server, section) = (session.server.clone(), section.clone());
         let load = async move { server.section_items(&section, start, PAGE_SIZE).await };
         let shell = Rc::clone(self);
-        self.background
-            .run(self.main_thread, load, move |page| match page {
-                Ok(page) => posters.append(page.items),
-                Err(error) => shell.show_message(&with_causes(&error)),
-            });
+        self.background.run(self.main_thread, load, move |page| match page {
+            Ok(page) => posters.append(page.items),
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
     }
 
     /// Puts a new, empty collection in the content area.
@@ -321,11 +295,8 @@ impl Shell {
         let Some(session) = self.session.get() else {
             return;
         };
-        let (opened, played, back) = (
-            Rc::downgrade(self),
-            Rc::downgrade(self),
-            Rc::downgrade(self),
-        );
+        let (opened, played, back) =
+            (Rc::downgrade(self), Rc::downgrade(self), Rc::downgrade(self));
         let detail = Detail::new(
             self.main_thread,
             item,
@@ -356,11 +327,10 @@ impl Shell {
         let (server, key) = (session.server.clone(), item.rating_key.clone());
         let load = async move { server.children(&key).await };
         let shell = Rc::clone(self);
-        self.background
-            .run(self.main_thread, load, move |children| match children {
-                Ok(children) => detail.show_children(children),
-                Err(error) => shell.show_message(&with_causes(&error)),
-            });
+        self.background.run(self.main_thread, load, move |children| match children {
+            Ok(children) => detail.show_children(children),
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
     }
 
     /// Fetches the item with `key` and hands it to `then`.
@@ -371,11 +341,10 @@ impl Shell {
         let server = session.server.clone();
         let load = async move { server.item(&key).await };
         let shell = Rc::clone(self);
-        self.background
-            .run(self.main_thread, load, move |item| match item {
-                Ok(item) => then(&shell, &item),
-                Err(error) => shell.show_message(&with_causes(&error)),
-            });
+        self.background.run(self.main_thread, load, move |item| match item {
+            Ok(item) => then(&shell, &item),
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
     }
 
     /// Replaces the whole window content with the player, playing `item`.
@@ -422,10 +391,7 @@ impl Shell {
         // The content view's parent is the window's frame, which also draws
         // the background and the title bar.
         // SAFETY: the content view is in a window, so its parent is alive.
-        let frame = self
-            .window
-            .contentView()
-            .and_then(|view| unsafe { view.superview() });
+        let frame = self.window.contentView().and_then(|view| unsafe { view.superview() });
         let result = match frame {
             Some(view) => {
                 // A window that was never on screen has not laid out yet.

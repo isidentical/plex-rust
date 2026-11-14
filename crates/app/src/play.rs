@@ -65,10 +65,7 @@ pub fn run(
     let main_thread =
         MainThreadMarker::new().unwrap_or_else(|| panic!("main() runs on the main thread"));
 
-    let playback = Arc::new(Playback {
-        player: Player::new()?,
-        progress,
-    });
+    let playback = Arc::new(Playback { player: Player::new()?, progress });
     let player = &playback.player;
 
     let app = NSApplication::sharedApplication(main_thread);
@@ -91,9 +88,7 @@ pub fn run(
     match unattended {
         Some(delay) => {
             window.orderFrontRegardless();
-            spawn(&playback, move |playback| {
-                print_state_and_exit(playback, delay)
-            });
+            spawn(&playback, move |playback| print_state_and_exit(playback, delay));
         }
         None => {
             window.makeKeyAndOrderFront(None);

@@ -20,12 +20,7 @@ pub struct Progress {
 impl Progress {
     pub fn new(runtime: Runtime, server: MediaServer, item: RatingKey) -> Self {
         let session = NSUUID::UUID().UUIDString().to_string();
-        Self {
-            runtime,
-            server,
-            item,
-            session,
-        }
+        Self { runtime, server, item, session }
     }
 
     /// Sends the player's current position with `state`. Blocks until the

@@ -125,10 +125,7 @@ fn key(event: &NSEvent) -> Option<Key> {
             let mut characters = characters.chars();
             let character = characters.next()?;
             // More than one character is not a plain key.
-            characters
-                .next()
-                .is_none()
-                .then(|| Key::Character(character.to_ascii_lowercase()))
+            characters.next().is_none().then(|| Key::Character(character.to_ascii_lowercase()))
         }
     }
 }

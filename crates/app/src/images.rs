@@ -31,20 +31,12 @@ impl Images {
     ) -> Result<Self> {
         let home = std::env::var_os("HOME").ok_or(Error::NoHome)?;
         let directory = PathBuf::from(home).join("Library/Caches/Reel/images");
-        std::fs::create_dir_all(&directory).map_err(|source| Error::File {
-            path: directory.clone(),
-            source,
-        })?;
+        std::fs::create_dir_all(&directory)
+            .map_err(|source| Error::File { path: directory.clone(), source })?;
         // SAFETY: the cache is created empty and only ever used with the key
         // and value types in its declaration.
         let memory = unsafe { NSCache::new() };
-        Ok(Self {
-            main_thread,
-            background,
-            server,
-            directory,
-            memory,
-        })
+        Ok(Self { main_thread, background, server, directory, memory })
     }
 
     /// Calls `then` with the artwork at server path `path`, scaled by the
