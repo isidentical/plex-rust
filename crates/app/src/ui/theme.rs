@@ -49,8 +49,12 @@ pub const POSTER_ASPECT: f64 = 1.5;
 /// Wide artwork is sixteen to nine.
 pub const LANDSCAPE_ASPECT: f64 = 9.0 / 16.0;
 
-/// A poster in a shelf, and the narrowest a poster gets in a grid.
+/// A poster in a shelf.
 pub const POSTER_WIDTH: f64 = 160.0;
+/// The narrowest a poster gets in a grid. A grid is for looking through a
+/// whole library, so it trades size for more posters in view: four across
+/// in the smallest window, six in the default one.
+pub const POSTER_GRID_MIN_WIDTH: f64 = 136.0;
 /// A wide card in a shelf, and the narrowest one gets in a grid.
 pub const LANDSCAPE_WIDTH: f64 = 288.0;
 /// The size posters are requested at, in points. One size for every grid

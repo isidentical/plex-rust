@@ -1074,7 +1074,7 @@ fn section(
         }
         Style::Grid(shape) => {
             let available = width - 2.0 * theme::PAGE_MARGIN;
-            let (_, card_width) = columns(available, shape.width(), theme::CELL_SPACING);
+            let (_, card_width) = columns(available, shape.least_width(), theme::CELL_SPACING);
             let height = shape.height(card_width);
             let item =
                 NSCollectionLayoutItem::itemWithLayoutSize(&size(&absolute(card_width), height));

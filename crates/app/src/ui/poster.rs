@@ -66,7 +66,16 @@ pub enum Shape {
 }
 
 impl Shape {
-    /// The width of a card in a shelf, and the least it gets in a grid.
+    /// The least width of a card in a grid, which widens its cards to
+    /// fill each row.
+    pub fn least_width(self) -> f64 {
+        match self {
+            Self::Poster => theme::POSTER_GRID_MIN_WIDTH,
+            Self::Landscape | Self::Still | Self::Portrait => self.width(),
+        }
+    }
+
+    /// The width of a card in a shelf.
     pub fn width(self) -> f64 {
         match self {
             Self::Poster => theme::POSTER_WIDTH,
