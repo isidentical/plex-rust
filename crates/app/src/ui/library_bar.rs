@@ -6,8 +6,8 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSButton, NSButtonType, NSColor, NSControlStateValueOn, NSLayoutConstraint,
-    NSPopUpButton, NSTextField, NSView,
+    NSAccessibility, NSColor, NSLayoutConstraint, NSPopUpButton, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
 use plex::library::{Listing, Sort};
@@ -16,6 +16,9 @@ use super::callback::Callback;
 use super::label::{self, Weight};
 use super::text;
 use super::theme;
+
+/// Where "Unwatched" is among the segments that say which items are listed.
+const UNWATCHED_SEGMENT: isize = 1;
 
 pub struct LibraryBar {
     view: Retained<NSView>,
@@ -49,27 +52,36 @@ impl LibraryBar {
         // does not say what it is the title of.
         order.setAccessibilityLabel(Some(ns_string!("Sort by")));
 
+        // Two segments, of which one is always lit: which items are
+        // listed can be read at a glance, in a window that is in front or
+        // not.
+        let labels = [ns_string!("All"), ns_string!("Unwatched")];
         // SAFETY: the target and action are set below, once they exist.
-        let unwatched = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Unwatched"),
+        let shown = unsafe {
+            NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+                &NSArray::from_slice(&labels),
+                NSSegmentSwitchTracking::SelectOne,
                 None,
                 None,
                 main_thread,
             )
         };
-        unwatched.setButtonType(NSButtonType::PushOnPushOff);
-        if listing.unwatched_only {
-            unwatched.setState(NSControlStateValueOn);
-        }
+        shown.setSelectedSegment(if listing.unwatched_only { UNWATCHED_SEGMENT } else { 0 });
+        shown.setAccessibilityLabel(Some(ns_string!("Show")));
+
+        let secondary = NSColor::secondaryLabelColor();
+        let sort_by = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
+        label::set(&sort_by, "Sort by");
+        // The menu already says it to VoiceOver.
+        sort_by.setAccessibilityElement(false);
 
         let on_change = Rc::new(on_change);
-        let (order_read, unwatched_read) = (order.clone(), unwatched.clone());
+        let (order_read, shown_read) = (order.clone(), shown.clone());
         let changed = Callback::new(main_thread, move |_| {
             let chosen = usize::try_from(order_read.indexOfSelectedItem()).unwrap_or(0);
             on_change(Listing {
                 sort: Sort::ALL.get(chosen).copied().unwrap_or_default(),
-                unwatched_only: unwatched_read.state() == NSControlStateValueOn,
+                unwatched_only: shown_read.selectedSegment() == UNWATCHED_SEGMENT,
             });
         });
         // SAFETY: the bar keeps the target for as long as it keeps the
@@ -77,18 +89,13 @@ impl LibraryBar {
         unsafe {
             order.setTarget(Some(&changed));
             order.setAction(Some(Callback::action()));
-            unwatched.setTarget(Some(&changed));
-            unwatched.setAction(Some(Callback::action()));
+            shown.setTarget(Some(&changed));
+            shown.setAction(Some(Callback::action()));
         }
 
-        let count = label::line(
-            theme::FONT_BODY,
-            Weight::Regular,
-            &NSColor::secondaryLabelColor(),
-            main_thread,
-        );
+        let count = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
         let view = NSView::new(main_thread);
-        for control in [&**order, &**unwatched, &**count] {
+        for control in [&**order, &**sort_by, &**shown, &**count] {
             let control: &NSView = control;
             control.setTranslatesAutoresizingMaskIntoConstraints(false);
             view.addSubview(control);
@@ -100,9 +107,12 @@ impl LibraryBar {
             order
                 .trailingAnchor()
                 .constraintEqualToAnchor_constant(&view.trailingAnchor(), -margin),
-            unwatched
+            sort_by
                 .trailingAnchor()
-                .constraintEqualToAnchor_constant(&order.leadingAnchor(), -theme::SPACE_M),
+                .constraintEqualToAnchor_constant(&order.leadingAnchor(), -theme::SPACE_S),
+            shown
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&sort_by.leadingAnchor(), -theme::SPACE_XL),
         ]));
         Self { view, count, noun, _changed: changed }
     }
