@@ -4,8 +4,10 @@
 //! cannot use. The player makes it see-through and nameless, so the video
 //! fills the whole window, and puts it back as it was on the way out.
 
+use block2::RcBlock;
+use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSWindow, NSWindowButton,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSButton, NSWindow, NSWindowButton,
     NSWindowTitleVisibility,
 };
 
@@ -51,14 +53,32 @@ impl Chrome {
 
 /// Fades the close, minimise and zoom buttons of `window` in or out, along
 /// with the player's own controls.
+///
+/// A button that has faded out is also hidden once the fade is over. One
+/// that is only see-through still takes clicks, and a click on the spot
+/// where the close button was would close the window.
 pub fn show_buttons(window: &NSWindow, shown: bool) {
+    let buttons: Vec<Retained<NSButton>> =
+        BUTTONS.into_iter().filter_map(|button| window.standardWindowButton(button)).collect();
     NSAnimationContext::beginGrouping();
-    let duration = if shown { theme::FADE_IN } else { theme::FADE_OUT };
-    NSAnimationContext::currentContext().setDuration(duration);
-    for button in BUTTONS {
-        if let Some(button) = window.standardWindowButton(button) {
-            button.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
+    let context = NSAnimationContext::currentContext();
+    context.setDuration(if shown { theme::FADE_IN } else { theme::FADE_OUT });
+    if !shown {
+        let faded = buttons.clone();
+        // A fade that is cut short by the controls coming back ends here
+        // too, and must leave the buttons in view. Only the fade knows
+        // which it was, and what it says is where the buttons now stand.
+        context.setCompletionHandler(Some(&RcBlock::new(move || {
+            for button in &faded {
+                button.setHidden(button.alphaValue() == 0.0);
+            }
+        })));
+    }
+    for button in &buttons {
+        if shown {
+            button.setHidden(false);
         }
+        button.animator().setAlphaValue(if shown { 1.0 } else { 0.0 });
     }
     NSAnimationContext::endGrouping();
 }
