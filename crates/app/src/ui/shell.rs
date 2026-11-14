@@ -748,12 +748,13 @@ impl Shell {
         else {
             return;
         };
-        let start = u32::try_from(posters.len()).unwrap_or(u32::MAX);
+        let start = posters.len();
+        let from = u32::try_from(start).unwrap_or(u32::MAX);
         let (server, section) = (session.server.clone(), section.clone());
-        let load = async move { server.section_items(&section, listing, start, PAGE_SIZE).await };
+        let load = async move { server.section_items(&section, listing, from, PAGE_SIZE).await };
         let (shell, moves) = (Rc::clone(self), self.moves.get());
         self.background.run(self.main_thread, load, move |page| match page {
-            Ok(page) => posters.append(page.items),
+            Ok(page) => posters.append(start, page.items),
             Err(error) => shell.fail(moves, &error),
         });
     }

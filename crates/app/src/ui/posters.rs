@@ -397,30 +397,33 @@ impl Posters {
         }
     }
 
-    /// Adds `items` to the end of the last shelf. An empty `items` means
-    /// there is nothing more, and no more will be asked for.
-    pub fn append(&self, items: Vec<Item>) {
-        if items.is_empty() {
+    /// Adds `items` to the end of the last shelf, where they are the ones
+    /// from index `start` on. A page that starts anywhere but at the end
+    /// of what is shown was asked for before the list changed under it,
+    /// and is dropped. An empty page means there is nothing more, and no
+    /// more will be asked for.
+    pub fn append(&self, start: usize, items: Vec<Item>) {
+        let ivars = self.ivars();
+        if items.is_empty() || start != self.len() {
             return;
         }
-        let ivars = self.ivars();
-        let added = {
-            let mut content = ivars.content.borrow_mut();
-            let Content::Shelves(shelves) = &mut *content else {
-                return;
-            };
-            let (Some(last), Some(shelf)) = (shelves.len().checked_sub(1), shelves.last_mut())
-            else {
-                return;
-            };
-            let first = shelf.items.len();
-            shelf.items.extend(items);
-            (first..shelf.items.len())
-                .map(|item| {
-                    NSIndexPath::indexPathForItem_inSection(item.cast_signed(), last.cast_signed())
-                })
-                .collect::<Vec<_>>()
+        let Some(last) = ivars.content.borrow().shelf_count().checked_sub(1) else {
+            return;
         };
+        // The collection view counts its items lazily. Asking it now makes
+        // it count before the list grows: counting afterwards, it would
+        // find the new items already there and refuse to insert them.
+        let _ = ivars.collection.numberOfItemsInSection(last.cast_signed());
+        let added: Vec<Retained<NSIndexPath>> = (start..start + items.len())
+            .map(|item| {
+                NSIndexPath::indexPathForItem_inSection(item.cast_signed(), last.cast_signed())
+            })
+            .collect();
+        if let Content::Shelves(shelves) = &mut *ivars.content.borrow_mut()
+            && let Some(shelf) = shelves.last_mut()
+        {
+            shelf.items.extend(items);
+        }
         // Inserting leaves the cells on screen and the scroll position
         // alone, which reloading everything would not.
         ivars.collection.insertItemsAtIndexPaths(&NSSet::from_retained_slice(&added));
@@ -494,8 +497,9 @@ impl Posters {
                     cell.show(item, shape, &ivars.images);
                 }
             }
-            // An outline: a cell with nothing in it yet.
-            (_, None) => {}
+            // An outline: a cell with nothing in it yet, and nothing after
+            // it to ask for.
+            (_, None) => return,
         }
 
         let is_grid = matches!(style, Style::Grid(_));
