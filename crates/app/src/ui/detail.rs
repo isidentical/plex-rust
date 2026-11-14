@@ -108,7 +108,7 @@ pub struct Detail {
     /// the width of the window.
     header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 8],
+    _targets: [Retained<Callback>; 9],
 }
 
 /// The views at the top of the page.
@@ -175,6 +175,8 @@ struct Hero {
     genres: Retained<NSStackView>,
     seasons: Seasons,
     season_size: Retained<NSTextField>,
+    /// Marks every episode of the season listed as watched, or as not.
+    season_watched: Pill,
     on_event: Rc<dyn Fn(Event)>,
 }
 
@@ -209,6 +211,7 @@ impl Detail {
                 target(Self::version_chosen),
                 target(Self::audio_chosen),
                 target(Self::subtitles_chosen),
+                target(Self::press_season_watched),
             ];
             let heard = Weak::clone(page);
             let hero = Hero::new(main_thread, kind, move |event| {
@@ -216,7 +219,8 @@ impl Detail {
                     page.hear(event);
                 }
             });
-            let [play, restart, watched, download, season, version, audio, subtitles] = &targets;
+            let [play, restart, watched, download, season, version, audio, subtitles, marked] =
+                &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -238,6 +242,8 @@ impl Detail {
                 hero.seasons.tabs.setAction(Some(Callback::action()));
                 hero.seasons.menu.setTarget(Some(season));
                 hero.seasons.menu.setAction(Some(Callback::action()));
+                hero.season_watched.button.setTarget(Some(marked));
+                hero.season_watched.button.setAction(Some(Callback::action()));
                 let choices =
                     [(&hero.version, version), (&hero.audio, audio), (&hero.subtitles, subtitles)];
                 for (choice, target) in choices {
@@ -445,6 +451,39 @@ impl Detail {
         }
     }
 
+    /// Marks every episode of the season listed as watched if one of them
+    /// is not, and the other way round.
+    fn press_season_watched(&self) {
+        if let Some(season) = self.listed_season() {
+            let watched = !season.is_watched();
+            (self.on_action)(Action::SetWatched(season, watched));
+        }
+    }
+
+    /// The season whose episodes are listed, from what the page knows of
+    /// it: its show, and its episodes for its name and how many of them
+    /// were watched. Everything else about it is its show's.
+    fn listed_season(&self) -> Option<Item> {
+        let show = self.item.borrow().clone().filter(|item| item.kind == Kind::Show)?;
+        let key = self.season.borrow().clone()?;
+        let episodes = self.episodes.borrow();
+        let own: Vec<&Item> = episodes
+            .iter()
+            .filter(|episode| episode.parent_rating_key.as_ref() == Some(&key))
+            .collect();
+        let watched = own.iter().filter(|episode| episode.view_count > 0).count();
+        Some(Item {
+            rating_key: key,
+            kind: Kind::Season,
+            title: own.first()?.parent_title.clone()?,
+            parent_rating_key: Some(show.rating_key.clone()),
+            parent_title: Some(show.title.clone()),
+            leaf_count: u32::try_from(own.len()).ok(),
+            viewed_leaf_count: u32::try_from(watched).ok(),
+            ..show
+        })
+    }
+
     /// Puts the buttons and menus back to what the server last said, after
     /// a change the viewer made with them did not reach it.
     pub fn revert(&self) {
@@ -616,6 +655,12 @@ impl Detail {
                 }
                 label::set(&self.hero.season_size, &size);
                 self.hero.season_bar_hidden(listed.is_empty());
+                let all_watched = listed.iter().all(|episode| episode.view_count > 0);
+                self.hero.season_watched.set_lit(all_watched);
+                self.hero.season_watched.set_title(match all_watched {
+                    true => "Mark Season as Unwatched",
+                    false => "Mark Season as Watched",
+                });
                 let mut list = Shelf::of("", Style::List, listed);
                 list.current = next_up(&episodes).map(|episode| episode.rating_key.clone());
                 shelves.push(list);
@@ -851,6 +896,7 @@ impl Hero {
         buttons.setCustomSpacing_afterView(theme::SPACE_L, &download.button);
 
         let seasons = Seasons::new(main_thread);
+        let season_watched = Pill::large("Mark Season as Watched", "checkmark", false, main_thread);
 
         let tagline = label::paragraph(
             theme::FONT_HEADLINE,
@@ -942,6 +988,7 @@ impl Hero {
             genres,
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            season_watched,
             on_event,
         };
         hero.season_bar_hidden(true);
@@ -1007,7 +1054,12 @@ impl Hero {
         let about = NSStackView::stackViewWithViews(&NSArray::from_slice(&about), main_thread);
         about.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let season: [&NSView; 3] = [&self.seasons.tabs, &self.seasons.menu, &self.season_size];
+        let season: [&NSView; 4] = [
+            &self.seasons.tabs,
+            &self.seasons.menu,
+            &self.season_size,
+            &self.season_watched.button,
+        ];
         let season = NSStackView::stackViewWithViews(&NSArray::from_slice(&season), main_thread);
         season.setSpacing(theme::SPACE_M);
         season.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -1121,6 +1173,7 @@ impl Hero {
     fn season_bar_hidden(&self, hidden: bool) {
         self.seasons.set_hidden(hidden);
         self.season_size.setHidden(hidden);
+        self.season_watched.button.setHidden(hidden);
     }
 
     /// Fills the header with `item`, and with `version` of it where it
