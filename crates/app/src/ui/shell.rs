@@ -402,6 +402,7 @@ impl Shell {
                 let controller = view_controller(self.main_thread);
                 controller.setView(screen.view());
                 self.set_window_content(&controller);
+                screen.focus();
                 *self.playing.borrow_mut() = Some(screen);
             }
             Err(error) => self.show_message(&with_causes(&error)),

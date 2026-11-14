@@ -11,8 +11,8 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSFont, NSFontWeightRegular, NSGlassEffectView, NSImage, NSSlider,
-    NSStackView, NSTextField, NSView,
+    NSAnimatablePropertyContainer, NSBezelStyle, NSButton, NSCursor, NSFont, NSFontWeightRegular,
+    NSGlassEffectView, NSImage, NSSlider, NSStackView, NSTextField, NSView,
 };
 use objc2_foundation::{
     NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSString, NSTimer, NSUUID, ns_string,
@@ -22,25 +22,43 @@ use plex::MediaServer;
 use plex::model::{Item, RatingKey};
 use plex::playback::{self, PlaybackState};
 
+use super::input::{InputView, Key};
 use super::layout;
 use super::theme;
 use crate::background::Background;
 use crate::error::{Error, Result, with_causes};
 use crate::video_layer::VideoLayer;
 
-/// How often the controls catch up with the player.
+/// How often the screen catches up with the player.
 const TICK: Duration = Duration::from_secs(1);
 
 /// Plex asks to hear from a running playback every 10 seconds.
 const TICKS_PER_REPORT: u32 = 10;
 
+/// The controls go away after this many ticks without input.
+const TICKS_UNTIL_HIDDEN: u32 = 3;
+
+/// How far the arrow keys jump.
+const SKIP: Duration = Duration::from_secs(10);
+
+/// The playback rates that `[` and `]` step through.
+const SPEEDS: [f64; 10] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
+const NORMAL_SPEED: usize = 2;
+
 pub struct Ivars {
-    root: Retained<NSView>,
+    root: Retained<InputView>,
     player: Player,
     toggle: Retained<NSButton>,
     scrubber: Retained<NSSlider>,
     elapsed: Retained<NSTextField>,
     remaining: Retained<NSTextField>,
+    speed_readout: Retained<NSTextField>,
+    /// Index into `SPEEDS`.
+    speed: Cell<usize>,
+    /// The views that sit on top of the video and hide when idle.
+    controls: RefCell<Vec<Retained<NSView>>>,
+    controls_shown: Cell<bool>,
+    ticks_idle: Cell<u32>,
     /// Running from open to close. Its absence means the screen is closed.
     timer: RefCell<Option<Retained<NSTimer>>>,
     ticks: Cell<u32>,
@@ -82,11 +100,23 @@ define_class!(
 
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&AnyObject>) {
-            self.or_log(self.refresh());
-            let ticks = self.ivars().ticks.get() + 1;
-            self.ivars().ticks.set(ticks);
+            let ivars = self.ivars();
+            let ticks = ivars.ticks.get() + 1;
+            ivars.ticks.set(ticks);
             if ticks.is_multiple_of(TICKS_PER_REPORT) {
                 self.report_current_state();
+            }
+
+            if !ivars.controls_shown.get() {
+                // Nothing on screen needs the player's state.
+                return;
+            }
+            self.or_log(self.refresh());
+            let idle = ivars.ticks_idle.get() + 1;
+            ivars.ticks_idle.set(idle);
+            // A paused picture keeps its controls.
+            if idle >= TICKS_UNTIL_HIDDEN && ivars.player.is_paused().is_ok_and(|paused| !paused) {
+                self.show_controls(false);
             }
         }
     }
@@ -114,7 +144,7 @@ impl PlayerScreen {
 
         let player = Player::new()?;
         player.set_muted(muted)?;
-        let root = NSView::new(main_thread);
+        let root = InputView::new(main_thread);
         let video = NSView::new(main_thread);
         let layer = VideoLayer::new(&player, main_thread)?;
         video.setLayer(Some(&layer));
@@ -126,8 +156,13 @@ impl PlayerScreen {
             player,
             toggle: NSButton::new(main_thread),
             scrubber: NSSlider::new(main_thread),
-            elapsed: time_label(main_thread),
-            remaining: time_label(main_thread),
+            elapsed: readout(main_thread),
+            remaining: readout(main_thread),
+            speed_readout: readout(main_thread),
+            speed: Cell::new(NORMAL_SPEED),
+            controls: RefCell::new(Vec::new()),
+            controls_shown: Cell::new(true),
+            ticks_idle: Cell::new(0),
             timer: RefCell::new(None),
             ticks: Cell::new(0),
             background,
@@ -139,6 +174,7 @@ impl PlayerScreen {
         // SAFETY: `init` is NSObject's designated initializer.
         let screen: Retained<Self> = unsafe { msg_send![super(this), init] };
         screen.build_controls(main_thread);
+        screen.listen();
 
         // SAFETY: `tick:` is defined above. The timer retains the screen
         // until `close` invalidates it.
@@ -162,6 +198,15 @@ impl PlayerScreen {
         &self.ivars().root
     }
 
+    /// Directs the keyboard at the player. Call once the view is in a
+    /// window.
+    pub fn focus(&self) {
+        let root = &self.ivars().root;
+        if let Some(window) = root.window() {
+            window.makeFirstResponder(Some(root));
+        }
+    }
+
     /// Stops playback and gives the screen up. Safe to call more than once.
     pub fn close(&self) {
         let Some(timer) = self.ivars().timer.borrow_mut().take() else {
@@ -170,6 +215,7 @@ impl PlayerScreen {
         timer.invalidate();
         // `on_close` may drop the last other reference to this screen.
         let _alive = self.retain();
+        NSCursor::setHiddenUntilMouseMoves(false);
         self.report(PlaybackState::Stopped);
         self.or_log(self.ivars().player.quit());
         (self.ivars().on_close)();
@@ -187,12 +233,18 @@ impl PlayerScreen {
         }
         ivars.toggle.setBordered(false);
         ivars.toggle.setImage(symbol("pause.fill").as_deref());
+        // The keyboard belongs to the screen, not to whichever control was
+        // clicked last.
+        ivars.toggle.setRefusesFirstResponder(true);
+        ivars.scrubber.setRefusesFirstResponder(true);
+        self.show_speed();
 
-        let bar: [&NSView; 4] = [
+        let bar: [&NSView; 5] = [
             &ivars.toggle,
             &ivars.elapsed,
             &ivars.scrubber,
             &ivars.remaining,
+            &ivars.speed_readout,
         ];
         let bar = NSStackView::stackViewWithViews(&NSArray::from_slice(&bar), main_thread);
         bar.setSpacing(theme::CONTROL_SPACING);
@@ -217,7 +269,95 @@ impl PlayerScreen {
         close.setBezelStyle(NSBezelStyle::Glass);
         close.setImage(symbol("chevron.left").as_deref());
         close.setTitle(ns_string!(""));
+        close.setRefusesFirstResponder(true);
         layout::dock_top_leading(&ivars.root, &close, theme::PAGE_MARGIN);
+
+        *ivars.controls.borrow_mut() = vec![
+            Retained::into_super(glass),
+            Retained::into_super(Retained::into_super(close)),
+        ];
+    }
+
+    /// Connects the keyboard and the mouse to the screen.
+    fn listen(&self) {
+        let (keys, mouse) = (Weak::new(self), Weak::new(self));
+        self.ivars().root.listen(
+            move |key| keys.load().is_some_and(|screen| screen.press(key)),
+            move || {
+                if let Some(screen) = mouse.load() {
+                    screen.show_controls(true);
+                }
+            },
+        );
+    }
+
+    /// Acts on a key. Returns whether the key means anything here.
+    fn press(&self, key: Key) -> bool {
+        let result = match key {
+            Key::Space => self.toggle_pause(),
+            Key::Left => self.skip(|position| position.saturating_sub(SKIP)),
+            Key::Right => self.skip(|position| position + SKIP),
+            Key::Character('[') => self.step_speed(|speed| speed.saturating_sub(1)),
+            Key::Character(']') => self.step_speed(|speed| (speed + 1).min(SPEEDS.len() - 1)),
+            Key::Character('f') => {
+                if let Some(window) = self.ivars().root.window() {
+                    window.toggleFullScreen(None);
+                }
+                Ok(())
+            }
+            Key::Escape => {
+                self.close();
+                return true;
+            }
+            Key::Character(_) => return false,
+        };
+        self.or_log(result);
+        self.show_controls(true);
+        true
+    }
+
+    fn skip(&self, to: impl FnOnce(Duration) -> Duration) -> player::Result<()> {
+        let player = &self.ivars().player;
+        match player.position()? {
+            Some(position) => player.seek(to(position)),
+            None => Ok(()),
+        }
+    }
+
+    fn step_speed(&self, to: impl FnOnce(usize) -> usize) -> player::Result<()> {
+        let speed = to(self.ivars().speed.get());
+        self.ivars().player.set_speed(SPEEDS[speed])?;
+        self.ivars().speed.set(speed);
+        self.show_speed();
+        Ok(())
+    }
+
+    fn show_speed(&self) {
+        let speed = SPEEDS[self.ivars().speed.get()];
+        self.ivars()
+            .speed_readout
+            .setStringValue(&NSString::from_str(&format!("{speed}×")));
+    }
+
+    /// Fades the controls in or out. Showing them also restarts the wait
+    /// before they hide again.
+    fn show_controls(&self, shown: bool) {
+        let ivars = self.ivars();
+        if shown {
+            ivars.ticks_idle.set(0);
+        }
+        if ivars.controls_shown.replace(shown) == shown {
+            return;
+        }
+        for control in ivars.controls.borrow().iter() {
+            control
+                .animator()
+                .setAlphaValue(if shown { 1.0 } else { 0.0 });
+        }
+        NSCursor::setHiddenUntilMouseMoves(!shown);
+        if shown {
+            self.or_log(self.refresh());
+        }
     }
 
     /// Watches the player from a thread of its own and brings what happens
@@ -358,7 +498,8 @@ pub fn clock(time: Duration) -> String {
     }
 }
 
-fn time_label(main_thread: MainThreadMarker) -> Retained<NSTextField> {
+/// A label for a number that changes while it is on screen.
+fn readout(main_thread: MainThreadMarker) -> Retained<NSTextField> {
     let label = NSTextField::labelWithString(ns_string!("0:00"), main_thread);
     // SAFETY: the weight is a constant that AppKit provides.
     let regular = unsafe { NSFontWeightRegular };
