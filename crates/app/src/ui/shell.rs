@@ -583,6 +583,7 @@ impl Shell {
                 self.play_episode_after(screen.item(), purpose);
             }
             Outcome::Finished => {}
+            Outcome::Previous => self.play_episode_before(screen.item(), purpose),
             Outcome::Failed(reason) => {
                 let title = &screen.item().title;
                 self.show_message(&format!("{title} could not be played: {reason}"));
@@ -623,6 +624,33 @@ impl Shell {
                 let next = later.min_by_key(|episode| episode.index);
                 if let Some(next) = next {
                     shell.play(next, purpose);
+                }
+            }
+            Err(error) => shell.show_message(&with_causes(&error)),
+        });
+    }
+
+    /// Plays the episode that comes before `episode` in its season, if
+    /// there is one.
+    fn play_episode_before(self: &Rc<Self>, episode: &Item, purpose: Purpose) {
+        let (Some(session), Some(season), Some(number)) =
+            (self.session(), episode.parent_rating_key.clone(), episode.index)
+        else {
+            return;
+        };
+        let server = session.server.clone();
+        let load = async move { server.children(&season).await };
+        let shell = Rc::clone(self);
+        self.background.run(self.main_thread, load, move |episodes| match episodes {
+            Ok(episodes) => {
+                // The highest number below this one, for the reasons given
+                // in `play_episode_after`. An episode with no number sorts
+                // as `None` and is not one of them.
+                let earlier = episodes
+                    .iter()
+                    .filter(|episode| episode.index.is_some_and(|index| index < number));
+                if let Some(previous) = earlier.max_by_key(|episode| episode.index) {
+                    shell.play(previous, purpose);
                 }
             }
             Err(error) => shell.show_message(&with_causes(&error)),

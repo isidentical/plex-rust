@@ -45,6 +45,7 @@ open target/plex-rust.app
 | C | Next subtitle track, then off |
 | Return | Skip the intro or credits |
 | N | Next episode |
+| P | Previous episode |
 | F, double click | Full screen |
 | Escape | Leave full screen, then the player |
 

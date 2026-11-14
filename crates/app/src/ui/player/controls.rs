@@ -33,7 +33,8 @@ pub struct Controls {
     pub toggle: Retained<Chip>,
     pub rewind: Retained<Chip>,
     pub forward: Retained<Chip>,
-    /// Shown for episodes only.
+    /// Shown for episodes only, as is `next`.
+    pub previous: Retained<Chip>,
     pub next: Retained<Chip>,
     pub mute: Retained<Chip>,
     pub volume: Retained<Slider>,
@@ -72,6 +73,7 @@ impl Controls {
             toggle: button("pause.fill", "Pause or play (Space)"),
             rewind: button("gobackward.10", "Back 10 seconds (Shift \u{2190})"),
             forward: button("goforward.10", "Forward 10 seconds (Shift \u{2192})"),
+            previous: button("backward.end.fill", "Previous episode (P)"),
             next: button("forward.end.fill", "Next episode (N)"),
             mute: button("speaker.wave.2.fill", "Mute (M)"),
             volume: Slider::new(main_thread, FULL_VOLUME),
@@ -94,6 +96,7 @@ impl Controls {
         controls.remaining.setToolTip(tooltip("Time left or full length").as_deref());
         controls.speed.setToolTip(tooltip("Playback speed (S, D, R)").as_deref());
         let is_episode = item.kind == Kind::Episode;
+        controls.previous.setHidden(!is_episode);
         controls.next.setHidden(!is_episode);
 
         controls.place_top(main_thread, root, item);
@@ -150,7 +153,8 @@ impl Controls {
         let spacing = theme::CONTROL_SPACING;
         let sound: [&NSView; 2] = [&self.mute, &self.volume];
         let sound = row(&sound, spacing, main_thread);
-        let transport: [&NSView; 4] = [&self.rewind, &self.toggle, &self.forward, &self.next];
+        let transport: [&NSView; 5] =
+            [&self.previous, &self.rewind, &self.toggle, &self.forward, &self.next];
         let transport = row(&transport, spacing, main_thread);
         let choices: [&NSView; 4] = [&self.speed, &self.audio, &self.subtitles, &self.full_screen];
         let choices = row(&choices, spacing, main_thread);

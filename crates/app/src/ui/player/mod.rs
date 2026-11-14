@@ -91,6 +91,8 @@ pub enum Outcome {
     Failed(String),
     /// It played to the end, or the viewer asked for what comes next.
     Finished,
+    /// The viewer asked for the episode before this one.
+    Previous,
 }
 
 pub struct Ivars {
@@ -359,6 +361,7 @@ impl PlayerScreen {
         self.on_click(&controls.toggle, |screen| screen.or_log(screen.toggle_pause()));
         self.on_click(&controls.rewind, |screen| screen.or_log(screen.jump(-LONG_JUMP)));
         self.on_click(&controls.forward, |screen| screen.or_log(screen.jump(LONG_JUMP)));
+        self.on_click(&controls.previous, |screen| screen.close(Outcome::Previous));
         self.on_click(&controls.next, |screen| screen.close(Outcome::Finished));
         self.on_click(&controls.mute, |screen| screen.or_log(screen.toggle_mute()));
         self.on_click(&controls.remaining, |screen| {
@@ -466,6 +469,10 @@ impl PlayerScreen {
             }
             Key::Character('n') if is_episode => {
                 self.close(Outcome::Finished);
+                return true;
+            }
+            Key::Character('p') if is_episode => {
+                self.close(Outcome::Previous);
                 return true;
             }
             Key::Escape => {
