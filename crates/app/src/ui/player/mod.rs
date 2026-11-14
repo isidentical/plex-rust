@@ -760,7 +760,8 @@ impl PlayerScreen {
         let time = Duration::from_secs_f64(place.value.max(0.0));
         let chapters = ivars.chapters.borrow();
         let chapter = chapters.iter().rev().find(|chapter| chapter.start <= time);
-        let text = match chapter.and_then(|chapter| chapter.title.as_deref()) {
+        let title = chapter.and_then(|chapter| chapter.title.as_deref());
+        let text = match title.filter(|title| !is_timestamp(title)) {
             Some(title) => format!("{}  {title}", clock(time)),
             None => clock(time),
         };
@@ -1304,6 +1305,13 @@ fn log_unsaved(sent: plex::Result<()>) {
     if let Err(error) = sent {
         eprintln!("plex-rust: progress was not saved: {}", with_causes(&error));
     }
+}
+
+/// Whether a chapter's title is only the time it starts at, such as
+/// `00:17:47.316`. Some files name their chapters so, and next to the time
+/// under the pointer that is the same thing said twice.
+fn is_timestamp(title: &str) -> bool {
+    title.chars().all(|character| character.is_ascii_digit() || matches!(character, ':' | '.'))
 }
 
 /// `1:02:03`, or `2:03` under an hour.
