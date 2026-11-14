@@ -475,17 +475,23 @@ impl Shell {
                     }
                     // Showing the same server and libraries again would
                     // reload the screen the viewer is already looking at.
-                    let known = shell.session().is_some_and(|session| {
-                        session.server.address() == server.address() && session.sections == sections
-                    });
+                    // Unless that is a notice, as after signing in again.
+                    let known = shell.notice.borrow().is_none()
+                        && shell.session().is_some_and(|session| {
+                            session.server.address() == server.address()
+                                && session.sections == sections
+                        });
                     if !known {
                         shell.connected(server, sections, subject.as_ref());
                     }
                 }
-                // The stored token no longer works, and trying it again
-                // would not make it.
-                Err(Error::Plex(error)) if error.is_unauthorized() => shell.show_sign_in(),
-                Err(error) if shell.session().is_some() => {
+                // What the last launch left is on screen and better than
+                // an error, unless the error is that the sign-in is over:
+                // then nothing on screen can be played or brought up to
+                // date until the viewer signs in again.
+                Err(error)
+                    if shell.session().is_some() && Failure::of(&error) != Failure::SignedOut =>
+                {
                     eprintln!("plex-rust: {}", with_causes(&error));
                 }
                 Err(error) => shell.show_failure(UNREACHABLE, &error, Self::restart),
@@ -1161,8 +1167,11 @@ impl Shell {
                         *shown.borrow_mut() = Some(answer);
                     }
                     // What is on screen from last time is better than an
-                    // error.
-                    Err(error) if has_shown || unanswered == Unanswered::GoesWithout => {
+                    // error, but for the one that says the sign-in is over.
+                    Err(error)
+                        if (has_shown || unanswered == Unanswered::GoesWithout)
+                            && !error.is_unauthorized() =>
+                    {
                         eprintln!("plex-rust: {}", with_causes(&error));
                     }
                     Err(error) => failed.fail(moves, &error),
