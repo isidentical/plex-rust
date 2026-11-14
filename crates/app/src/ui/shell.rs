@@ -3,7 +3,7 @@
 
 mod walk;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -1122,12 +1122,18 @@ impl Shell {
         on_total: impl Fn(u32) + 'static,
     ) -> (Screen, Rc<dyn Fn()>) {
         let outlines = vec![Outline { title: "", style: Style::Grid(Shape::Poster), count: 24 }];
-        let (more, more_of) = (Rc::downgrade(self), source.clone());
+        // The grid asks for its next page through a closure it is made
+        // with, which hears of the grid once there is one.
+        let asker = Rc::new(OnceCell::new());
+        let (more, more_of, asking) = (Rc::downgrade(self), source.clone(), Rc::clone(&asker));
         let posters = self.posters(session, header, outlines, nothing, move || {
-            if let Some(shell) = more.upgrade() {
-                shell.load_page(&route, more_of.clone());
+            let grid = asking.get().and_then(objc2::rc::Weak::<Posters>::load);
+            if let (Some(shell), Some(grid)) = (more.upgrade(), grid) {
+                shell.load_page(&route, &grid, more_of.clone());
             }
         });
+        // Cannot fail: the cell was created empty a few lines up.
+        let _ = asker.set(objc2::rc::Weak::new(&*posters));
 
         let (shown, asked, title) = (posters.clone(), posters.clone(), title.to_owned());
         let reload = self.loader(
@@ -1146,14 +1152,17 @@ impl Shell {
         (Screen::Posters(posters), reload)
     }
 
-    /// Fetches the next page of `source` and adds it to the grid, if the
-    /// grid for `route` is still the one on screen.
-    fn load_page(self: &Rc<Self>, route: &Route, source: Paged) {
-        let on_screen = self.current(|entry| (entry.route == *route).then(|| entry.screen.clone()));
-        let (Some(session), Some(Some(Screen::Posters(posters)))) = (self.session(), on_screen)
-        else {
-            return;
+    /// Fetches the next page of `source` and adds it to `grid`, which
+    /// asked for it, if `route` is still the place on screen.
+    fn load_page(self: &Rc<Self>, route: &Route, grid: &Posters, source: Paged) {
+        let on_screen = self.current(|entry| entry.route == *route) == Some(true);
+        let (Some(session), true) = (self.session(), on_screen) else {
+            // The grid waits for what it asked for and asks for nothing
+            // more until it hears. Told that the page is not coming, it
+            // asks again when its last cards are next drawn.
+            return grid.more_failed();
         };
+        let posters = grid.retain();
         let start = posters.len();
         let from = u32::try_from(start).unwrap_or(u32::MAX);
         let load = source.page(session.server.clone(), from, PAGE_SIZE);
