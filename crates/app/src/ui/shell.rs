@@ -18,7 +18,7 @@ use plex::model::{Item, Kind, RatingKey, Section};
 
 use super::detail::Detail;
 use super::layout;
-use super::player::PlayerScreen;
+use super::player::{PlayerScreen, Purpose};
 use super::poster::Shape;
 use super::posters::{Arrangement, Posters, Shelf};
 use super::sidebar::{Destination, Sidebar};
@@ -82,7 +82,7 @@ pub enum Subject {
     Library(usize),
     /// The detail page of the item with this rating key.
     Item(String),
-    /// The player, playing the item with this rating key, muted.
+    /// The player, playing the item with this rating key as a check.
     Play(String),
 }
 
@@ -208,7 +208,9 @@ impl Shell {
         match subject {
             Some(Subject::Item(key)) => self.fetch(RatingKey::new(key.as_str()), Self::open),
             Some(Subject::Play(key)) => {
-                self.fetch(RatingKey::new(key.as_str()), |shell, item| shell.play(item, true));
+                self.fetch(RatingKey::new(key.as_str()), |shell, item| {
+                    shell.play(item, Purpose::Check)
+                });
             }
             _ => {}
         }
@@ -308,7 +310,7 @@ impl Shell {
             },
             move |item| {
                 if let Some(shell) = played.upgrade() {
-                    shell.play(item, false);
+                    shell.play(item, Purpose::Watching);
                 }
             },
             move || {
@@ -348,7 +350,7 @@ impl Shell {
     }
 
     /// Replaces the whole window content with the player, playing `item`.
-    fn play(self: &Rc<Self>, item: &Item, muted: bool) {
+    fn play(self: &Rc<Self>, item: &Item, purpose: Purpose) {
         let Some(session) = self.session.get() else {
             return;
         };
@@ -358,7 +360,7 @@ impl Shell {
             Rc::clone(&self.background),
             session.server.clone(),
             item,
-            muted,
+            purpose,
             move || {
                 if let Some(shell) = closed.upgrade() {
                     shell.set_window_content(&shell.split);

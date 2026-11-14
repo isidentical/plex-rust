@@ -37,9 +37,10 @@ impl MediaServer {
         &self.address
     }
 
-    /// Fetches `path`, which starts with `/`, and returns the body as text.
-    pub async fn get_text(&self, path: &str) -> Result<String> {
-        let response = self.request(Method::GET, path).send().await?;
+    /// Sends a request for `path`, which starts with `/`, and returns the
+    /// body as text. For looking at what the server says, unparsed.
+    pub async fn text(&self, method: Method, path: &str) -> Result<String> {
+        let response = self.request(method, path).send().await?;
         Ok(response.error_for_status()?.text().await?)
     }
 

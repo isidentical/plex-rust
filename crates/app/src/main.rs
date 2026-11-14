@@ -27,7 +27,7 @@ usage: reel
        reel snapshot play <rating-key> <png-path>
        reel login
        reel servers [<address>]
-       reel api <path>
+       reel api [--post] <path>
        reel play <file-or-url> [--unattended <seconds>]
        reel play item:<rating-key> [--unattended <seconds>]";
 
@@ -61,7 +61,8 @@ fn run(args: &[&str]) -> Result<()> {
         ["login"] => account::login(),
         ["servers"] => servers(None),
         ["servers", address] => servers(Some(address)),
-        ["api", path] => api(path),
+        ["api", path] => api(plex::Method::GET, path),
+        ["api", "--post", path] => api(plex::Method::POST, path),
         ["play", what] => play(what, None),
         ["play", what, "--unattended", seconds] => {
             let seconds = seconds.parse().map_err(|_| Error::Usage(USAGE))?;
@@ -96,8 +97,10 @@ fn play(what: &str, unattended: Option<Duration>) -> Result<()> {
         headers: file.headers,
         start: item.view_offset.map(Into::into).unwrap_or_default(),
     };
-    let progress = Progress::new(runtime, server, item.rating_key);
-    Ok(play::run(&source, Some(progress), unattended)?)
+    // An unattended run is a check. It must not move anyone's place in a
+    // film, so it tells the server nothing.
+    let progress = unattended.is_none().then(|| Progress::new(runtime, server, item.rating_key));
+    Ok(play::run(&source, progress, unattended)?)
 }
 
 /// Lists the account's servers and the address each one answers at.
@@ -115,14 +118,15 @@ fn servers(manual: Option<&str>) -> Result<()> {
     })
 }
 
-/// Prints the first server's raw response for `path`, such as `/hubs`.
-fn api(path: &str) -> Result<()> {
+/// Prints the first server's raw response to a request for `path`, such
+/// as `/hubs`.
+fn api(method: plex::Method, path: &str) -> Result<()> {
     let (client, token) = account::signed_in()?;
     runtime()?.block_on(async {
         let servers = plex::discovery::servers(&client, &token).await?;
         let server = servers.first().ok_or(Error::NoServer)?;
         let server = plex::MediaServer::connect(&client, server, None).await?;
-        println!("{}", server.get_text(path).await?);
+        println!("{}", server.text(method, path).await?);
         Ok(())
     })
 }

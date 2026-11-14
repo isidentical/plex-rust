@@ -45,6 +45,16 @@ const SKIP: Duration = Duration::from_secs(10);
 const SPEEDS: [f64; 10] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 const NORMAL_SPEED: usize = 2;
 
+/// Why the player is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Someone is watching.
+    Watching,
+    /// An unattended check. It is silent and tells the server nothing, so
+    /// that checking the app never moves anyone's place in a film.
+    Check,
+}
+
 pub struct Ivars {
     root: Retained<InputView>,
     player: Player,
@@ -67,6 +77,7 @@ pub struct Ivars {
     item: RatingKey,
     /// Lets the server tell this playback from another of the same item.
     session: String,
+    purpose: Purpose,
     on_close: Box<dyn Fn()>,
 }
 
@@ -130,7 +141,7 @@ impl PlayerScreen {
         background: Rc<Background>,
         server: MediaServer,
         item: &Item,
-        muted: bool,
+        purpose: Purpose,
         on_close: impl Fn() + 'static,
     ) -> Result<Retained<Self>> {
         let part = item.media.first().and_then(|media| media.parts.first());
@@ -143,7 +154,7 @@ impl PlayerScreen {
         };
 
         let player = Player::new()?;
-        player.set_muted(muted)?;
+        player.set_muted(purpose == Purpose::Check)?;
         let root = InputView::new(main_thread);
         let video = NSView::new(main_thread);
         let layer = VideoLayer::new(&player, main_thread)?;
@@ -169,6 +180,7 @@ impl PlayerScreen {
             server,
             item: item.rating_key.clone(),
             session: NSUUID::UUID().UUIDString().to_string(),
+            purpose,
             on_close: Box::new(on_close),
         });
         // SAFETY: `init` is NSObject's designated initializer.
@@ -427,6 +439,9 @@ impl PlayerScreen {
     /// Tells the server where this playback is, without waiting for it.
     fn report(&self, state: PlaybackState) {
         let ivars = self.ivars();
+        if ivars.purpose == Purpose::Check {
+            return;
+        }
         let times = ivars.player.duration().and_then(|duration| {
             let Some(duration) = duration else {
                 return Ok(None);
