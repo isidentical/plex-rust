@@ -348,6 +348,7 @@ impl Shell {
                         shell.search(query);
                     }
                 },
+                Self::command(shell, Self::focus_content),
             );
             toolbar.install(&window);
 
@@ -1017,6 +1018,13 @@ impl Shell {
 
     fn focus_search(self: &Rc<Self>) {
         self.toolbar.focus_search();
+    }
+
+    /// Gives the keyboard to the screen, from the search field.
+    fn focus_content(self: &Rc<Self>) {
+        if let Some(screen) = self.current(|entry| entry.screen.clone()) {
+            screen.focus();
+        }
     }
 
     /// A new, empty collection that reports what the viewer does in it.

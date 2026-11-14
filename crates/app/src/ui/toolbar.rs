@@ -1,13 +1,14 @@
 //! The window's toolbar: back and forward on the left, search on the right.
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSSearchField, NSSearchToolbarItem, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
-    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarToggleSidebarItemIdentifier,
-    NSWindow, NSWindowToolbarStyle,
+    NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
+    NSSearchToolbarItem, NSTextFieldDelegate, NSTextView, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier,
+    NSToolbarToggleSidebarItemIdentifier, NSWindow, NSWindowToolbarStyle,
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, ns_string};
 
@@ -24,6 +25,7 @@ pub struct Ivars {
     back: Retained<NSToolbarItem>,
     forward: Retained<NSToolbarItem>,
     search: Retained<NSSearchToolbarItem>,
+    on_leave_search: Box<dyn Fn()>,
     /// Kept because toolbar items do not retain their targets.
     _targets: [Retained<Callback>; 3],
 }
@@ -73,16 +75,36 @@ define_class!(
             identifiers()
         }
     }
+
+    unsafe impl NSControlTextEditingDelegate for Toolbar {
+        /// The Down arrow steps out of the search field into what it found,
+        /// as it does from the search field of Finder or Music. A field
+        /// of one line has no other use for the key.
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, _control: &NSControl, _editor: &NSTextView, command: Sel) -> bool {
+            let leaves = command == sel!(moveDown:);
+            if leaves {
+                (self.ivars().on_leave_search)();
+            }
+            leaves
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for Toolbar {}
+
+    unsafe impl NSSearchFieldDelegate for Toolbar {}
 );
 
 impl Toolbar {
     /// `on_search` is called with the text of the search field as the
-    /// viewer types, after each short pause.
+    /// viewer types, after each short pause. `on_leave_search` is called
+    /// when the viewer steps out of the field towards the content.
     pub fn new(
         main_thread: MainThreadMarker,
         on_back: impl Fn() + 'static,
         on_forward: impl Fn() + 'static,
         on_search: impl Fn(&str) + 'static,
+        on_leave_search: impl Fn() + 'static,
     ) -> Retained<Self> {
         let went_back = Callback::new(main_thread, move |_| on_back());
         let went_forward = Callback::new(main_thread, move |_| on_forward());
@@ -116,6 +138,7 @@ impl Toolbar {
             back,
             forward,
             search,
+            on_leave_search: Box::new(on_leave_search),
             _targets: [went_back, went_forward, searched],
         });
         // SAFETY: `init` is NSObject's designated initializer.
@@ -123,6 +146,11 @@ impl Toolbar {
         // The toolbar does not retain its delegate. Whoever owns `Toolbar`
         // keeps it for as long as the window has the toolbar.
         this.ivars().toolbar.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+        // SAFETY: the field holds its delegate weakly, and `this` implements
+        // the protocol.
+        unsafe {
+            this.ivars().search.searchField().setDelegate(Some(ProtocolObject::from_ref(&*this)));
+        }
         this
     }
 
