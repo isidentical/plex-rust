@@ -105,19 +105,23 @@ impl Images {
         let key = NSString::from_str(&name);
         let (server, disk, path) = (self.server.clone(), self.disk.clone(), path.to_owned());
         let fetch = async move {
-            let jpeg = match disk.read(&name).await {
-                Some(jpeg) => jpeg,
-                None => {
-                    let jpeg = server.image(&path, width, height).await?;
-                    // A failed write only costs a download next time.
-                    let _ = disk.write(&name, jpeg.clone()).await;
-                    jpeg
-                }
-            };
-            // Decoding a poster takes a few milliseconds of processor time,
-            // which must not hold up the threads that serve the network.
-            let decoded = tokio::task::spawn_blocking(move || decode(&jpeg, width.max(height)));
-            decoded.await.map_err(|_| Error::NotAnImage)?
+            let longest_side = width.max(height);
+            if let Some(kept) = disk.read(&name).await
+                && let (Ok(image), _) = decoded(kept, longest_side).await
+            {
+                return Ok(image);
+            }
+            // Not kept, or kept as something that is no picture: a file
+            // damaged on disk would otherwise stand in for this picture for
+            // good. The download takes its place.
+            let (image, jpeg) =
+                decoded(server.image(&path, width, height).await?, longest_side).await;
+            let image = image?;
+            // Kept only now that it has decoded, and without holding the
+            // picture up for the disk. A failed write only costs a download
+            // next time.
+            tokio::spawn(async move { disk.write(&name, jpeg).await });
+            Ok::<_, Error>(image)
         };
 
         let images = Rc::clone(self);
@@ -147,6 +151,14 @@ fn name(path: &str, width: u32, height: u32) -> String {
     format!("{path} {width}x{height}")
 }
 
+/// Decodes `jpeg` and hands it back with the result. A poster takes a few
+/// milliseconds of processor time, which must not hold up the threads that
+/// serve the network.
+async fn decoded(jpeg: Vec<u8>, longest_side: u32) -> (Result<CFRetained<CGImage>>, Vec<u8>) {
+    let decode = tokio::task::spawn_blocking(move || (decode(&jpeg, longest_side), jpeg));
+    decode.await.unwrap_or_else(|_| (Err(Error::NotAnImage), Vec::new()))
+}
+
 /// Turns a JPEG into pixels, no larger than `longest_side` on its longer
 /// side. The pixels are produced here and now, not when first drawn.
 fn decode(jpeg: &[u8], longest_side: u32) -> Result<CFRetained<CGImage>> {
@@ -171,4 +183,19 @@ fn decode(jpeg: &[u8], longest_side: u32) -> Result<CFRetained<CGImage>> {
         source.thumbnail_at_index(0, Some(options.as_opaque()))
     };
     image.ok_or(Error::NotAnImage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A kept file is replaced only if it fails to decode, so what is not
+    /// a picture must fail and not come out as an empty one.
+    #[test]
+    fn bytes_that_are_no_picture_do_not_decode() {
+        assert!(matches!(decode(b"not a picture", 300), Err(Error::NotAnImage)));
+        assert!(matches!(decode(b"", 300), Err(Error::NotAnImage)));
+        // The start of a JPEG and nothing after it.
+        assert!(matches!(decode(&[0xff, 0xd8, 0xff, 0xe0], 300), Err(Error::NotAnImage)));
+    }
 }
