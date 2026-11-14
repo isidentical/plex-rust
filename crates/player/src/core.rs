@@ -513,8 +513,18 @@ impl Player {
     /// Text subtitles are laid out in the window whatever the picture
     /// does, as long as they may use its margins, which is mpv's default
     /// for plain text. `subtitles_in_window` asks the same of subtitles
-    /// that carry their own styling. Subtitles that are images belong to
-    /// the picture and are enlarged with it.
+    /// that carry their own styling, and of subtitles that are images.
+    ///
+    /// Images are made for the whole frame of the film, and mpv lays that
+    /// frame over the picture, so they grew with it and left the window
+    /// with the part of it they were on. Asked to, mpv lays the frame over
+    /// the window instead (`get_bitmaps` in mpv's sub/sd_lavc.c). Blu-ray
+    /// subtitles keep their shape there, at the scale that fits the
+    /// frame's height to the window's: where they were before the picture
+    /// was enlarged, unless the window is taller than the film, in which
+    /// case a little larger and lower. DVD and DVB subtitles are given the
+    /// window's shape, as they are otherwise given the picture's
+    /// (`osd_rescale_bitmaps` in sub/osd.c).
     pub fn place_picture(
         &self,
         doublings: f64,
@@ -524,8 +534,9 @@ impl Player {
         self.set_string("video-zoom", &doublings.to_string())?;
         self.set_string("video-pan-x", &right.to_string())?;
         self.set_string("video-pan-y", &down.to_string())?;
-        let margins = if subtitles_in_window { "yes" } else { "no" };
-        self.set_string("sub-ass-force-margins", margins)
+        let in_window = if subtitles_in_window { "yes" } else { "no" };
+        self.set_string("sub-ass-force-margins", in_window)?;
+        self.set_string("stretch-image-subs-to-screen", in_window)
     }
 
     /// The volume, where 100 is the file's own level.
