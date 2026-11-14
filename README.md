@@ -23,12 +23,27 @@ scripts/bundle.sh          # builds target/plex-rust.app
 
 ## Use
 
-Sign in once from a terminal, then open the app.
+Open the app. The first time, it asks you to sign in and opens plex.tv in
+your browser for it.
 
 ```sh
-target/plex-rust.app/Contents/MacOS/plex-rust login
 open target/plex-rust.app
 ```
+
+## Keys while browsing
+
+| Key | Action |
+| --- | --- |
+| Arrows | Move from item to item |
+| Return, Space | Open the item the keyboard is on |
+| Return on an item's page | Play or resume it |
+| Command-[ and Command-] | Back and forward |
+| Command-1, Command-2, ... | Home and the libraries |
+| Command-F | Search |
+| Command-R | Load the page again |
+| Shift-Command-U | Mark as watched or unwatched |
+
+A secondary click on an item offers to play it or mark it.
 
 ## Keys in the player
 
