@@ -16,6 +16,7 @@ pub mod model;
 pub mod playback;
 pub mod queue;
 mod server;
+pub mod subtitles;
 
 pub use crate::cache::Cache;
 pub use crate::client::{Client, Identity, Token};

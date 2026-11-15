@@ -45,6 +45,11 @@ pub enum Error {
     #[error("the server holds no file for {0}")]
     NoFile(String),
 
+    /// The server took subtitles to add and did not list them among the
+    /// item's streams in the time it was given.
+    #[error("the server did not add the subtitles {0:?}")]
+    NotAdded(String),
+
     /// HTTP has no way to send a control character in a header.
     #[error("{0:?} cannot be sent to Plex: it has a control character in it")]
     Header(String),
