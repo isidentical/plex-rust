@@ -83,7 +83,7 @@ pub fn set(
         }
         // The screen sets these itself: they are the player's doing, or
         // go through what the screen makes of fingers.
-        Scene::Stalled | Scene::Failed | Scene::Pinch => {}
+        Scene::Stalled | Scene::Failed | Scene::Pinch | Scene::SubtitleSearch => {}
         Scene::Small => resize(root, SMALL),
         Scene::Wide => resize(root, WIDE),
         Scene::Marker => {

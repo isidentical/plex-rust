@@ -23,8 +23,9 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{FirstCharacter, Listing, Page, Sort};
-use plex::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section};
+use plex::model::{Colors, Hub, Item, Kind, Part, RatingKey, Role, Section};
 use plex::queue::{self, Queue};
+use plex::subtitles::Candidate;
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
@@ -49,6 +50,7 @@ use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Shuffle,
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::stale::{Reason, Stale};
+use super::subtitle_search::{self, SubtitleSearch};
 use super::theme;
 use super::toast::Toast;
 use super::toolbar::Toolbar;
@@ -160,6 +162,8 @@ struct Shell {
     /// earlier one's time running out does not hide a later one.
     toast: Toast,
     toasts: Cell<u64>,
+    /// Lists subtitles the server finds online, over the current entry.
+    subtitle_search: Rc<SubtitleSearch>,
     /// The sidebar and content area, which the player replaces while open.
     split: Retained<NSSplitViewController>,
     playing: RefCell<Option<Retained<PlayerScreen>>>,
@@ -419,6 +423,8 @@ pub struct Tweaks {
     /// A change the viewer made on the page having failed to reach the
     /// server.
     pub refused: bool,
+    /// On the page of a film or an episode, subtitles searched for.
+    pub subtitles: bool,
 }
 
 /// A request to draw one state of the app into a PNG and exit.
@@ -570,6 +576,8 @@ impl Shell {
             stale.float_in(&pane);
             let toast = Toast::new(main_thread);
             toast.float_in(&pane);
+            let subtitle_search = SubtitleSearch::new(main_thread);
+            subtitle_search.float_in(&pane);
 
             let menu = |act: fn(&Rc<Self>)| {
                 let act = Self::command(shell, act);
@@ -622,6 +630,7 @@ impl Shell {
                 stale,
                 toast,
                 toasts: Cell::new(0),
+                subtitle_search,
                 split,
                 playing: RefCell::new(None),
                 opening_player: Cell::new(false),
@@ -1219,6 +1228,7 @@ impl Shell {
     fn leave(&self) {
         self.moves.set(self.moves.get() + 1);
         self.toast.hide();
+        self.subtitle_search.close();
         for task in self.asked.borrow_mut().drain(..) {
             task.cancel();
         }
@@ -2075,6 +2085,7 @@ impl Shell {
                     };
                     shell.change("The server did not take that choice", Rc::new(choose));
                 }
+                Action::SearchSubtitles { item, part } => shell.search_subtitles(&item, part),
                 Action::OpenShow(episode) => {
                     let season = episode.parent_rating_key.clone();
                     shell.open_show_of(&episode, Opening { season, ..Opening::default() });
@@ -2253,6 +2264,67 @@ impl Shell {
                 }
             }
         });
+    }
+
+    /// Opens the list of subtitles the server finds online for `item`, for
+    /// its file `part`. The ones picked are added, chosen, and shown on
+    /// the page.
+    fn search_subtitles(self: &Rc<Self>, item: &Item, part: Part) {
+        let (searching, key) = (Rc::downgrade(self), item.rating_key.clone());
+        let on_search = move |number: u64, language: &str| {
+            let Some(shell) = searching.upgrade() else {
+                return;
+            };
+            let Some(session) = shell.session() else {
+                return shell.subtitle_search.fail(number, subtitle_search::NO_SERVER);
+            };
+            let (server, key, language) = (session.server, key.clone(), language.to_owned());
+            let search = async move { server.search_subtitles(&key, &language).await };
+            let (answered, asked) = (Rc::clone(&shell), Instant::now());
+            shell.background.run(shell.main_thread, search, move |found| {
+                answered.heard(asked, &found);
+                match found {
+                    Ok(candidates) => answered.subtitle_search.show(number, &candidates),
+                    Err(error) => {
+                        let why = subtitle_search::not_searched(&error);
+                        answered.subtitle_search.fail(number, &why);
+                    }
+                }
+            });
+        };
+        let (picking, key) = (Rc::downgrade(self), item.rating_key.clone());
+        let on_pick = move |candidate: Candidate| {
+            let Some(shell) = picking.upgrade() else {
+                return;
+            };
+            let number = shell.subtitle_search.latest();
+            if shell.read_only.get() {
+                return shell.subtitle_search.fail(number, subtitle_search::READ_ONLY);
+            }
+            let Some(session) = shell.session() else {
+                return shell.subtitle_search.fail(number, subtitle_search::NO_SERVER);
+            };
+            let (server, key, part) = (session.server, key.clone(), part.clone());
+            let add = async move {
+                let stream = server.add_subtitles(&key, &part, &candidate).await?;
+                server.choose_streams(&part, None, Some(Some(stream.id))).await
+            };
+            let (answered, asked) = (Rc::clone(&shell), Instant::now());
+            shell.background.run(shell.main_thread, add, move |added| {
+                answered.heard(asked, &added);
+                match added {
+                    Ok(()) => {
+                        answered.subtitle_search.close();
+                        answered.refresh();
+                    }
+                    Err(error) => {
+                        let why = subtitle_search::not_added(&error);
+                        answered.subtitle_search.fail(number, &why);
+                    }
+                }
+            });
+        };
+        self.subtitle_search.open(&item.title, on_search, on_pick);
     }
 
     /// Says on a line over the screen that `failed`, with a button that
@@ -2516,6 +2588,7 @@ impl Shell {
         if self.playing.borrow().is_some() {
             return;
         }
+        self.subtitle_search.close();
         let session = self.session();
         // A download does without a server that has not answered. Anything
         // else has only the server to come from, answering or not.
@@ -2798,6 +2871,9 @@ impl Shell {
                 }
                 if let (true, Screen::Detail(detail)) = (snapshot.tweaks.download, screen) {
                     detail.press_download();
+                }
+                if let (true, Screen::Detail(detail)) = (snapshot.tweaks.subtitles, screen) {
+                    detail.look_for_subtitles();
                 }
             }
             if let Some(failure) = snapshot.tweaks.fault {

@@ -81,6 +81,8 @@ pub enum Scene {
     Stalled,
     /// Playback ended by a failure.
     Failed,
+    /// The list of subtitles the server finds online, open.
+    SubtitleSearch,
 }
 
 impl Key {
@@ -116,6 +118,7 @@ impl Key {
             ("marker", ..) => Some(Self::Scene(Scene::Marker)),
             ("stall", ..) => Some(Self::Scene(Scene::Stalled)),
             ("fail", ..) => Some(Self::Scene(Scene::Failed)),
+            ("subtitle-search", ..) => Some(Self::Scene(Scene::SubtitleSearch)),
             ("end", ..) => Some(Self::NearEnd),
             ("wait", ..) => Some(Self::Wait),
             (_, Some(character), None) => Some(Self::Character(character)),

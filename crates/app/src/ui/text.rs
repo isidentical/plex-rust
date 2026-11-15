@@ -54,6 +54,19 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
+/// A whole number with its thousands set apart: "590,295".
+pub fn thousands(number: u64) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::new();
+    for (place, digit) in digits.chars().enumerate() {
+        if place > 0 && (digits.len() - place).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// How many hundredths of `whole` `part` is, rounded down, so that only
 /// all of it is 100. All of nothing is there too.
 pub fn percent(part: u64, whole: u64) -> u64 {
@@ -94,6 +107,15 @@ mod tests {
         assert_eq!(size(1_000_000_000), "1.0 GB");
         assert_eq!(size(6_828_818_931), "6.8 GB");
         assert_eq!(size(58_960_000_000), "59.0 GB");
+    }
+
+    #[test]
+    fn thousands_are_set_apart() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1232), "1,232");
+        assert_eq!(thousands(590_295), "590,295");
+        assert_eq!(thousands(1_000_000), "1,000,000");
     }
 
     #[test]

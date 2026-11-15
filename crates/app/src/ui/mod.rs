@@ -28,6 +28,7 @@ pub mod shell;
 mod sidebar;
 mod snapshot;
 mod stale;
+mod subtitle_search;
 mod text;
 mod theme;
 mod toast;

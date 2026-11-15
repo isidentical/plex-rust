@@ -126,6 +126,13 @@ pub const EPISODE_SUMMARY_LINES: isize = 2;
 /// How strongly white is laid over a row under the pointer.
 pub const ROW_HOVER_OPACITY: f64 = 0.06;
 
+/// The panel that lists subtitles found online: its width, the most of
+/// its list shown before it scrolls, and how dark it makes the window
+/// behind it.
+pub const SUBTITLE_SEARCH_WIDTH: f64 = 560.0;
+pub const SUBTITLE_SEARCH_LIST_HEIGHT: f64 = 352.0;
+pub const SUBTITLE_SEARCH_DIM_OPACITY: f64 = 0.4;
+
 // What a card does under the pointer and under a press.
 pub const HOVER_SCALE: f64 = 1.04;
 pub const PRESS_SCALE: f64 = 0.98;

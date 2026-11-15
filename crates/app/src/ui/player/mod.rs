@@ -47,9 +47,10 @@ use objc2_foundation::{
 };
 use player::{Chapter, DolbyVision, EndReason, Event, Player, Sidecar, Track, TrackKind};
 use plex::MediaServer;
-use plex::model::{Item, Kind, Marker, MarkerKind, Part};
+use plex::model::{Item, Kind, Marker, MarkerKind, Part, Stream};
 use plex::playback::{self, PlaybackState};
 use plex::queue::{Neighbours, Queue};
+use plex::subtitles::Candidate;
 
 use self::badge::Notice;
 use self::captions::{Shift, Size};
@@ -70,6 +71,7 @@ use crate::error::{Error, Result, with_causes};
 use crate::images::Images;
 use crate::settings::Settings;
 use crate::source;
+use crate::ui::subtitle_search::{self, SubtitleSearch};
 use crate::video_layer::{self, VideoLayer};
 
 /// How often the screen catches up with the player. Four times a second
@@ -217,6 +219,8 @@ pub struct Ivars {
     chapters: RefCell<Vec<Chapter>>,
     /// The subtitle files to add to the file being opened, once it is.
     sidecars: RefCell<Vec<Sidecar>>,
+    /// Lists subtitles the server finds online, over the picture.
+    subtitle_search: Rc<SubtitleSearch>,
     /// What plays after what: a shuffle given on opening, or the
     /// episodes of the show being played once the server has listed them.
     /// `None` for a film played on its own.
@@ -332,6 +336,8 @@ impl PlayerScreen {
         let material = Material::choose();
         let steps = steps_through(item, queue.as_ref());
         let controls = Controls::new(main_thread, &root, item, steps, material);
+        let subtitle_search = SubtitleSearch::new(main_thread);
+        subtitle_search.float_in(&root);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
@@ -356,6 +362,7 @@ impl PlayerScreen {
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
             sidecars: RefCell::new(Vec::new()),
+            subtitle_search,
             queue: RefCell::new(queue),
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
@@ -1101,6 +1108,15 @@ impl PlayerScreen {
 
     fn act_on(&self, key: Key, press: Press) -> bool {
         self.wake();
+        // Keys are the open list of subtitles' own, which closes on
+        // Escape. They come here only when it has lost the keyboard.
+        let search = &self.ivars().subtitle_search;
+        if search.is_open() {
+            if key == Key::Escape {
+                search.close();
+            }
+            return true;
+        }
         let in_mini = self.ivars().mini.borrow().is_some();
         if in_mini {
             return self.act_in_mini(key, press);
@@ -1214,6 +1230,10 @@ impl PlayerScreen {
             // player sends it.
             Key::Scene(Scene::Stalled) => {
                 self.handle(&Event::Buffering(true));
+                return true;
+            }
+            Key::Scene(Scene::SubtitleSearch) => {
+                self.search_subtitles();
                 return true;
             }
             Key::Scene(Scene::Failed) => {
@@ -1525,6 +1545,7 @@ impl PlayerScreen {
         controls.scrubber.set_marks(Vec::new());
         controls.chapters.setHidden(true);
         self.close_offer();
+        ivars.subtitle_search.close();
         controls.bubble.hide();
         controls.skip.setHidden(true);
         controls.up_next.hide();
@@ -1924,7 +1945,123 @@ impl PlayerScreen {
             };
             self.choice(title, track.selected, move |screen| screen.choose_track(kind, Some(id)))
         }));
+        // Only a server can look for more.
+        let searches = self.ivars().server.is_some() && part(&item).is_some();
+        if kind == TrackKind::Subtitles && searches {
+            let search = SEARCH_SUBTITLES.to_owned();
+            choices.push(self.choice(search, false, |screen| {
+                screen.search_subtitles();
+                Ok(())
+            }));
+        }
         Ok(choices)
+    }
+
+    /// Lists the subtitles the server finds online for the file playing.
+    /// The ones picked are added to it, shown, and remembered.
+    fn search_subtitles(&self) {
+        let (ivars, item) = (self.ivars(), self.item());
+        let (Some(server), Some(part)) = (ivars.server.clone(), part(&item).cloned()) else {
+            return;
+        };
+        let (searching, finder, key) = (Weak::new(self), server.clone(), item.rating_key.clone());
+        let on_search = move |number: u64, language: &str| {
+            let Some(screen) = searching.load() else {
+                return;
+            };
+            let (server, key, language) = (finder.clone(), key.clone(), language.to_owned());
+            let search = async move { server.search_subtitles(&key, &language).await };
+            let answered = Weak::new(&*screen);
+            screen.ivars().background.run(screen.mtm(), search, move |found| {
+                let Some(screen) = answered.load() else {
+                    return;
+                };
+                let panel = &screen.ivars().subtitle_search;
+                match found {
+                    Ok(candidates) => panel.show(number, &candidates),
+                    Err(error) => panel.fail(number, &subtitle_search::not_searched(&error)),
+                }
+            });
+        };
+        let (picking, key) = (Weak::new(self), item.rating_key.clone());
+        let on_pick = move |candidate: Candidate| {
+            let Some(screen) = picking.load() else {
+                return;
+            };
+            let number = screen.ivars().subtitle_search.latest();
+            if screen.ivars().purpose == Purpose::Check {
+                return screen.ivars().subtitle_search.fail(number, subtitle_search::READ_ONLY);
+            }
+            let (server, key, part) = (server.clone(), key.clone(), part.clone());
+            let add = async move { server.add_subtitles(&key, &part, &candidate).await };
+            let answered = Weak::new(&*screen);
+            screen.ivars().background.run(screen.mtm(), add, move |added| {
+                let Some(screen) = answered.load() else {
+                    return;
+                };
+                match added {
+                    Ok(stream) => screen.show_added(number, stream),
+                    Err(error) => {
+                        let why = subtitle_search::not_added(&error);
+                        screen.ivars().subtitle_search.fail(number, &why);
+                    }
+                }
+            });
+        };
+        self.close_offer();
+        ivars.subtitle_search.open(&item.title, on_search, on_pick);
+    }
+
+    /// Adds `stream`, subtitles the server has just added to the file
+    /// playing, to the player as it adds the other subtitle files, shows
+    /// them, and has the server remember them. `number` is the search
+    /// the panel is answering for, should they not load.
+    fn show_added(&self, number: u64, stream: Stream) {
+        let ivars = self.ivars();
+        let (Some(server), Some(key)) = (&ivars.server, stream.key.as_deref()) else {
+            return;
+        };
+        let sidecar = Sidecar {
+            location: format!("{}{key}", server.address()),
+            title: stream.display_title.clone(),
+            selected: true,
+        };
+        // The item learns of its new subtitles: the list names them by it,
+        // and the choice is remembered by their id in it.
+        let mut item = (*self.item()).clone();
+        let parts = item.media.first_mut().and_then(|media| media.parts.first_mut());
+        if let Some(part) = parts {
+            part.streams.push(stream);
+        }
+        *ivars.item.borrow_mut() = Rc::new(item);
+
+        // The player fetches the file before it answers.
+        let player = ivars.player.clone();
+        let add = async move {
+            tokio::task::spawn_blocking(move || player.add_sidecars(&[sidecar])).await
+        };
+        let screen = Weak::new(self);
+        ivars.background.run(self.mtm(), add, move |added| {
+            let Some(screen) = screen.load() else {
+                return;
+            };
+            let failed = match added {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            match failed {
+                None => {
+                    screen.ivars().subtitle_search.close();
+                    screen.remember_track(TrackKind::Subtitles);
+                }
+                Some(error) => {
+                    let why =
+                        format!("The server added the subtitles, but they did not load: {error}.");
+                    screen.ivars().subtitle_search.fail(number, &why);
+                }
+            }
+        });
     }
 
     /// Plays or shows the track of `kind` with this id, and has the server
@@ -2094,6 +2231,8 @@ impl PlayerScreen {
             eprintln!("plex-rust: {error}");
             None
         });
+        // It is in the window that goes away, and would keep the keys.
+        ivars.subtitle_search.close();
         self.show_controls(false);
         NSCursor::setHiddenUntilMouseMoves(false);
         let staged = ivars.purpose == Purpose::Check;
@@ -2597,6 +2736,9 @@ impl PlayerScreen {
 fn steps_through(item: &Item, queue: Option<&Queue>) -> bool {
     item.kind == Kind::Episode || queue.is_some()
 }
+
+/// The last row of the subtitles' list, which looks for more online.
+const SEARCH_SUBTITLES: &str = "Search for Subtitles\u{2026}";
 
 /// The file of `item`, as the server describes it.
 fn part(item: &Item) -> Option<&Part> {

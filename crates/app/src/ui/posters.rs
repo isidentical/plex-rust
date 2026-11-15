@@ -110,6 +110,12 @@ pub enum Action {
         audio: Option<u64>,
         subtitles: Option<Option<u64>>,
     },
+    /// List the subtitles the server finds online for this item, to add
+    /// one to `part`, its file.
+    SearchSubtitles {
+        item: Item,
+        part: Part,
+    },
     /// Go from this episode to its show, with the episode's season chosen.
     OpenShow(Item),
     /// Go from this episode to its season: the list it is in.

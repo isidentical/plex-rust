@@ -445,7 +445,9 @@ impl Detail {
         let Some(part) = self.part() else {
             return;
         };
+        let search = subtitles(&part).count() + 1;
         let subtitles = match self.hero.subtitles.chosen() {
+            Some(picked) if picked == search => return self.search_subtitles(part),
             Some(0) => Some(None),
             Some(picked) => subtitles(&part).nth(picked - 1).map(|track| Some(track.id)),
             None => None,
@@ -453,6 +455,25 @@ impl Detail {
         if subtitles.is_some() {
             (self.on_action)(Action::ChooseStreams { part, audio: None, subtitles });
         }
+    }
+
+    /// Lists the subtitles the server finds online for the file that
+    /// plays, as the last entry of the subtitles' menu does.
+    pub fn look_for_subtitles(&self) {
+        if let Some(part) = self.part() {
+            self.search_subtitles(part);
+        }
+    }
+
+    /// Has the subtitles the server finds online listed, to add one to
+    /// `part`. The menu goes back to the subtitles in use, which choosing
+    /// it to search did not change.
+    fn search_subtitles(&self, part: Part) {
+        let Some(item) = self.item.borrow().clone() else {
+            return;
+        };
+        self.hero.subtitles.picker.selectItemAtIndex(subtitles_in_use(&part).cast_signed());
+        (self.on_action)(Action::SearchSubtitles { item, part });
     }
 
     /// The file that plays: the first of the version picked.
@@ -810,6 +831,15 @@ fn is_downloadable(item: &Item) -> bool {
 /// one the item no longer has, its first.
 fn version_of(item: &Item, version: Option<u64>) -> Option<&Media> {
     item.media.iter().find(|media| Some(media.id) == version).or(item.media.first())
+}
+
+/// The last entry of the subtitles' menu, which lists more to add.
+const SEARCH_SUBTITLES: &str = "Search for Subtitles\u{2026}";
+
+/// Where the subtitles in use are in the subtitles' menu of `part`. The
+/// first entry is none, so a track is one further down.
+fn subtitles_in_use(part: &Part) -> usize {
+    subtitles(part).position(|track| track.selected).map_or(0, |track| track + 1)
 }
 
 /// The subtitles there are for a file: those inside it and those in
@@ -1620,12 +1650,11 @@ impl Hero {
         let heard = tracks(StreamKind::Audio).position(|track| track.selected);
         self.audio.offer(&audio, heard.unwrap_or(0));
 
-        let written = || part.into_iter().flat_map(subtitles);
         let mut subtitles = vec!["Off".to_owned()];
-        subtitles.extend(written().filter_map(name));
-        // The first entry is none, so a track is one further down.
-        let read = written().position(|track| track.selected).map_or(0, |track| track + 1);
-        self.subtitles.offer(&subtitles, read);
+        subtitles.extend(part.into_iter().flat_map(self::subtitles).filter_map(name));
+        // There are always subtitles to look for when there is a file.
+        subtitles.extend(part.map(|_| SEARCH_SUBTITLES.to_owned()));
+        self.subtitles.offer(&subtitles, part.map_or(0, subtitles_in_use));
 
         let rows = [&self.version, &self.audio, &self.subtitles];
         self.choices.setHidden(rows.iter().all(|choice| choice.row.isHidden()));

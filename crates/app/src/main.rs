@@ -53,9 +53,10 @@ usage: plex-rust
                 left, right, up, down, return
          keys: space, left, d, ..., and idle, end, wait, hover, drag,
                pull, release, bright, small, wide, marker, stall, fail,
+               subtitle-search,
                tab, shift-tab, pinch, zoom-in, zoom-out, zoom-fit
          tweaks: narrow, wide, collapsed, hover, link, season, download,
-                 version=<media-id>, person,
+                 version=<media-id>, person, subtitles,
                  scroll=<points>, across=<points>, page, letter=<index>,
                  unwatched,
                  keys=<left|right|up|down|return>,...,
@@ -182,6 +183,7 @@ fn snapshot(subject: Subject, path: &str, tweaks: &[&str]) -> Result<()> {
             None if *tweak == "looking" => parsed.looking = true,
             None if *tweak == "person" => parsed.person = true,
             None if *tweak == "refused" => parsed.refused = true,
+            None if *tweak == "subtitles" => parsed.subtitles = true,
             None if *tweak == "offline" => parsed.offline = true,
             None if *tweak == "approving" => parsed.approving = true,
             Some(("scroll", points)) => {
