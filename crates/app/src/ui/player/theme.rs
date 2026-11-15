@@ -18,6 +18,14 @@ pub const MARGIN: f64 = scale::SPACE_XL;
 pub const BAR_INSET: f64 = scale::SPACE_S;
 pub const BAR_RADIUS: f64 = CHIP_RADIUS + BAR_INSET;
 pub const BAR_MAX_WIDTH: f64 = 1400.0;
+/// The mini player: how wide it opens, the narrowest it may be made, how
+/// round its corners are, how far its buttons float above its bottom edge
+/// and how far it first stands in from the corner of the display.
+pub const MINI_WIDTH: f64 = 400.0;
+pub const MINI_MIN_WIDTH: f64 = 240.0;
+pub const MINI_RADIUS: f64 = scale::RADIUS_L;
+pub const MINI_BAR_GAP: f64 = scale::SPACE_S;
+pub const MINI_SCREEN_GAP: f64 = scale::SPACE_XL;
 /// The capsule that holds the back button and the title: half its height,
 /// and how far the back button stands in from its end.
 pub const CAPSULE_RADIUS: f64 = 27.0;

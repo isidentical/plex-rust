@@ -60,6 +60,8 @@ pub struct Controls {
     pub speed: Retained<Chip>,
     pub audio: Retained<Chip>,
     pub subtitles: Retained<Chip>,
+    /// Moves the video into the mini player.
+    pub mini: Retained<Chip>,
     pub full_screen: Retained<Chip>,
     /// Offers to jump past the intro or the credits while they play.
     pub skip: Retained<Chip>,
@@ -116,6 +118,7 @@ impl Controls {
             speed: Chip::new(main_thread, Style::Plain),
             audio: button("waveform", "Audio track", "A"),
             subtitles: button("captions.bubble", "Subtitles", "C"),
+            mini: button("pip.enter", "Mini player", "O"),
             full_screen: button("arrow.up.left.and.arrow.down.right", "Full screen", "F"),
             skip: Chip::new(main_thread, Style::Solid),
             up_next: UpNext::new(main_thread, material),
@@ -214,8 +217,14 @@ impl Controls {
         let transport: [&NSView; 5] =
             [&self.previous, &self.rewind, &self.toggle, &self.forward, &self.next];
         let transport = row(&transport, theme::TRANSPORT_SPACING, main_thread);
-        let choices: [&NSView; 5] =
-            [&self.chapters, &self.speed, &self.audio, &self.subtitles, &self.full_screen];
+        let choices: [&NSView; 6] = [
+            &self.chapters,
+            &self.speed,
+            &self.audio,
+            &self.subtitles,
+            &self.mini,
+            &self.full_screen,
+        ];
         let choices = row(&choices, spacing, main_thread);
 
         let (leading, trailing) = (bar.leadingAnchor(), bar.trailingAnchor());

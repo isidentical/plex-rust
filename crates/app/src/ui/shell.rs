@@ -2732,8 +2732,11 @@ impl Shell {
         });
     }
 
+    /// Writes the PNG of the main window, or of the mini player while the
+    /// video is in it.
     fn snapshot_and_exit(&self, path: &Path) {
-        if let Err(error) = snapshot::write_png(&self.window, path) {
+        let mini = self.playing.borrow().as_ref().and_then(|screen| screen.mini_window());
+        if let Err(error) = snapshot::write_png(mini.as_deref().unwrap_or(&self.window), path) {
             eprintln!("plex-rust: {}", with_causes(&error));
             std::process::exit(1);
         }
@@ -2899,6 +2902,21 @@ define_class!(
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             true
+        }
+
+        /// A click on the Dock icon while the video is in the mini player
+        /// brings back the window it came from, which is otherwise out of
+        /// sight with nothing to call it back but the mini player.
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            let playing = self.ivars().playing.borrow().clone();
+            match playing.filter(|screen| screen.mini_window().is_some()) {
+                Some(screen) => {
+                    screen.leave_mini();
+                    false
+                }
+                None => true,
+            }
         }
 
         #[unsafe(method_id(applicationDockMenu:))]

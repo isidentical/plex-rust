@@ -481,7 +481,8 @@ impl InputView {
     }
 }
 
-fn key(event: &NSEvent) -> Option<Key> {
+/// The key `event` is, if it is one the player acts on.
+pub(super) fn key(event: &NSEvent) -> Option<Key> {
     let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
     match event.keyCode() {
         code::SPACE => Some(Key::Space),

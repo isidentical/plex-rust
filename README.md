@@ -151,6 +151,7 @@ much room its files take and how much the disk has left.
 | Command-plus, Command-minus | Picture larger and smaller |
 | Command-0 | The whole picture again |
 | F, double click | Full screen |
+| O | The mini player, and back to the full window |
 | Escape | Close an open list, turn down the next episode, leave full screen, then the player |
 
 ## Fingers in the player
@@ -179,12 +180,25 @@ Low Power in the plex-rust menu draws the picture more cheaply, with plain
 scaling and no dithering. It is off until you turn it on, changes what is
 playing at once, and stays as you left it.
 
+## Mini player
+
+O, or the button left of full screen, moves the video into a small window
+in the corner of the display, and the player's window goes out of sight.
+It floats above other apps, on every Space, keeps the shape of the
+picture, is moved by dragging the picture and resized from its edges. With
+the pointer over it, it shows three buttons: back to the full window,
+pause and resume, and close, which stops playback as leaving the player
+does. Space, K, Left, Right, M and the Shift jumps work in it as in the
+player, and O or Escape go back to the full window, as does a click on the
+app's Dock icon.
+
 ## Known limits
 
 - Dolby Vision profile 5 plays with wrong colours, and the player says so.
   mpv's OpenGL renderer, the only one its embedding API offers, cannot
   apply the Dolby Vision reshaping.
-- Picture in Picture is not available on this rendering path.
+- The system's Picture in Picture is not available on this rendering path.
+  The mini player is the app's own window instead.
 - Image subtitles (PGS) move with the picture when it is zoomed.
 - The app is ad hoc signed. macOS may ask once for permission to reach
   devices on the local network.

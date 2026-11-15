@@ -10,6 +10,7 @@ mod failure;
 mod info;
 pub mod input;
 mod layout;
+mod mini;
 mod pane;
 mod panel;
 mod remote;
@@ -24,19 +25,25 @@ mod waiting;
 mod zoom;
 
 use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::{NSCursor, NSEvent, NSView, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSApplication, NSCursor, NSEvent, NSView, NSWindow, NSWindowDidExitFullScreenNotification,
+    NSWindowStyleMask,
+};
 use objc2_foundation::{
-    NSActivityOptions, NSDate, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop,
-    NSRunLoopCommonModes, NSString, NSTimer, NSUUID, ns_string,
+    NSActivityOptions, NSDate, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
+    NSOperationQueue, NSPoint, NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
+    NSUUID, ns_string,
 };
 use player::{Chapter, DolbyVision, EndReason, Event, Player, Sidecar, Track, TrackKind};
 use plex::MediaServer;
@@ -50,6 +57,7 @@ use self::chip::Chip;
 use self::chrome::Chrome;
 use self::controls::Controls;
 use self::input::{Clicks, Gesture, InputView, Key, Press, Scene};
+use self::mini::Mini;
 use self::panel::{Choice, Step, Stepper};
 use self::remote::{Command, Playing, Remote};
 use self::slider::{Grip, Pointed};
@@ -181,6 +189,12 @@ pub struct Ivars {
     item: RefCell<Rc<Item>>,
     phase: Cell<Phase>,
     controls: Controls,
+    material: Material,
+    /// The small floating window the video is in, while it is in one.
+    mini: RefCell<Option<Mini>>,
+    /// Waits for the window to leave full screen, to open the mini player
+    /// after it. Only a window that is not full screen can be put away.
+    after_full_screen: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     /// How the window's title bar was before the player cleared it. Empty
     /// until the screen is in a window, and again once it has closed.
     chrome: RefCell<Option<Chrome>>,
@@ -322,6 +336,9 @@ impl PlayerScreen {
             item: RefCell::new(Rc::new(item.clone())),
             phase: Cell::new(Phase::Opening),
             controls,
+            material,
+            mini: RefCell::new(None),
+            after_full_screen: RefCell::new(None),
             chrome: RefCell::new(None),
             ticks_of_notice_left: Cell::new(0),
             speed: Cell::new(speed),
@@ -507,6 +524,8 @@ impl PlayerScreen {
     /// words. The screen stays: a film that fails an hour in, because the
     /// network dropped for a moment, is one press away from playing on.
     fn fail(&self, reason: &str) {
+        // The failure is said, and the way on offered, in the full window.
+        self.leave_mini();
         let ivars = self.ivars();
         ivars.phase.set(Phase::Failed);
         self.keep_display_awake(false);
@@ -563,7 +582,7 @@ impl PlayerScreen {
         if self.ivars().offer.get().is_some() {
             return controls.panel.chips();
         }
-        let chips: [&Retained<Chip>; 18] = [
+        let chips: [&Retained<Chip>; 19] = [
             &controls.back,
             &controls.failure.retry,
             &controls.failure.leave,
@@ -581,6 +600,7 @@ impl PlayerScreen {
             &controls.speed,
             &controls.audio,
             &controls.subtitles,
+            &controls.mini,
             &controls.full_screen,
         ];
         chips.into_iter().filter(|chip| chip.can_be_pressed()).cloned().collect()
@@ -755,6 +775,8 @@ impl PlayerScreen {
         }
         self.keep_display_awake(false);
         NSCursor::setHiddenUntilMouseMoves(false);
+        self.forget_full_screen();
+        self.put_back();
         if let (Some(chrome), Some(window)) =
             (ivars.chrome.borrow_mut().take(), ivars.root.window())
         {
@@ -888,6 +910,7 @@ impl PlayerScreen {
                 screen.toggle_offer(offer, screen.focused().is_some());
             });
         }
+        self.on_click(&controls.mini, Self::enter_mini);
         self.on_click(&controls.full_screen, |screen| screen.toggle_full_screen());
         self.on_click(&controls.skip, |screen| screen.or_log(screen.skip_marker()));
         self.on_click(&controls.up_next.play, |screen| screen.go_to_next());
@@ -1062,6 +1085,10 @@ impl PlayerScreen {
 
     fn act_on(&self, key: Key, press: Press) -> bool {
         self.wake();
+        let in_mini = self.ivars().mini.borrow().is_some();
+        if in_mini {
+            return self.act_in_mini(key, press);
+        }
         // A file that has failed has two ways on, and the size of the
         // window. Every other key is for a file that plays.
         if self.ivars().phase.get() == Phase::Failed {
@@ -1089,7 +1116,19 @@ impl PlayerScreen {
                 | Key::ZoomOut
                 | Key::ZoomFit
                 | Key::Character(
-                    'm' | 's' | 'd' | 'r' | 'a' | 'c' | 'f' | 'z' | 'i' | '-' | '=' | '[' | ']'
+                    'm' | 's'
+                        | 'd'
+                        | 'r'
+                        | 'a'
+                        | 'c'
+                        | 'f'
+                        | 'o'
+                        | 'z'
+                        | 'i'
+                        | '-'
+                        | '='
+                        | '['
+                        | ']'
                 )
         );
         let is_episode = self.item().kind == Kind::Episode;
@@ -1140,6 +1179,10 @@ impl PlayerScreen {
             }
             Key::Character('f') => {
                 self.toggle_full_screen();
+                Ok(())
+            }
+            Key::Character('o') => {
+                self.enter_mini();
                 Ok(())
             }
             Key::Character('n') if is_episode => {
@@ -2003,6 +2046,168 @@ impl PlayerScreen {
         Ok(())
     }
 
+    /// Moves the video into the mini player and puts the window away. A
+    /// window in full screen leaves it first, and the mini player opens
+    /// when it has.
+    fn enter_mini(&self) {
+        let ivars = self.ivars();
+        let busy = ivars.mini.borrow().is_some() || ivars.after_full_screen.borrow().is_some();
+        // A failed file has no picture to float.
+        if busy || ivars.phase.get() == Phase::Failed {
+            return;
+        }
+        let Some(window) = ivars.root.window() else {
+            return;
+        };
+        if self.is_full_screen() {
+            self.wait_for_full_screen_to_end(&window);
+            window.toggleFullScreen(None);
+            return;
+        }
+        let picture = ivars.player.picture_size().unwrap_or_else(|error| {
+            eprintln!("plex-rust: {error}");
+            None
+        });
+        self.show_controls(false);
+        NSCursor::setHiddenUntilMouseMoves(false);
+        let staged = ivars.purpose == Purpose::Check;
+        let mini =
+            match Mini::open(self.mtm(), &ivars.video, picture, &window, ivars.material, staged) {
+                Ok(mini) => mini,
+                Err(error) => return eprintln!("plex-rust: {}", with_causes(&error)),
+            };
+        self.connect_mini(&mini);
+        mini.show_paused(ivars.player.is_paused().unwrap_or(false));
+        *ivars.mini.borrow_mut() = Some(mini);
+        self.fit_to_display();
+        // A check's window is where no display shows it, and stays there.
+        if ivars.purpose == Purpose::Watching {
+            window.orderOut(None);
+        }
+    }
+
+    /// Says what the mini player's keys and buttons do.
+    fn connect_mini(&self, mini: &Mini) {
+        self.on_click(&mini.toggle, |screen| screen.or_log(screen.toggle_pause()));
+        self.on_click(&mini.expand, Self::leave_mini);
+        self.on_click(&mini.close, Self::close);
+        let (keys, fit) = (Weak::new(self), Weak::new(self));
+        mini.listen(
+            move |key, press| keys.load().is_some_and(|screen| screen.act_on(key, press)),
+            move || {
+                if let Some(screen) = fit.load() {
+                    screen.fit_to_display();
+                }
+            },
+        );
+    }
+
+    /// Acts on a key in the mini player, which has a few: pause, jumps,
+    /// mute, and back to the full window. Returns whether the key means
+    /// anything there.
+    fn act_in_mini(&self, key: Key, press: Press) -> bool {
+        if press == Press::Held && !input::repeats(key) {
+            return true;
+        }
+        let result = match key {
+            Key::Space | Key::Character('k') => self.toggle_pause(),
+            Key::Left => self.jump(-SHORT_JUMP, press),
+            Key::Right => self.jump(SHORT_JUMP, press),
+            Key::ShiftLeft => self.jump(-LONG_JUMP, press),
+            Key::ShiftRight => self.jump(LONG_JUMP, press),
+            Key::Character('m') => self.toggle_mute(),
+            Key::Character('o') | Key::Escape => {
+                self.leave_mini();
+                Ok(())
+            }
+            // The pointer over the picture, for a snapshot.
+            Key::Scene(Scene::Hover) => {
+                if let Some(mini) = self.ivars().mini.borrow().as_ref() {
+                    mini.show_controls(true);
+                }
+                Ok(())
+            }
+            Key::Wait => return true,
+            _ => return false,
+        };
+        self.or_log(result);
+        true
+    }
+
+    /// Brings the video back from the mini player to the full window, and
+    /// the window back on screen.
+    pub fn leave_mini(&self) {
+        if !self.put_back() {
+            return;
+        }
+        self.focus();
+        self.show_controls(true);
+    }
+
+    /// Moves the video back into the full window, shows the window again
+    /// and closes the mini player. Returns whether there was one.
+    fn put_back(&self) -> bool {
+        let ivars = self.ivars();
+        let Some(mini) = ivars.mini.borrow_mut().take() else {
+            return false;
+        };
+        mini::put_under(&ivars.root, &ivars.video);
+        if let (Purpose::Watching, Some(window)) = (ivars.purpose, ivars.root.window()) {
+            window.makeKeyAndOrderFront(None);
+            NSApplication::sharedApplication(self.mtm()).activate();
+        }
+        mini.close();
+        true
+    }
+
+    /// The mini player's window, while there is one.
+    pub fn mini_window(&self) -> Option<Retained<NSWindow>> {
+        self.ivars().mini.borrow().as_ref().map(|mini| mini.window().retain())
+    }
+
+    /// Gives the mini player the shape of the picture, which can change
+    /// from one episode to the next.
+    fn shape_mini(&self) -> player::Result<()> {
+        let ivars = self.ivars();
+        let mini = ivars.mini.borrow();
+        let (Some(mini), Some(picture)) = (mini.as_ref(), ivars.player.picture_size()?) else {
+            return Ok(());
+        };
+        mini.keep_shape(picture);
+        Ok(())
+    }
+
+    /// Opens the mini player once `window` has left full screen.
+    fn wait_for_full_screen_to_end(&self, window: &NSWindow) {
+        let screen = Weak::new(self);
+        let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(screen) = screen.load() {
+                screen.forget_full_screen();
+                screen.enter_mini();
+            }
+        });
+        // SAFETY: the name is a constant that AppKit provides, and the
+        // block takes the one argument a notification block is given. The
+        // observer is removed by `forget_full_screen`.
+        let observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidExitFullScreenNotification),
+                Some(window),
+                Some(&NSOperationQueue::mainQueue()),
+                &block,
+            )
+        };
+        *self.ivars().after_full_screen.borrow_mut() = Some(observer);
+    }
+
+    /// Stops waiting for the window to leave full screen.
+    fn forget_full_screen(&self) {
+        if let Some(observer) = self.ivars().after_full_screen.borrow_mut().take() {
+            // SAFETY: the observer is the one the center returned.
+            unsafe { NSNotificationCenter::defaultCenter().removeObserver(observer.as_ref()) };
+        }
+    }
+
     fn is_full_screen(&self) -> bool {
         let window = self.ivars().root.window();
         window.is_some_and(|window| window.styleMask().contains(NSWindowStyleMask::FullScreen))
@@ -2049,6 +2254,11 @@ impl PlayerScreen {
         if shown {
             self.wake();
             ivars.ticks_idle.set(0);
+        }
+        // The window they are in is put away, and the cursor is the mini
+        // player's to show.
+        if ivars.mini.borrow().is_some() {
+            return;
         }
         if ivars.controls_shown.replace(shown) == shown {
             return;
@@ -2125,6 +2335,7 @@ impl PlayerScreen {
                     ivars.controls.waiting.hide();
                 }
                 self.fit_to_display();
+                self.or_log(self.shape_mini());
             }
             Event::Ended(EndReason::Failed(error)) => self.fail(error),
             Event::Buffering(true) if playing => ivars.controls.waiting.show(Some("Buffering")),
@@ -2191,6 +2402,9 @@ impl PlayerScreen {
         let (symbol, name) = if pause { ("play.fill", "Play") } else { ("pause.fill", "Pause") };
         self.ivars().controls.toggle.set_symbol(symbol, theme::MAIN_SYMBOL_SIZE);
         self.ivars().controls.toggle.set_name(name);
+        if let Some(mini) = self.ivars().mini.borrow().as_ref() {
+            mini.show_paused(pause);
+        }
         self.keep_display_awake(!pause);
         self.report(if pause { PlaybackState::Paused } else { PlaybackState::Playing });
         self.show_controls(true);

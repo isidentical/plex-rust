@@ -205,7 +205,7 @@ crates/
                        layout, hover, callback, theme, snapshot
     src/ui/player/     the player screen: controls, chips, sliders, menus,
                        input, media keys (remote), up next, zoom, info,
-                       failure, and a theme of its own
+                       failure, the mini player, and a theme of its own
 scripts/build-libmpv.sh  builds the static libmpv into vendor/
 scripts/patches/       three patches to mpv 0.42.0, one to FFmpeg 9.0.2
 scripts/bundle.sh      builds plex-rust.app, writes Info.plist, ad hoc signs
@@ -512,6 +512,24 @@ look and a dark appearance.
   Media keys through `MPRemoteCommandCenter`, and what is playing through
   `MPNowPlayingInfoCenter`, both held only while a player is open and
   someone is watching: a snapshot or other check never takes them.
+- **Mini player:** `O` or its button moves the video view into a small
+  borderless panel of the app's own (`ui/player/mini.rs`) and orders the
+  player's window out. The view takes its layer, renderer and frame clock
+  with it, so mpv's render context is never made again: the file plays
+  on with no pause and no reload. The display link is the view's, and
+  `NSView.h` says it calls back "in-sync with the display the view is
+  on", so it goes with the view. The panel floats (`NSFloatingWindowLevel`), joins every Space
+  and full screen apps, does not make the app active when clicked, keeps
+  the picture's aspect ratio, is dragged by the picture and resized from
+  its edges. Its buttons, back, pause and close, show while the pointer
+  is over it, whichever app is in front. Close is the player's own close.
+  Everything else stays with the player screen, so the timeline reports,
+  Now Playing, the media keys and the display sleep assertion carry on
+  as before. A window in full screen leaves it first, and the panel opens
+  once it has. A failure brings the full window back to say so. This is
+  not the system's Picture in Picture, which only shows an
+  `AVSampleBufferDisplayLayer` that mpv's OpenGL renderer cannot draw
+  into.
 
 Collection views use the classic `NSCollectionViewDataSource` protocol.
 `NSCollectionViewDiffableDataSource` has no usable initializer in
@@ -624,7 +642,7 @@ then need neither.
 | --- | --- | --- |
 | The Plex client is right | `cargo test` | Response parsing against the recorded fixtures, connection ordering, download resume, the cache, and the app's own logic where it has any |
 | What the servers say | `plex-rust servers [<address>]`, `plex-rust api [--post] <path>` | Each server of the account with the address it answers at, and the first server's raw answer to a request |
-| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Activity, Downloads, the sign-in or the player |
+| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Activity, Downloads, the sign-in or the player, or of the mini player once `o` is among the keys |
 | Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` | A line on stderr with the milliseconds since launch for each step taken and each thing shown, then a PNG |
 | Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds> [--low-power]` | One line of JSON after that long: position, buffer, hardware decoder, dropped frames, colours, Dolby Vision profile, whether the layer asked for HDR, drawn size, scaler settings, tracks, `cpu_share`, the seconds to the first picture, and whether the window was visible |
 | Jumps are short | `plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],... [speed=<rate>] [subtitles=<id>\|off] [paused]` | For each step, as p50, p90 and max over its presses: milliseconds from the press to the picture shown, to mpv's restart, to sound handed over, and to the picture moving, plus the A/V offset after, jumps that missed their target and jumps that did not finish |
@@ -704,7 +722,8 @@ afterwards how far the viewer got. One self-contained app bundle.
 - Dolby Vision is not applied. Profile 5 plays in the wrong colours, and
   the player says so. Profiles 8.1 and 8.4 play as the HDR10 or HLG
   underneath them.
-- Picture in Picture.
+- The system's Picture in Picture. The mini player (section 8) is a
+  window of the app's own in its place.
 - `gpu-next` and what only it has, `target-colorspace-hint` among them.
 
 **Not confirmed.**
@@ -715,6 +734,12 @@ afterwards how far the viewer got. One self-contained app bundle.
   dav1d to decode it.
 - What a server does on `offline=1` in a timeline report, beyond accepting
   the parameter its description lists (section 9).
+- The mini player on a real display. Snapshots, which stage the panel
+  off every display, show it laid out and drawing the picture, and the
+  file playing on across the move and back with one load. Frames drawn
+  on the display link in the panel, resizing it from its edges, dragging
+  it, the buttons on hover, the first click while another app is active,
+  and leaving full screen for it were not tried with a window on screen.
 - Whether the JWT sign-in works against a media server (section 6).
 - Whether an ad hoc signed bundle keeps the Local Network permission
   across rebuilds (section 2).
