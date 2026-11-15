@@ -27,6 +27,7 @@ use plex::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section};
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
+use super::activity::ActivityPage;
 use super::callback::Callback;
 use super::confirm;
 pub use super::detail::Link;
@@ -51,6 +52,7 @@ use super::theme;
 use super::toast::Toast;
 use super::toolbar::Toolbar;
 use crate::account;
+use crate::activity;
 use crate::background::{Background, Task};
 use crate::downloads::{self, Downloads, State};
 use crate::error::{Error, Result, with_causes};
@@ -233,6 +235,8 @@ enum Route {
     /// The page of an item. For a show, with how it opens.
     Item(Box<Item>, Opening),
     Search(String),
+    /// How much was watched, when, what and on what.
+    Activity,
     Downloads,
 }
 
@@ -248,6 +252,7 @@ enum Screen {
     Posters(Retained<Posters>),
     Detail(Rc<Detail>),
     Downloads(Retained<DownloadList>),
+    Activity(Rc<ActivityPage>),
 }
 
 impl Screen {
@@ -256,6 +261,7 @@ impl Screen {
             Self::Posters(posters) => posters.view(),
             Self::Detail(detail) => detail.view(),
             Self::Downloads(list) => list.view(),
+            Self::Activity(page) => page.view(),
         }
     }
 
@@ -264,6 +270,7 @@ impl Screen {
             Self::Posters(posters) => posters.focus(),
             Self::Detail(detail) => detail.focus(),
             Self::Downloads(list) => list.focus(),
+            Self::Activity(page) => page.focus(),
         }
     }
 
@@ -272,6 +279,7 @@ impl Screen {
             Self::Posters(posters) => posters.scroll_to(y),
             Self::Detail(detail) => detail.scroll_to(y),
             Self::Downloads(list) => list.scroll_to(y),
+            Self::Activity(page) => page.scroll_to(y),
         }
     }
 }
@@ -339,6 +347,8 @@ pub enum Subject {
     List(String),
     /// What is kept on this Mac.
     Downloads,
+    /// How much was watched, when, what and on what.
+    Activity,
     /// The screen a signed-out viewer starts on.
     SignIn,
     /// Home, and from there these steps, with the time of each printed.
@@ -867,6 +877,7 @@ impl Shell {
                 self.go(Route::Person { person, path });
             }
             Some(Place::Downloads) => self.go(Route::Downloads),
+            Some(Place::Activity) => self.go(Route::Activity),
             Some(Place::Item { .. }) if saved.is_some() => {
                 if let Some(item) = saved {
                     self.go(Route::Item(Box::new(item), Opening::default()));
@@ -909,6 +920,7 @@ impl Shell {
                 path: path.clone(),
             },
             Route::Item(item, _) => Place::Item { key: item.rating_key.as_str().to_owned() },
+            Route::Activity => Place::Activity,
             Route::Downloads => Place::Downloads,
             Route::Search(_) => return,
         };
@@ -1036,6 +1048,7 @@ impl Shell {
                 self.go(Route::List { title: "List".to_owned(), path: path.clone() });
             }
             Some(Subject::Downloads) => self.go(Route::Downloads),
+            Some(Subject::Activity) => self.go(Route::Activity),
             Some(Subject::Home | Subject::SignIn | Subject::Walk(_)) | None => self.go(Route::Home),
         }
     }
@@ -1047,6 +1060,7 @@ impl Shell {
         if let Some(sections) = sections {
             destinations.push(Destination::Home);
             destinations.extend(sections.iter().cloned().map(Destination::Section));
+            destinations.push(Destination::Activity);
         }
         destinations.push(Destination::Downloads);
         self.install_places(&destinations);
@@ -1274,6 +1288,7 @@ impl Shell {
             Destination::Section(section) => {
                 Route::Library(section.clone(), self.listings.borrow().of(&section.key))
             }
+            Destination::Activity => Route::Activity,
             Destination::Downloads => Route::Downloads,
         };
         // Selecting the row of the place already on screen, as `display`
@@ -1388,6 +1403,7 @@ impl Shell {
             }
             (Route::Item(item, opening), Some(session)) => self.item_page(session, item, opening),
             (Route::Search(query), Some(session)) => self.search_results(session, query),
+            (Route::Activity, Some(session)) => self.activity(session),
         };
         if !self.holds_loads.get() {
             self.asked_at.set(Instant::now());
@@ -1755,6 +1771,23 @@ impl Shell {
             }
         });
         (Screen::Downloads(list), reload)
+    }
+
+    fn activity(self: &Rc<Self>, session: &Session) -> (Screen, Rc<dyn Fn()>) {
+        let shell = Rc::downgrade(self);
+        let page = ActivityPage::new(self.main_thread, &session.images, move |item| {
+            if let Some(shell) = shell.upgrade() {
+                shell.go(Route::Item(Box::new(item), Opening::default()));
+            }
+        });
+        let (shown, sections) = (Rc::clone(&page), session.sections.clone());
+        let reload = self.loader(
+            session,
+            Unanswered::ShowsTheError,
+            move |server| activity::gather(server, sections.clone()),
+            move |record: &activity::Record| shown.show(record),
+        );
+        (Screen::Activity(page), reload)
     }
 
     fn search_results(self: &Rc<Self>, session: &Session, query: &str) -> (Screen, Rc<dyn Fn()>) {
@@ -2288,7 +2321,7 @@ impl Shell {
         match self.current(|entry| entry.screen.clone()) {
             Some(Screen::Downloads(_)) => self.refresh(),
             Some(Screen::Detail(detail)) => detail.show_download(),
-            Some(Screen::Posters(_)) | None => {}
+            Some(Screen::Posters(_) | Screen::Activity(_)) | None => {}
         }
     }
 
@@ -2725,6 +2758,7 @@ fn title(route: &Route) -> &str {
         Route::Person { person, .. } => &person.tag,
         Route::Item(item, _) => &item.title,
         Route::Search(_) => "Search",
+        Route::Activity => "Activity",
         Route::Downloads => "Downloads",
     }
 }
@@ -2734,6 +2768,7 @@ fn destination_of(route: &Route) -> Option<Destination> {
     match route {
         Route::Home => Some(Destination::Home),
         Route::Library(section, _) => Some(Destination::Section(section.clone())),
+        Route::Activity => Some(Destination::Activity),
         Route::Downloads => Some(Destination::Downloads),
         Route::List { .. } | Route::Person { .. } | Route::Item(..) | Route::Search(_) => None,
     }

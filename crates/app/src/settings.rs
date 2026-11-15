@@ -112,6 +112,8 @@ pub enum Place {
         photo: Option<String>,
         path: String,
     },
+    /// How much was watched, when, what and on what.
+    Activity,
     /// What is kept on this Mac.
     Downloads,
 }
@@ -180,6 +182,7 @@ mod tests {
                 photo: None,
                 path: "/library/sections/1/all?actor=1".to_owned(),
             },
+            Place::Activity,
             Place::Downloads,
         ];
         for place in places {

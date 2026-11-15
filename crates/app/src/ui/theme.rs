@@ -304,6 +304,32 @@ pub const JUMP_MARK_HEIGHT: f64 = 18.0;
 /// Between the strip and the window's edge, where a scroller comes up.
 pub const JUMP_BAR_INSET: f64 = SPACE_M;
 
+/// The Activity page: how wide it grows at most, its tiles of numbers,
+/// the chart of time watched, the grid of hours and the rows of lists.
+pub const ACTIVITY_MAX_WIDTH: f64 = 1120.0;
+pub const ACTIVITY_TILES_A_ROW: usize = 4;
+pub const ACTIVITY_TILE_HEIGHT: f64 = 96.0;
+pub const ACTIVITY_CHART_HEIGHT: f64 = 220.0;
+/// Room under the bars for their dates, and left of them for the hours.
+pub const ACTIVITY_AXIS_HEIGHT: f64 = 22.0;
+pub const ACTIVITY_AXIS_WIDTH: f64 = 44.0;
+/// How much of its slot a bar fills, and how far apart dates must be.
+pub const ACTIVITY_BAR_SHARE: f64 = 0.7;
+pub const ACTIVITY_BAR_RADIUS: f64 = 3.0;
+pub const ACTIVITY_LABEL_SPACING: f64 = 64.0;
+pub const ACTIVITY_GRID_OPACITY: f64 = 0.08;
+pub const ACTIVITY_HEAT_CELL: f64 = 24.0;
+pub const ACTIVITY_HEAT_GAP: f64 = 3.0;
+/// How strong the faintest cell that had any watching is, and an empty one.
+pub const ACTIVITY_HEAT_LEAST: f64 = 0.15;
+pub const ACTIVITY_HEAT_EMPTY_OPACITY: f64 = 0.05;
+pub const ACTIVITY_METER_HEIGHT: f64 = 6.0;
+/// A row of a list that leads somewhere: a finger's worth.
+pub const ACTIVITY_ROW_HEIGHT: f64 = 56.0;
+pub const ACTIVITY_POSTER_SIZE: (u32, u32) = (36, 54);
+pub const ACTIVITY_CARD_OPACITY: f64 = 0.05;
+pub const ACTIVITY_SWATCH_SIZE: f64 = 10.0;
+
 /// A message in the middle of an empty screen.
 pub const NOTICE_SYMBOL_SIZE: f64 = 44.0;
 pub const NOTICE_WIDTH: f64 = 420.0;

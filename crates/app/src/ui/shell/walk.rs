@@ -184,7 +184,7 @@ impl Shell {
         self.window.layoutIfNeeded();
         let cards = match &screen {
             Screen::Posters(posters) => posters.len(),
-            Screen::Detail(_) | Screen::Downloads(_) => 0,
+            Screen::Detail(_) | Screen::Downloads(_) | Screen::Activity(_) => 0,
         };
         let scrolled = first_scroller_in(screen.view())
             .map_or(0.0, |scroller| scroller.contentView().bounds().origin.y);

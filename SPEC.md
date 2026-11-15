@@ -321,6 +321,19 @@ description is not consistent on that name.
 **Stream choice:** `PUT /library/parts/{partId}?audioStreamID=&subtitleStreamID=`
 so the choice is remembered server side.
 
+**Activity:** what Plex Web's Dashboard is drawn from, read only.
+`/status/sessions/history/all` is every play the server kept, paged a
+thousand at a time. `/statistics/media` is time watched and
+`/statistics/bandwidth` data streamed, per account, device and kind of
+item, in rows of a month (`timespan=1`) or an hour (`timespan=4`). Both
+sizes cover the same time, so months are taken only before the first
+hourly row. `/library/metadata/{a,b,c}` gives the runtime, genres and
+year of everything played in one request per hundred keys, and
+`/library/sections/{id}/all?type=&unwatched=1` with a container size of
+0 counts what is left to watch. On one server the four sizes of
+`/statistics/media` summed to the same seconds and to the same plays as
+the history held.
+
 **Downloads:** `GET {Part.key}?download=1`. An account can be denied
 downloads, and a server that refuses is asked again without the parameter,
 as a player asks.
@@ -458,11 +471,20 @@ look and a dark appearance.
   watched, the number of episodes left on a show, title and year below.
 
 - **Window:** `NSSplitViewController`. Sidebar: Home, one row per Movie/TV
-  library, Downloads. Toolbar: back, search field. The sidebar has no
+  library, Activity, Downloads. Toolbar: back, search field. The sidebar has no
   `NSVisualEffectView` under it: it is the system's glass, laid over the
   content.
 - **Home:** `NSCollectionView` with a compositional layout, one horizontally
   scrolling shelf per hub: Continue Watching, On Deck, Recently Added.
+- **Activity:** 7 days, 30 days, 12 months or all time, in the viewer's
+  own days and hours: watch time, plays, titles, days watched and
+  streaks, busiest day, a bar a day or a month of episodes and films, a
+  grid of the week by hour, the most played titles, genres and release
+  decades, devices, data streamed on and off the network, how much of
+  each library is watched, and the last plays. Titles, genres and decades
+  are ranked by plays and say their runtime, the full length of every
+  play, which is not the time watched: at another speed, or for a part
+  watched, the two differ.
 - **Library:** poster grid, paged while scrolling, sort menu. Listed by
   title, a strip of first characters down the far edge jumps to each.
 - **Touch:** the display may take fingers. What is pressed on Home and in
@@ -602,7 +624,7 @@ then need neither.
 | --- | --- | --- |
 | The Plex client is right | `cargo test` | Response parsing against the recorded fixtures, connection ordering, download resume, the cache, and the app's own logic where it has any |
 | What the servers say | `plex-rust servers [<address>]`, `plex-rust api [--post] <path>` | Each server of the account with the address it answers at, and the first server's raw answer to a request |
-| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Downloads, the sign-in or the player |
+| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Activity, Downloads, the sign-in or the player |
 | Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` | A line on stderr with the milliseconds since launch for each step taken and each thing shown, then a PNG |
 | Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds> [--low-power]` | One line of JSON after that long: position, buffer, hardware decoder, dropped frames, colours, Dolby Vision profile, whether the layer asked for HDR, drawn size, scaler settings, tracks, `cpu_share`, the seconds to the first picture, and whether the window was visible |
 | Jumps are short | `plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],... [speed=<rate>] [subtitles=<id>\|off] [paused]` | For each step, as p50, p90 and max over its presses: milliseconds from the press to the picture shown, to mpv's restart, to sound handed over, and to the picture moving, plus the A/V offset after, jumps that missed their target and jumps that did not finish |

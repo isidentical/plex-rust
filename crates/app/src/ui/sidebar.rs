@@ -1,4 +1,5 @@
-//! The list of places on the left: Home, the libraries, Downloads.
+//! The list of places on the left: Home, the libraries, Activity and
+//! Downloads.
 
 use std::cell::RefCell;
 
@@ -23,6 +24,7 @@ use super::theme;
 pub enum Destination {
     Home,
     Section(Section),
+    Activity,
     Downloads,
 }
 
@@ -31,6 +33,7 @@ impl Destination {
         match self {
             Self::Home => "Home",
             Self::Section(section) => &section.title,
+            Self::Activity => "Activity",
             Self::Downloads => "Downloads",
         }
     }
@@ -41,6 +44,7 @@ impl Destination {
             Self::Home => "house",
             Self::Section(section) if section.kind == Kind::Show => "tv",
             Self::Section(_) => "film",
+            Self::Activity => "chart.bar.xaxis",
             Self::Downloads => "arrow.down.circle",
         }
     }

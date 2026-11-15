@@ -1,6 +1,7 @@
 //! plex-rust, a native macOS client for Plex.
 
 mod account;
+mod activity;
 mod background;
 mod downloads;
 mod error;
@@ -101,6 +102,7 @@ fn run(args: &[&str]) -> Result<()> {
             snapshot(Subject::List((*list).to_owned()), path, tweaks)
         }
         ["snapshot", "downloads", path, tweaks @ ..] => snapshot(Subject::Downloads, path, tweaks),
+        ["snapshot", "activity", path, tweaks @ ..] => snapshot(Subject::Activity, path, tweaks),
         ["snapshot", "signin", path, tweaks @ ..] => snapshot(Subject::SignIn, path, tweaks),
         ["snapshot", "walk", path, steps @ ..] => {
             timing::start();

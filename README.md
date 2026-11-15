@@ -28,6 +28,12 @@ macOS.
   and credits, and goes on to the next episode, across seasons.
 - Downloads films and episodes, with their subtitle files, and plays them
   without the server.
+- Activity: how much you watched, when, what and on what, over 7 days,
+  30 days, 12 months or all time. Watch time by day or month, the hours
+  of the week you watch most, your most played shows and films, genres,
+  release decades, devices, data streamed and how much of each library
+  you have seen. It reads the history and statistics your server keeps,
+  the same ones Plex Web's Dashboard uses.
 - Keyboard first, with full support for a trackpad and a touch screen:
   pinch to zoom the picture, media keys, Now Playing in Control Center.
 - A Low Power switch that trades picture quality for battery when you ask

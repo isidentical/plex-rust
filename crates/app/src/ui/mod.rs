@@ -1,5 +1,6 @@
 //! The windows and views.
 
+mod activity;
 mod artwork;
 mod backdrop;
 mod banner;
