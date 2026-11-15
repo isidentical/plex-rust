@@ -1,0 +1,46 @@
+{
+  "MediaContainer": {
+    "size": 2,
+    "Account": [
+      {
+        "id": 1,
+        "key": "/accounts/1",
+        "name": "viewer"
+      }
+    ],
+    "Device": [
+      {
+        "id": 1,
+        "name": "",
+        "platform": "",
+        "clientIdentifier": "redacted",
+        "createdAt": 1792356604
+      },
+      {
+        "id": 2,
+        "name": "Chrome",
+        "platform": "Chrome",
+        "clientIdentifier": "redacted",
+        "createdAt": 1792356660
+      }
+    ],
+    "StatisticsBandwidth": [
+      {
+        "accountID": 1,
+        "deviceID": 1,
+        "timespan": 4,
+        "at": 1792353600,
+        "lan": true,
+        "bytes": 31134
+      },
+      {
+        "accountID": 1,
+        "deviceID": 1,
+        "timespan": 4,
+        "at": 1794632400,
+        "lan": false,
+        "bytes": 1325
+      }
+    ]
+  }
+}

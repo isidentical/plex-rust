@@ -285,6 +285,39 @@ impl MediaServer {
         let Items { items, .. } = self.get(&path, &[]).await?;
         Ok(items)
     }
+
+    /// The items of `keys` that are still in the library, as a listing
+    /// has them, in as few requests as the length of a path allows. The
+    /// server takes rating keys joined by commas where it takes one.
+    pub async fn items(&self, keys: &[RatingKey]) -> Result<Vec<Item>> {
+        const KEYS_A_REQUEST: usize = 100;
+        let mut found = Vec::with_capacity(keys.len());
+        for keys in keys.chunks(KEYS_A_REQUEST) {
+            let keys: Vec<&str> = keys.iter().map(RatingKey::as_str).collect();
+            let path = format!("/library/metadata/{}", keys.join(","));
+            let Items { items, .. } = self.get(&path, &[]).await?;
+            found.extend(items);
+        }
+        Ok(found)
+    }
+
+    /// How many items of `kind` library `section` has, or how many of
+    /// them are left to watch.
+    pub async fn count(&self, section: &Section, kind: Kind, unwatched: bool) -> Result<u32> {
+        // The numbers the server's `type` filter takes.
+        let kind = match kind {
+            Kind::Movie => "1",
+            Kind::Show => "2",
+            Kind::Season => "3",
+            _ => "4",
+        };
+        let mut query = vec![("type", kind)];
+        if unwatched {
+            query.push(("unwatched", "1"));
+        }
+        let path = format!("/library/sections/{}/all", section.key);
+        Ok(self.page(&path, &query, 0, 0).await?.total)
+    }
 }
 
 /// Decodes an item from what [`MediaServer::item_json`] returned.

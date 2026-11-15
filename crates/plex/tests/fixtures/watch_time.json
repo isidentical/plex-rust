@@ -1,0 +1,57 @@
+{
+  "MediaContainer": {
+    "size": 3,
+    "Account": [
+      {
+        "id": 1,
+        "key": "/accounts/1",
+        "name": "viewer"
+      }
+    ],
+    "Device": [
+      {
+        "id": 3,
+        "name": "Chrome",
+        "platform": "Chrome",
+        "clientIdentifier": "redacted",
+        "createdAt": 1792357351
+      },
+      {
+        "id": 4,
+        "name": "Mac",
+        "platform": "macos",
+        "clientIdentifier": "redacted",
+        "createdAt": 1792357628
+      }
+    ],
+    "StatisticsMedia": [
+      {
+        "accountID": 1,
+        "deviceID": 3,
+        "timespan": 4,
+        "at": 1792357200,
+        "metadataType": 4,
+        "count": 0,
+        "duration": 45
+      },
+      {
+        "accountID": 1,
+        "deviceID": 3,
+        "timespan": 4,
+        "at": 1792357200,
+        "metadataType": 1,
+        "count": 0,
+        "duration": 6
+      },
+      {
+        "accountID": 1,
+        "deviceID": 8,
+        "timespan": 4,
+        "at": 1794700800,
+        "metadataType": 4,
+        "count": 1,
+        "duration": 541
+      }
+    ]
+  }
+}

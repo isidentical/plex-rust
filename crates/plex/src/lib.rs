@@ -3,6 +3,7 @@
 //! Endpoints and parameters follow Plex's published API description at
 //! <https://developer.plex.tv/pms/>.
 
+pub mod activity;
 pub mod auth;
 mod cache;
 mod client;
