@@ -168,6 +168,7 @@ crates/
     src/cache.rs       a folder of kept answers, held under a size
     src/library.rs     hubs, sections, items, children, search
     src/playback.rs    part URL, timeline, stream choice, scrobble
+    src/queue.rs       what plays after what: a show in order, or shuffled
     src/download.rs    the original file, in one go or carried on
     src/image.rs       photo transcode requests
     src/model.rs       typed serde models and newtypes
@@ -216,7 +217,8 @@ app-kit / quartz-core / core-graphics / core-video / core-foundation /
 image-io / media-player / open-gl 0.3.2, block2 0.6.2, dispatch2 0.3.1,
 libmpv2-sys 4.0.1 (the raw bindings; the safe wrapper over them is the
 `player` crate's own), libc, reqwest 0.13.5 with native-tls, tokio 1.54.1,
-futures-util, url, serde 1.0.229, serde_json 1.0.154, rustix, thiserror.
+futures-util, url, fastrand 2.5.0, serde 1.0.229, serde_json 1.0.154,
+rustix, thiserror.
 There is no database.
 
 Threading has three rules. AppKit lives on the main thread. Network and
@@ -296,6 +298,14 @@ characters of a library's titles with the number of items under each, and
 `/services/ultrablur/colors?url=` gives the four colours of any picture.
 Both were read from a running server's answers; each has a recorded fixture
 in `crates/plex/tests/fixtures`.
+
+**Shuffle:** `/library/metadata/{id}/allLeaves` for a show, `/children`
+for a season, and `/library/sections/{id}/all?type=1` (films) or `type=4`
+(episodes) for a library, read once and not kept: one TV library of
+4,571 episodes answered with 12 MB. Plex's own way, `POST
+/playQueues?shuffle=1`, makes a play queue on the server, and this client
+does not write to the server to play something. So the order is drawn on
+the Mac, by `fastrand`, which was already in the build through `tempfile`.
 
 **Images:** `/photo/:/transcode?url=..&width=..&height=..&minSize=1&format=jpg`
 requested at the pixel size each kind of card is drawn at. A title logo,
@@ -442,8 +452,13 @@ Unknown by what is known of it (`formats::track_name`). A download keeps those
 files next to its video, and played from disk it gets them from there.
 
 **Skip intro / credits:** a button shown while the position is inside a
-marker. **Next episode:** on end of file, play the episode that follows in
-the show, into the next season when a season ends. Specials stay apart.
+marker. **Next episode:** on end of file, play the item that follows in
+the player's queue (`plex::queue::Queue`). For an episode the queue is its
+show in the server's order, into the next season when a season ends, with
+specials apart. A shuffle is a queue too, given to the player when it
+opens: its items in a random order drawn once from a seed, each once, and
+nothing after the last. Up Next, Next, Previous and the media keys all go
+by the queue, so a shuffle of films has them as well.
 
 ## 8. UI
 
@@ -485,7 +500,8 @@ look and a dark appearance.
   are ranked by plays and say their runtime, the full length of every
   play, which is not the time watched: at another speed, or for a part
   watched, the two differ.
-- **Library:** poster grid, paged while scrolling, sort menu. Listed by
+- **Library:** poster grid, paged while scrolling, sort menu, and a
+  Shuffle button that plays the whole library in a random order. Listed by
   title, a strip of first characters down the far edge jumps to each.
 - **Touch:** the display may take fingers. What is pressed on Home and in
   the libraries is 44 points each way where the layout is ours, and the
@@ -499,8 +515,8 @@ look and a dark appearance.
   none, the facts, Play / Resume, the watched toggle and the download
   button. Under it the tagline and the summary, and beside them the
   version, audio and subtitle pickers, the director, the studio and the
-  genres. Shows add a season picker with a button that marks the season,
-  and an episode list. An episode leads with a frame of itself on its
+  genres. Shows add a shuffle button, a season picker with buttons that
+  shuffle and mark the season, and an episode list. An episode leads with a frame of itself on its
   show's backdrop. A member of the cast and the director of a film lead to
   a page of their work in the library, under their photo and name. Nothing
   on a page takes presses over less than 44 points.
@@ -642,7 +658,7 @@ then need neither.
 | --- | --- | --- |
 | The Plex client is right | `cargo test` | Response parsing against the recorded fixtures, connection ordering, download resume, the cache, and the app's own logic where it has any |
 | What the servers say | `plex-rust servers [<address>]`, `plex-rust api [--post] <path>` | Each server of the account with the address it answers at, and the first server's raw answer to a request |
-| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Activity, Downloads, the sign-in or the player, or of the mini player once `o` is among the keys |
+| The interface looks right | `plex-rust snapshot <screen> <png> [<tweak>...]` | A PNG of the window showing Home, a library, an item, a search, a list, Activity, Downloads, the sign-in, the player, or the player going through a shuffle (`snapshot shuffle show=<key>\|season=<key>\|library=<index>`), or of the mini player once `o` is among the keys |
 | Nothing makes the viewer wait | `plex-rust snapshot walk <png> <step>...` | A line on stderr with the milliseconds since launch for each step taken and each thing shown, then a PNG |
 | Video plays right | `plex-rust play <file-url-or-item> --unattended <seconds> [--low-power]` | One line of JSON after that long: position, buffer, hardware decoder, dropped frames, colours, Dolby Vision profile, whether the layer asked for HDR, drawn size, scaler settings, tracks, `cpu_share`, the seconds to the first picture, and whether the window was visible |
 | Jumps are short | `plex-rust play <file-url-or-item> --seeks <seconds>x<presses>[@<ms>],... [speed=<rate>] [subtitles=<id>\|off] [paused]` | For each step, as p50, p90 and max over its presses: milliseconds from the press to the picture shown, to mpv's restart, to sound handed over, and to the picture moving, plus the A/V offset after, jumps that missed their target and jumps that did not finish |
@@ -698,8 +714,8 @@ checks of `play` (`--unattended` and `--seeks`), and `pacing`.
 **What works.** Signing in, finding a server and choosing an address.
 Home, libraries with sorting and filtering, detail pages, search. Playing
 the original file with hardware decoding, HDR10 and HLG output, track
-choice, subtitles in the file and beside it, markers, next episode, speed,
-media keys. Downloads, playing them with no server, and telling the server
+choice, subtitles in the file and beside it, markers, next episode,
+shuffle, speed, media keys. Downloads, playing them with no server, and telling the server
 afterwards how far the viewer got. One self-contained app bundle.
 
 **Not built.**

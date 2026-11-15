@@ -26,6 +26,8 @@ macOS.
   VideoToolbox, with HDR10, HLG and Dolby Vision profile 8 shown in HDR.
 - Resumes where you stopped, reports progress to the server, skips intros
   and credits, and goes on to the next episode, across seasons.
+- Shuffle: a show, a season, or a whole movie or TV library in a random
+  order, one after another, each item once.
 - Downloads films and episodes, with their subtitle files, and plays them
   without the server.
 - Activity: how much you watched, when, what and on what, over 7 days,
@@ -93,8 +95,15 @@ with a line at the bottom that says so and a button to try again.
 | Command-R | Load the page again |
 | Shift-Command-U | Mark as watched or unwatched |
 
-A secondary click on an item offers to play it or mark it, and on an
-episode to go to its show or its season.
+A secondary click on an item offers to play it or mark it, on a show to
+shuffle it, and on an episode to go to its show or its season.
+
+The shuffle button on a show's page plays its episodes in a random order,
+the one in its season bar the episodes of that season, and Shuffle in a
+library's bar every film or episode in it. Specials are left out but for
+the season of specials itself. The order is drawn once, on the Mac, and
+the player goes through it the way it goes through a show: Up Next offers
+the next item, N and P go forward and back, and it stops after the last.
 
 A shelf's heading with a chevron after it leads to the whole list. The two
 arrows at the other end of a heading bring the next cards of its shelf
@@ -142,8 +151,8 @@ much room its files take and how much the disk has left.
 | , and . | The start of the chapter, then the chapter before, and the next chapter |
 | Up, Down, in an open list | From row to row. Return chooses the one the keyboard is on |
 | Return | Skip the intro or credits, play the next episode once it is offered, or try again after a failure |
-| N | Next episode |
-| P | Start of the episode. Pressed again there, the previous episode |
+| N | Next episode, or next item of a shuffle |
+| P | Start of the episode. Pressed again there, the previous episode, or the previous item of a shuffle |
 | T | Time left, or the full length |
 | I | How the file is being played: picture, colour, decoding, sound, bit rate, dropped frames, buffer |
 | Tab, Shift-Tab | Move from button to button. Space or Return presses the one the keyboard is on |
@@ -164,7 +173,7 @@ much room its files take and how much the disk has left.
 | One finger tapping twice on a touch screen | Fill the window, and back |
 | Tap, click | Pause and resume |
 | Play/Pause media key | Pause and resume |
-| Next and Previous media keys | Next episode, and the start of this one or the one before. In a film they do nothing |
+| Next and Previous media keys | Next episode, and the start of this one or the one before. The same in a shuffle. In a film played on its own they do nothing |
 
 The same goes for the buttons on headphones, and for Control Center,
 which also shows what is playing with its poster, jumps 10 seconds
