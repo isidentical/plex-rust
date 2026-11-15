@@ -301,22 +301,36 @@ impl MediaServer {
         Ok(found)
     }
 
+    /// Every film of a movie library, or every episode of a TV library,
+    /// in no order to rely on.
+    pub async fn leaves(&self, section: &Section) -> Result<Vec<Item>> {
+        let kind = if section.kind == Kind::Show { Kind::Episode } else { Kind::Movie };
+        let path = format!("/library/sections/{}/all", section.key);
+        // Not kept: the episodes of one TV library of 4,571 came to 12 MB.
+        let Items { items, .. } =
+            self.forgetful().get(&path, &[("type", type_filter(kind))]).await?;
+        Ok(items)
+    }
+
     /// How many items of `kind` library `section` has, or how many of
     /// them are left to watch.
     pub async fn count(&self, section: &Section, kind: Kind, unwatched: bool) -> Result<u32> {
-        // The numbers the server's `type` filter takes.
-        let kind = match kind {
-            Kind::Movie => "1",
-            Kind::Show => "2",
-            Kind::Season => "3",
-            _ => "4",
-        };
-        let mut query = vec![("type", kind)];
+        let mut query = vec![("type", type_filter(kind))];
         if unwatched {
             query.push(("unwatched", "1"));
         }
         let path = format!("/library/sections/{}/all", section.key);
         Ok(self.page(&path, &query, 0, 0).await?.total)
+    }
+}
+
+/// The number the server's `type` filter takes for items of `kind`.
+fn type_filter(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Movie => "1",
+        Kind::Show => "2",
+        Kind::Season => "3",
+        _ => "4",
     }
 }
 

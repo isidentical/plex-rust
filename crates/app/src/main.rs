@@ -31,7 +31,7 @@ use crate::progress::Progress;
 use crate::seeks::Conditions;
 use crate::store::{OnDisk, Store};
 use crate::ui::player::input::Key;
-use crate::ui::shell::{Failure, Link, Press, Snapshot, Step, Subject, Tweaks};
+use crate::ui::shell::{Failure, Link, Press, Shuffled, Snapshot, Step, Subject, Tweaks};
 
 const USAGE: &str = "\
 usage: plex-rust
@@ -43,6 +43,8 @@ usage: plex-rust
        plex-rust snapshot downloads <png-path> [<tweak>...]
        plex-rust snapshot signin <png-path> [approving]
        plex-rust snapshot play <rating-key> <png-path> [away] [<key>...]
+       plex-rust snapshot shuffle show=<rating-key>|season=<rating-key>|library=<index>
+                         <png-path> [<key>...]
        plex-rust snapshot walk <png-path> [<step>...]
          steps: home, library=<index>, list=<server-path>, refresh,
                 scroll=<points>, back, forward, search=<query>,
@@ -118,6 +120,19 @@ fn run(args: &[&str]) -> Result<()> {
             let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
             let keys = keys.ok_or(Error::Usage(USAGE))?;
             snapshot(Subject::Play((*key).to_owned(), keys), path, tweaks)
+        }
+        ["snapshot", "shuffle", what, path, keys @ ..] => {
+            let shuffled = match what.split_once('=') {
+                Some(("show", key)) => Shuffled::Show(key.to_owned()),
+                Some(("season", key)) => Shuffled::Season(key.to_owned()),
+                Some(("library", index)) => {
+                    Shuffled::Library(index.parse().map_err(|_| Error::Usage(USAGE))?)
+                }
+                _ => return Err(Error::Usage(USAGE)),
+            };
+            let keys: Option<Vec<Key>> = keys.iter().map(|name| Key::named(name)).collect();
+            let keys = keys.ok_or(Error::Usage(USAGE))?;
+            snapshot(Subject::Shuffle(shuffled, keys), path, &[])
         }
         ["login"] => account::login(),
         ["servers"] => servers(None),

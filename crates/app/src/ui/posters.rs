@@ -35,7 +35,7 @@ use objc2_foundation::{
 use objc2_quartz_core::{
     CABasicAnimation, CAMediaTimingFunction, kCAMediaTimingFunctionEaseInEaseOut,
 };
-use plex::model::{Item, Kind, Part, RatingKey, Role};
+use plex::model::{Item, Kind, Part, RatingKey, Role, Section};
 
 use super::episode::EpisodeItem;
 use super::heading::{self, Paging};
@@ -97,6 +97,8 @@ pub enum Action {
     Play(Item),
     /// Play it otherwise than it was left.
     PlayAs(Item, Playback),
+    /// Play these in a random order, one after another.
+    Shuffle(Shuffle),
     SetWatched(Item, bool),
     /// Download it, or if it is downloaded or on its way, delete that.
     ToggleDownload(Item),
@@ -128,6 +130,18 @@ pub enum Action {
     /// Nothing yet: the pointer or the keyboard has come to this item,
     /// which may be opened next.
     Rest(Item),
+}
+
+/// What a shuffle plays.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Shuffle {
+    /// The episodes of the show with this key, but for its specials.
+    Show(RatingKey),
+    /// The episodes of the season with this key.
+    Season(RatingKey),
+    /// Every film of a movie library, or every episode of a TV library
+    /// but for specials.
+    Library(Section),
 }
 
 /// How to play an item, where that is not how the server remembers it.
@@ -455,6 +469,11 @@ define_class!(
         #[unsafe(method(menuPlay:))]
         fn menu_play(&self, _sender: Option<&AnyObject>) {
             self.act_on_menu_item(Action::Play);
+        }
+
+        #[unsafe(method(menuShuffle:))]
+        fn menu_shuffle(&self, _sender: Option<&AnyObject>) {
+            self.act_on_menu_item(|show| Action::Shuffle(Shuffle::Show(show.rating_key)));
         }
 
         #[unsafe(method(menuShow:))]
@@ -1382,6 +1401,9 @@ impl Posters {
         };
         if poster::is_playable(&item) {
             add("Play", sel!(menuPlay:));
+        }
+        if item.kind == Kind::Show {
+            add("Shuffle", sel!(menuShuffle:));
         }
         // A trailer has no page to open and no place in what was watched.
         if item.kind != Kind::Clip {

@@ -48,9 +48,9 @@ impl UpNext {
         this.still.set_flat();
         this.play.set_symbol("play.fill", theme::FONT_SIZE);
         this.play.set_title("Play Now");
-        this.play.setToolTip(Some(&NSString::from_str("Play the next episode now (Return)")));
+        this.play.setToolTip(Some(&NSString::from_str("Play it now (Return)")));
         this.cancel.set_title("Cancel");
-        this.cancel.setToolTip(Some(&NSString::from_str("Stay on this episode (Esc)")));
+        this.cancel.setToolTip(Some(&NSString::from_str("Stay on this one (Esc)")));
         // VoiceOver meets the card as one thing called Up Next, with the
         // lines and the two buttons inside it.
         let card = this.view();
@@ -124,17 +124,24 @@ impl UpNext {
     }
 }
 
-/// Where `episode` is in its show, for someone watching `playing`: its
-/// number, and its season too when it is not the one being watched. "Episode
-/// 1" alone, after the last episode of a season, reads as a mistake.
+/// Where `episode` is, for someone watching `playing`: its number, its
+/// season too when it is not the one being watched, and its show too when
+/// a shuffle goes on to another. "Episode 1" alone, after the last episode
+/// of a season, reads as a mistake.
 fn place(episode: &Item, playing: &Item) -> Option<String> {
     let number = episode.index?;
-    match episode.parent_index {
-        Some(season) if episode.parent_index != playing.parent_index => {
-            Some(format!("Season {season} \u{b7} Episode {number}"))
+    let other_show = episode.grandparent_rating_key != playing.grandparent_rating_key;
+    let show = episode.grandparent_title.as_deref().filter(|_| other_show);
+    let in_show = match episode.parent_index {
+        Some(season) if other_show || episode.parent_index != playing.parent_index => {
+            format!("Season {season} \u{b7} Episode {number}")
         }
-        _ => Some(format!("Episode {number}")),
-    }
+        _ => format!("Episode {number}"),
+    };
+    Some(match show {
+        Some(show) => format!("{show} \u{b7} {in_show}"),
+        None => in_show,
+    })
 }
 
 #[cfg(test)]
@@ -144,8 +151,13 @@ mod tests {
     use super::place;
 
     fn episode(season: u32, number: u32) -> Item {
+        of_show("10", season, number)
+    }
+
+    fn of_show(show: &str, season: u32, number: u32) -> Item {
         serde_json::from_value(serde_json::json!({
             "ratingKey": "1", "type": "episode", "title": "An episode",
+            "grandparentRatingKey": show, "grandparentTitle": format!("Show {show}"),
             "parentIndex": season, "index": number,
         }))
         .unwrap()
@@ -158,5 +170,18 @@ mod tests {
             place(&episode(2, 1), &episode(1, 22)).as_deref(),
             Some("Season 2 \u{b7} Episode 1")
         );
+    }
+
+    #[test]
+    fn a_shuffle_names_the_show_it_goes_on_to() {
+        assert_eq!(
+            place(&of_show("11", 1, 6), &of_show("10", 1, 6)).as_deref(),
+            Some("Show 11 \u{b7} Season 1 \u{b7} Episode 6")
+        );
+        let film = serde_json::from_value(serde_json::json!({
+            "ratingKey": "2", "type": "movie", "title": "A film",
+        }))
+        .unwrap();
+        assert_eq!(place(&film, &episode(1, 6)), None);
     }
 }

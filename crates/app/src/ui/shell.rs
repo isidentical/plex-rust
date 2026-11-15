@@ -24,7 +24,7 @@ use objc2_foundation::{
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{FirstCharacter, Listing, Page, Sort};
 use plex::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section};
-use plex::queue::Queue;
+use plex::queue::{self, Queue};
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
@@ -45,7 +45,7 @@ use super::player::input::Key;
 use super::player::{PlayerScreen, Purpose};
 use super::poster::Shape;
 pub use super::posters::Press;
-use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Style};
+use super::posters::{Action, Header, Outline, Playback, Posters, Shelf, Shuffle, Style};
 use super::sidebar::{Destination, Sidebar};
 use super::snapshot;
 use super::stale::{Reason, Stale};
@@ -342,6 +342,9 @@ pub enum Subject {
     /// The player, playing the item with this rating key as a check, after
     /// these keys were pressed in it.
     Play(String, Vec<Key>),
+    /// The player, playing this shuffle as a check, after these keys were
+    /// pressed in it.
+    Shuffle(Shuffled, Vec<Key>),
     /// The results of searching for this.
     Search(String),
     /// The whole list at this server path, as a shelf's heading leads to.
@@ -354,6 +357,17 @@ pub enum Subject {
     SignIn,
     /// Home, and from there these steps, with the time of each printed.
     Walk(Vec<Step>),
+}
+
+/// What a snapshot of a shuffle plays.
+#[derive(Clone)]
+pub enum Shuffled {
+    /// The show with this rating key.
+    Show(String),
+    /// The season with this rating key.
+    Season(String),
+    /// The library at this position in the sidebar, counting from zero.
+    Library(usize),
 }
 
 /// Changes to the state a snapshot is taken in.
@@ -1041,6 +1055,20 @@ impl Shell {
                     }),
                 }
             }
+            Some(Subject::Shuffle(shuffled, keys)) => {
+                let shuffle = match shuffled {
+                    Shuffled::Show(key) => Shuffle::Show(RatingKey::new(key.as_str())),
+                    Shuffled::Season(key) => Shuffle::Season(RatingKey::new(key.as_str())),
+                    Shuffled::Library(index) => match sections.get(*index) {
+                        Some(section) => Shuffle::Library(section.clone()),
+                        None => return self.go(Route::Home),
+                    },
+                };
+                let keys = keys.clone();
+                self.shuffle(shuffle, Purpose::Check, move |shell| {
+                    shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
+                });
+            }
             Some(Subject::Search(query)) => {
                 self.toolbar.set_search_text(query);
                 self.go(Route::Search(query.clone()));
@@ -1468,12 +1496,19 @@ impl Shell {
         listing: Listing,
     ) -> (Screen, Rc<dyn Fn()>) {
         let (relisted, of) = (Rc::downgrade(self), section.clone());
+        let (shuffled, all) = (Rc::downgrade(self), section.clone());
         let noun = if section.kind == Kind::Show { "show" } else { "movie" };
-        let bar = LibraryBar::new(self.main_thread, listing, noun, move |listing| {
+        let relist = move |listing| {
             if let Some(shell) = relisted.upgrade() {
                 shell.relist(&of, listing);
             }
-        });
+        };
+        let shuffle = move || {
+            if let Some(shell) = shuffled.upgrade() {
+                shell.shuffle(Shuffle::Library(all.clone()), Purpose::Watching, |_| {});
+            }
+        };
+        let bar = LibraryBar::new(self.main_thread, listing, noun, relist, shuffle);
         let header = Header { view: bar.view().retain(), height: theme::LIBRARY_BAR_HEIGHT };
         let nothing = if listing.unwatched_only {
             self.nothing(
@@ -2030,6 +2065,7 @@ impl Shell {
                 Action::Back => shell.back(),
                 Action::Play(item) => shell.play(&item, Purpose::Watching, Playback::default()),
                 Action::PlayAs(item, playback) => shell.play(&item, Purpose::Watching, playback),
+                Action::Shuffle(shuffle) => shell.shuffle(shuffle, Purpose::Watching, |_| {}),
                 Action::SetWatched(item, watched) => shell.set_watched(&item, watched),
                 Action::ToggleDownload(item) => shell.toggle_download(&item),
                 Action::ChooseStreams { part, audio, subtitles } => {
@@ -2421,6 +2457,56 @@ impl Shell {
         }
     }
 
+    /// Plays what `shuffle` names in a random order. The order is drawn
+    /// once, here on the Mac: a play queue made on the server would be a
+    /// change to the server. The first item is fetched in full, as
+    /// [`play`](Self::play) fetches one, and the player fetches each item
+    /// after it as it comes to it. `opened` is called once the player is.
+    fn shuffle(
+        self: &Rc<Self>,
+        shuffle: Shuffle,
+        purpose: Purpose,
+        opened: impl FnOnce(&Rc<Self>) + 'static,
+    ) {
+        if self.playing.borrow().is_some() || self.opening_player.replace(true) {
+            return;
+        }
+        let Some(session) = self.session() else {
+            self.opening_player.set(false);
+            return;
+        };
+        let (server, seed) = (session.server.clone(), fastrand::u64(..));
+        let without_specials = |items: Vec<Item>| -> Vec<Item> {
+            items.into_iter().filter(|item| !queue::is_special(item)).collect()
+        };
+        let load = async move {
+            let items = match shuffle {
+                Shuffle::Show(show) => without_specials(server.episodes(&show).await?),
+                Shuffle::Season(season) => server.children(&season).await?,
+                Shuffle::Library(section) => without_specials(server.leaves(&section).await?),
+            };
+            let queue = Queue::shuffled(items, seed);
+            let first = match queue.first() {
+                Some(first) => Some(server.item(&first.rating_key).await?),
+                None => None,
+            };
+            Ok((first, queue))
+        };
+        let (shell, moves, asked) = (Rc::clone(self), self.moves.get(), Instant::now());
+        self.background.run(self.main_thread, load, move |shuffled| {
+            shell.opening_player.set(false);
+            shell.heard(asked, &shuffled);
+            match shuffled {
+                Ok((Some(first), queue)) => {
+                    shell.open_player(&first, Some(queue), purpose);
+                    opened(&shell);
+                }
+                Ok((None, _)) => eprintln!("plex-rust: nothing to shuffle"),
+                Err(error) => shell.fail(moves, &error),
+            }
+        });
+    }
+
     /// Replaces the whole window content with the player, playing `item`:
     /// from this Mac if it was downloaded, from the server if not. With
     /// `queue`, the player goes on through it after `item`.
@@ -2668,7 +2754,9 @@ impl Shell {
         }
         // The picture is taken once the keys pressed in a player are done.
         let waits = match &snapshot.subject {
-            Subject::Play(_, keys) => keys.iter().filter(|key| **key == Key::Wait).count(),
+            Subject::Play(_, keys) | Subject::Shuffle(_, keys) => {
+                keys.iter().filter(|key| **key == Key::Wait).count()
+            }
             _ => 0,
         };
         let settle = SNAPSHOT_SETTLE + SNAPSHOT_KEY_WAIT * u32::try_from(waits).unwrap_or(u32::MAX);

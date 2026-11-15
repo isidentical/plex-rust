@@ -1,13 +1,15 @@
 //! The strip above a library's grid: how many items it lists on the left,
-//! which ones and in what order on the right.
+//! a way to play all of it shuffled, and which ones it lists and in what
+//! order on the right.
 
 use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSColor, NSControlSize, NSLayoutConstraint, NSPopUpButton,
-    NSSegmentSwitchTracking, NSSegmentedControl, NSTextField, NSView,
+    NSAccessibility, NSButton, NSCellImagePosition, NSColor, NSControlSize, NSImage,
+    NSLayoutConstraint, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl, NSTextField,
+    NSView,
 };
 use objc2_foundation::{NSArray, NSRect, NSString, ns_string};
 use plex::library::{Listing, Sort};
@@ -27,16 +29,19 @@ pub struct LibraryBar {
     noun: &'static str,
     /// Kept because controls do not retain their targets.
     _changed: Retained<Callback>,
+    _shuffled: Retained<Callback>,
 }
 
 impl LibraryBar {
     /// A bar showing `listing`. `on_change` is called with the new listing
-    /// when the viewer picks another order or flips the unwatched filter.
+    /// when the viewer picks another order or flips the unwatched filter,
+    /// and `on_shuffle` when they ask for the whole library shuffled.
     pub fn new(
         main_thread: MainThreadMarker,
         listing: Listing,
         noun: &'static str,
         on_change: impl Fn(Listing) + 'static,
+        on_shuffle: impl Fn() + 'static,
     ) -> Self {
         let order = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(main_thread),
@@ -97,9 +102,32 @@ impl LibraryBar {
             shown.setAction(Some(Callback::action()));
         }
 
+        let shuffled = Callback::new(main_thread, move |_| on_shuffle());
+        // SAFETY: the bar keeps the target for as long as it keeps the
+        // button.
+        let shuffle = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("Shuffle"),
+                Some(&shuffled),
+                Some(Callback::action()),
+                main_thread,
+            )
+        };
+        let glyph = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            ns_string!("shuffle"),
+            None,
+        );
+        shuffle.setImage(glyph.as_deref());
+        shuffle.setImagePosition(NSCellImagePosition::ImageLeading);
+        shuffle.setControlSize(NSControlSize::ExtraLarge);
+        // A TV library plays its episodes, not its shows.
+        let played = if noun == "show" { "episode" } else { noun };
+        let tip = format!("Play every {played} of this library in a random order");
+        shuffle.setToolTip(Some(&NSString::from_str(&tip)));
+
         let count = label::line(theme::FONT_BODY, Weight::Regular, &secondary, main_thread);
         let view = NSView::new(main_thread);
-        for control in [&**order, &**sort_by, &**shown, &**count] {
+        for control in [&**order, &**sort_by, &**shown, &**shuffle, &**count] {
             let control: &NSView = control;
             control.setTranslatesAutoresizingMaskIntoConstraints(false);
             view.addSubview(control);
@@ -117,8 +145,11 @@ impl LibraryBar {
             shown
                 .trailingAnchor()
                 .constraintEqualToAnchor_constant(&sort_by.leadingAnchor(), -theme::SPACE_XL),
+            shuffle
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&shown.leadingAnchor(), -theme::SPACE_XL),
         ]));
-        Self { view, count, noun, _changed: changed }
+        Self { view, count, noun, _changed: changed, _shuffled: shuffled }
     }
 
     pub fn view(&self) -> &NSView {

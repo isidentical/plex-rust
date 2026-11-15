@@ -32,7 +32,7 @@ use super::hover::HoverView;
 use super::label::{self, Weight};
 use super::layout;
 use super::poster::{Card, Shape};
-use super::posters::{Action, Header, OnAction, Outline, Playback, Posters, Shelf, Style};
+use super::posters::{Action, Header, OnAction, Outline, Playback, Posters, Shelf, Shuffle, Style};
 use super::text;
 use super::theme;
 use crate::downloads::{Downloads, State};
@@ -108,7 +108,7 @@ pub struct Detail {
     /// the width of the window.
     header_height: Cell<f64>,
     /// Kept because controls do not retain their targets.
-    _targets: [Retained<Callback>; 9],
+    _targets: [Retained<Callback>; 11],
 }
 
 /// The views at the top of the page.
@@ -144,6 +144,8 @@ struct Hero {
     play: Pill,
     /// Beside the button that resumes: the way back to the beginning.
     restart: Pill,
+    /// On a show's page, plays its episodes in a random order.
+    shuffle: Pill,
     watched: Pill,
     download: Pill,
     /// Beside the download button while a download is on its way: how far
@@ -153,6 +155,7 @@ struct Hero {
     /// the header opens.
     menu_play: Retained<NSMenuItem>,
     menu_restart: Retained<NSMenuItem>,
+    menu_shuffle: Retained<NSMenuItem>,
     menu_watched: Retained<NSMenuItem>,
     remaining: Remaining,
     /// The line from the poster.
@@ -175,6 +178,8 @@ struct Hero {
     genres: Retained<NSStackView>,
     seasons: Seasons,
     season_size: Retained<NSTextField>,
+    /// Plays the episodes of the season listed in a random order.
+    season_shuffle: Pill,
     /// Marks every episode of the season listed as watched, or as not.
     season_watched: Pill,
     on_event: Rc<dyn Fn(Event)>,
@@ -212,6 +217,8 @@ impl Detail {
                 target(Self::audio_chosen),
                 target(Self::subtitles_chosen),
                 target(Self::press_season_watched),
+                target(Self::press_shuffle),
+                target(Self::press_season_shuffle),
             ];
             let heard = Weak::clone(page);
             let hero = Hero::new(main_thread, kind, move |event| {
@@ -219,8 +226,19 @@ impl Detail {
                     page.hear(event);
                 }
             });
-            let [play, restart, watched, download, season, version, audio, subtitles, marked] =
-                &targets;
+            let [
+                play,
+                restart,
+                watched,
+                download,
+                season,
+                version,
+                audio,
+                subtitles,
+                marked,
+                shuffle,
+                season_shuffle,
+            ] = &targets;
             // SAFETY: the page keeps the targets for as long as it keeps
             // the controls.
             unsafe {
@@ -244,6 +262,12 @@ impl Detail {
                 hero.seasons.menu.setAction(Some(Callback::action()));
                 hero.season_watched.button.setTarget(Some(marked));
                 hero.season_watched.button.setAction(Some(Callback::action()));
+                hero.shuffle.button.setTarget(Some(shuffle));
+                hero.shuffle.button.setAction(Some(Callback::action()));
+                hero.menu_shuffle.setTarget(Some(shuffle));
+                hero.menu_shuffle.setAction(Some(Callback::action()));
+                hero.season_shuffle.button.setTarget(Some(season_shuffle));
+                hero.season_shuffle.button.setAction(Some(Callback::action()));
                 let choices =
                     [(&hero.version, version), (&hero.audio, audio), (&hero.subtitles, subtitles)];
                 for (choice, target) in choices {
@@ -448,6 +472,21 @@ impl Detail {
                 self.hero.show_watched(watched);
             }
             (self.on_action)(Action::SetWatched(item, watched));
+        }
+    }
+
+    /// Plays the episodes of the show on the page in a random order.
+    fn press_shuffle(&self) {
+        let item = self.item.borrow().clone();
+        if let Some(show) = item.filter(|item| item.kind == Kind::Show) {
+            (self.on_action)(Action::Shuffle(Shuffle::Show(show.rating_key)));
+        }
+    }
+
+    /// Plays the episodes of the season listed in a random order.
+    fn press_season_shuffle(&self) {
+        if let Some(season) = self.listed_season() {
+            (self.on_action)(Action::Shuffle(Shuffle::Season(season.rating_key)));
         }
     }
 
@@ -889,19 +928,28 @@ impl Hero {
         play.button.setKeyEquivalent(ns_string!("\r"));
         let restart = Pill::large("Play from Start", "arrow.counterclockwise", false, main_thread);
         restart.button.setHidden(true);
+        let shuffle = Pill::large("Shuffle", "shuffle", false, main_thread);
+        shuffle.button.setHidden(kind != Kind::Show);
         let watched = Pill::large("Mark as Watched", "checkmark", false, main_thread);
         let download = Pill::large("Download", "arrow.down.circle", false, main_thread);
         download.button.setHidden(true);
         let downloaded = line(theme::FONT_BODY, Weight::Regular, &secondary);
         downloaded.setHidden(true);
         let remaining = Remaining::new(main_thread);
-        let row: [&NSView; 5] =
-            [&play.button, &restart.button, &watched.button, &download.button, &downloaded];
+        let row: [&NSView; 6] = [
+            &play.button,
+            &restart.button,
+            &shuffle.button,
+            &watched.button,
+            &download.button,
+            &downloaded,
+        ];
         let buttons = NSStackView::stackViewWithViews(&NSArray::from_slice(&row), main_thread);
         buttons.setSpacing(theme::SPACE_M);
         buttons.setCustomSpacing_afterView(theme::SPACE_L, &download.button);
 
         let seasons = Seasons::new(main_thread);
+        let season_shuffle = Pill::large("Shuffle Season", "shuffle", false, main_thread);
         let season_watched = Pill::large("Mark Season as Watched", "checkmark", false, main_thread);
 
         let tagline = label::paragraph(
@@ -941,9 +989,13 @@ impl Hero {
         let menu_restart = NSMenuItem::new(main_thread);
         menu_restart.setTitle(ns_string!("Play from Start"));
         menu_restart.setHidden(true);
+        let menu_shuffle = NSMenuItem::new(main_thread);
+        menu_shuffle.setTitle(ns_string!("Shuffle"));
+        menu_shuffle.setHidden(kind != Kind::Show);
         let menu = NSMenu::new(main_thread);
         menu.addItem(&menu_play);
         menu.addItem(&menu_restart);
+        menu.addItem(&menu_shuffle);
         menu.addItem(&menu_watched);
         // SAFETY: the view keeps the menu, as a responder keeps the one it
         // is given.
@@ -977,11 +1029,13 @@ impl Hero {
             badges,
             play,
             restart,
+            shuffle,
             watched,
             download,
             downloaded,
             menu_play,
             menu_restart,
+            menu_shuffle,
             menu_watched,
             remaining,
             tagline,
@@ -996,6 +1050,7 @@ impl Hero {
             genres,
             seasons,
             season_size: line(theme::FONT_BODY, Weight::Regular, &secondary),
+            season_shuffle,
             season_watched,
             on_event,
         };
@@ -1062,10 +1117,11 @@ impl Hero {
         let about = NSStackView::stackViewWithViews(&NSArray::from_slice(&about), main_thread);
         about.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        let season: [&NSView; 4] = [
+        let season: [&NSView; 5] = [
             &self.seasons.tabs,
             &self.seasons.menu,
             &self.season_size,
+            &self.season_shuffle.button,
             &self.season_watched.button,
         ];
         let season = NSStackView::stackViewWithViews(&NSArray::from_slice(&season), main_thread);
@@ -1181,6 +1237,7 @@ impl Hero {
     fn season_bar_hidden(&self, hidden: bool) {
         self.seasons.set_hidden(hidden);
         self.season_size.setHidden(hidden);
+        self.season_shuffle.button.setHidden(hidden);
         self.season_watched.button.setHidden(hidden);
     }
 
