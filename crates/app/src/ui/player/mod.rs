@@ -91,7 +91,7 @@ const WRONG_COLORS: &str = "Dolby Vision profile 5 plays in the wrong colours he
 const TICKS_OF_SCRUB_SETTLING: u32 = 2;
 
 /// How far the left and right arrow keys jump.
-const SHORT_JUMP: f64 = 3.0;
+const SHORT_JUMP: f64 = 5.0;
 
 /// How far they jump with Shift held, and how far the buttons jump.
 const LONG_JUMP: f64 = 10.0;

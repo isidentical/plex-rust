@@ -128,7 +128,7 @@ much room its files take and how much the disk has left.
 | Key | Action |
 | --- | --- |
 | Space, K, click on the picture | Pause and resume |
-| Left, Right | Back and forward 3 seconds. Held, they scan |
+| Left, Right | Back and forward 5 seconds. Held, they scan |
 | Shift with Left, Right | Back and forward 10 seconds, as the buttons do |
 | Up, Down | Volume. Held, it keeps changing |
 | M | Mute |

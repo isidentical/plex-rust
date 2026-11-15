@@ -48,7 +48,7 @@ const SETTLE: Duration = Duration::from_secs(2);
 /// The jumps made while paused, in seconds: what the arrow keys do.
 /// Forward first, so that the jumps back stay inside what has been read
 /// and none of them waits for the network.
-const PAUSED_JUMPS: [f64; 6] = [3.0, 3.0, 3.0, -3.0, -3.0, -3.0];
+const PAUSED_JUMPS: [f64; 6] = [5.0, 5.0, 5.0, -5.0, -5.0, -5.0];
 
 /// How long a paused jump is given. It is longer than the jump takes and
 /// than the frame clock then keeps ticking, so that every jump finds the
