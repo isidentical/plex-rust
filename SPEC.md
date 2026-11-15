@@ -170,6 +170,7 @@ crates/
     src/playback.rs    part URL, timeline, stream choice, scrobble
     src/queue.rs       what plays after what: a show in order, or shuffled
     src/download.rs    the original file, in one go or carried on
+    src/subtitles.rs   subtitles the server finds online, and adding one
     src/image.rs       photo transcode requests
     src/model.rs       typed serde models and newtypes
     src/error.rs
@@ -203,7 +204,8 @@ crates/
                        detail, downloads, library_bar, jump, heading,
                        notice, stale, toast, failure, confirm, artwork,
                        backdrop, banner, person, formats, text, label,
-                       layout, hover, callback, theme, snapshot
+                       layout, hover, callback, theme, snapshot,
+                       subtitle_search
     src/ui/player/     the player screen: controls, chips, sliders, menus,
                        input, media keys (remote), up next, zoom, info,
                        failure, the mini player, and a theme of its own
@@ -330,6 +332,22 @@ description is not consistent on that name.
 
 **Stream choice:** `PUT /library/parts/{partId}?audioStreamID=&subtitleStreamID=`
 so the choice is remembered server side.
+
+**Subtitles from online:** neither request is in Plex's description.
+Both are made as python-plexapi's `Video.searchSubtitles` and
+`Video.downloadSubtitles` make them. `GET
+/library/metadata/{id}/subtitles?language=..&hearingImpaired=0&forced=0`
+lists candidate `Stream`s, `language` a two letter ISO 639-1 code. On one
+server, with Plex Pass, it answered ten OpenSubtitles results for one film,
+each with a `key` such as `/library/streams/21984`, `providerTitle`,
+`score` as text and the codec. Search answers are not cached. `PUT` to
+the same path with `key` alone adds one. python-plexapi notes the server
+fetches the file after it answers, so the item is asked for again once a
+second, for up to 20 seconds, until its part lists a subtitle stream with
+a key it did not have. The page then chooses it with the stream choice
+request above, and the player adds it with `sub-add`. The `PUT` has only
+been checked by the request the code builds: it was never sent while
+testing, and is listed in section 12.
 
 **Activity:** what Plex Web's Dashboard is drawn from, read only.
 `/status/sessions/history/all` is every play the server kept, paged a
@@ -757,6 +775,8 @@ afterwards how far the viewer got. One self-contained app bundle.
   it, the buttons on hover, the first click while another app is active,
   and leaving full screen for it were not tried with a window on screen.
 - Whether the JWT sign-in works against a media server (section 6).
+- Adding subtitles found online (section 6). The search was run against
+  a real server, the `PUT` that adds one never was.
 - Whether an ad hoc signed bundle keeps the Local Network permission
   across rebuilds (section 2).
 - Energy use. Processor time is measured by the checks in section 11. No

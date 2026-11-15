@@ -30,6 +30,8 @@ macOS.
   order, one after another, each item once.
 - Downloads films and episodes, with their subtitle files, and plays them
   without the server.
+- Finds subtitles online for a film or an episode, through your server,
+  and adds the ones you pick.
 - Activity: how much you watched, when, what and on what, over 7 days,
   30 days, 12 months or all time. Watch time by day or month, the hours
   of the week you watch most, your most played shows and films, genres,
@@ -116,6 +118,15 @@ last given.
 A library listed by title has the first letters of its titles down its
 far edge. A press on one goes to where those titles start, and so does a
 press that slides along the letters and lets go on one.
+
+## Subtitles from online
+
+The Subtitles menu on the page of a film or an episode ends with Search
+for Subtitles..., and so does the subtitles list in the player. It lists
+the subtitle files your server finds online in the language you pick,
+your Mac's own language at first, the best rated first. The one you pick
+is added to the item on the server and turned on. The server finds them
+through its OpenSubtitles agent, which needs Plex Pass.
 
 ## Downloads
 
