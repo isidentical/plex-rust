@@ -14,6 +14,7 @@ mod image;
 pub mod library;
 pub mod model;
 pub mod playback;
+pub mod queue;
 mod server;
 
 pub use crate::cache::Cache;

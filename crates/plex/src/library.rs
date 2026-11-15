@@ -363,37 +363,6 @@ pub fn next_up(episodes: &[Item]) -> Option<&Item> {
     later.or_else(|| episodes.iter().find(unwatched)).or(episodes.first())
 }
 
-/// The episodes to go to from one episode.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Neighbours {
-    pub previous: Option<Item>,
-    pub next: Option<Item>,
-}
-
-/// The episodes before and after `episode`, given every episode of its
-/// show in the server's order, as [`MediaServer::episodes`] lists them.
-///
-/// The order is walked as it stands. The last episode of a season leads to
-/// the first of the season after it, and a season the server does not have
-/// or a number missing within a season is stepped over, because no number
-/// is ever counted up from.
-///
-/// Specials, which the server keeps as season 0 ahead of the first season,
-/// are a row of their own: a special's neighbours are specials, and no
-/// other episode leads to one.
-pub fn neighbours(episodes: &[Item], episode: &RatingKey) -> Neighbours {
-    let Some(at) = episodes.iter().position(|other| other.rating_key == *episode) else {
-        return Neighbours { previous: None, next: None };
-    };
-    let is_special = |episode: &Item| episode.parent_index == Some(0);
-    let special = is_special(&episodes[at]);
-    let alike = |other: &&Item| is_special(other) == special;
-    Neighbours {
-        previous: episodes[..at].iter().rfind(alike).cloned(),
-        next: episodes[at + 1..].iter().find(alike).cloned(),
-    }
-}
-
 /// Keeps the rows that hold movies, shows or episodes and decodes them.
 fn video_hubs(hubs: Hubs, path: &str) -> Result<Vec<Hub>> {
     const VIDEO: [&str; 5] = ["movie", "show", "season", "episode", "mixed"];
@@ -564,44 +533,6 @@ mod tests {
         // All watched: start again.
         assert_eq!(next_number(&[(1, None), (1, None)]), Some(1));
         assert_eq!(next_number(&[]), None);
-    }
-
-    type SeasonAndNumber = Option<(u32, u32)>;
-
-    /// The episodes around the one with `key` in the `leaves` fixture, each
-    /// as (season, number). The fixture is every episode of a show with
-    /// two specials and eleven seasons, cut down to the first two and the
-    /// last episode of season 1 and the first and last of seasons 2 and 4.
-    fn around(key: &str) -> (SeasonAndNumber, SeasonAndNumber) {
-        let Items { items, .. } = fixture!("leaves");
-        let numbers = |episode: Option<Item>| {
-            episode.map(|episode| (episode.parent_index.unwrap(), episode.index.unwrap()))
-        };
-        let Neighbours { previous, next } = neighbours(&items, &RatingKey::new(key));
-        (numbers(previous), numbers(next))
-    }
-
-    #[test]
-    fn a_season_leads_into_the_next_and_back() {
-        // Season 1 jumps from episode 2 to 13, and season 3 is missing.
-        assert_eq!(around("1058"), (Some((1, 2)), Some((2, 1))));
-        assert_eq!(around("1085"), (Some((1, 13)), Some((2, 13))));
-        assert_eq!(around("1097"), (Some((2, 1)), Some((4, 1))));
-        assert_eq!(around("1117"), (Some((2, 13)), Some((4, 13))));
-    }
-
-    #[test]
-    fn a_show_ends_at_its_first_and_last_episode() {
-        // The specials come before season 1 and are not gone back into.
-        assert_eq!(around("1046"), (None, Some((1, 2))));
-        assert_eq!(around("1129"), (Some((4, 1)), None));
-        assert_eq!(around("no such episode"), (None, None));
-    }
-
-    #[test]
-    fn specials_lead_only_to_specials() {
-        assert_eq!(around("1199"), (None, Some((0, 2))));
-        assert_eq!(around("1200"), (Some((0, 1)), None));
     }
 
     #[test]

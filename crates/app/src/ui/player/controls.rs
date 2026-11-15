@@ -44,7 +44,7 @@ pub struct Controls {
     pub toggle: Retained<Chip>,
     pub rewind: Retained<Chip>,
     pub forward: Retained<Chip>,
-    /// Shown for episodes only, as is `next`.
+    /// Shown only where the player goes through a queue, as is `next`.
     pub previous: Retained<Chip>,
     pub next: Retained<Chip>,
     pub mute: Retained<Chip>,
@@ -81,14 +81,18 @@ pub struct Controls {
 
 impl Controls {
     /// Builds the controls for `item` on top of whatever `root` holds, on
-    /// panels of `material`.
+    /// panels of `material`. With `steps`, they have buttons for the next
+    /// and the previous item.
     pub fn new(
         main_thread: MainThreadMarker,
         root: &NSView,
         item: &Item,
+        steps: bool,
         material: Material,
     ) -> Self {
-        let button = |symbol, name, key| Chip::button(main_thread, symbol, name, key);
+        let button = |symbol, name: &str, key| Chip::button(main_thread, symbol, name, key);
+        // Only a shuffle of a movie library goes from film to film.
+        let unit = if item.kind == Kind::Movie { "film" } else { "episode" };
         let scrubber =
             Slider::new(main_thread, "Position", 0.0, theme::SCRUBBER_STEP, Reading::Time);
         let controls = Self {
@@ -100,8 +104,8 @@ impl Controls {
             toggle: button("pause.fill", "Pause", "Space"),
             rewind: button("gobackward.10", "Back 10 seconds", "Shift \u{2190}"),
             forward: button("goforward.10", "Forward 10 seconds", "Shift \u{2192}"),
-            previous: button("backward.end.fill", "Previous episode", "P"),
-            next: button("forward.end.fill", "Next episode", "N"),
+            previous: button("backward.end.fill", &format!("Previous {unit}"), "P"),
+            next: button("forward.end.fill", &format!("Next {unit}"), "N"),
             mute: button("speaker.wave.2.fill", "Mute", "M"),
             volume: Slider::new(
                 main_thread,
@@ -138,10 +142,9 @@ impl Controls {
             .setToolTip(tooltip("Playback speed (S slower, D faster, R normal)").as_deref());
         controls.speed.set_name("Playback speed");
         controls.skip.setToolTip(tooltip("Skip (Return)").as_deref());
-        let is_episode = item.kind == Kind::Episode;
         controls.chapters.setHidden(true);
-        controls.previous.setHidden(!is_episode);
-        controls.next.setHidden(!is_episode);
+        controls.previous.setHidden(!steps);
+        controls.next.setHidden(!steps);
 
         controls.set_heading(item, None);
         controls.place_top(main_thread, root, material);

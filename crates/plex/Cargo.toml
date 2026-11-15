@@ -11,6 +11,7 @@ description = "A client for the plex.tv and Plex Media Server HTTP APIs"
 workspace = true
 
 [dependencies]
+fastrand = "2.5"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["http2", "json", "native-tls", "query"] }
 serde = { version = "1", features = ["derive"] }

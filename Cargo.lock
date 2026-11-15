@@ -851,6 +851,7 @@ dependencies = [
 name = "plex"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "futures-util",
  "reqwest",
  "serde",

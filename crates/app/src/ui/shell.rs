@@ -24,6 +24,7 @@ use objc2_foundation::{
 use objc2_quartz_core::{CAMediaTiming, CATransition, kCATransitionFade};
 use plex::library::{FirstCharacter, Listing, Page, Sort};
 use plex::model::{Colors, Hub, Item, Kind, RatingKey, Role, Section};
+use plex::queue::Queue;
 use plex::{Cache, Client, MediaServer, Token};
 
 pub use self::walk::Step;
@@ -1035,7 +1036,7 @@ impl Shell {
                         self.press_later(keys, SNAPSHOT_KEYS_AFTER);
                     }
                     None => self.fetch(key, Asked::Server, move |shell, item| {
-                        shell.open_player(item, Purpose::Check);
+                        shell.open_player(item, None, Purpose::Check);
                         shell.press_later(keys, SNAPSHOT_KEYS_AFTER);
                     }),
                 }
@@ -2394,7 +2395,7 @@ impl Shell {
             match (item, download) {
                 (Ok(mut item), _) => {
                     playback.apply(&mut item);
-                    shell.open_player(&item, purpose);
+                    shell.open_player(&item, None, purpose);
                 }
                 // The server has gone since it last answered, or the
                 // item has gone from the server. The file is still here.
@@ -2414,15 +2415,16 @@ impl Shell {
             Ok(mut item) => {
                 // The version that was downloaded is the one there is.
                 Playback { version: None, ..playback }.apply(&mut item);
-                self.open_player(&item, purpose);
+                self.open_player(&item, None, purpose);
             }
             Err(error) => self.fail(self.moves.get(), &error),
         }
     }
 
     /// Replaces the whole window content with the player, playing `item`:
-    /// from this Mac if it was downloaded, from the server if not.
-    fn open_player(self: &Rc<Self>, item: &Item, purpose: Purpose) {
+    /// from this Mac if it was downloaded, from the server if not. With
+    /// `queue`, the player goes on through it after `item`.
+    fn open_player(self: &Rc<Self>, item: &Item, queue: Option<Queue>, purpose: Purpose) {
         // Replacing a player without closing it would leave it running
         // unseen, with nothing left that could stop it.
         if self.playing.borrow().is_some() {
@@ -2448,6 +2450,7 @@ impl Shell {
             &self.downloads,
             images,
             item,
+            queue,
             self.settings.get(),
             purpose,
             move || {

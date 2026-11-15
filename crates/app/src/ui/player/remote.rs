@@ -22,7 +22,7 @@ use objc2_media_player::{
     MPRemoteCommandCenter, MPRemoteCommandEvent, MPRemoteCommandHandlerStatus,
     MPSkipIntervalCommandEvent,
 };
-use plex::model::{Item, Kind};
+use plex::model::Item;
 
 use crate::images::Artwork;
 
@@ -67,12 +67,13 @@ pub struct Remote {
 
 impl Remote {
     /// Has `act` called on the main thread with every command the viewer
-    /// gives through the media controls. `item` is what will play: only
-    /// an episode has a next and a previous one to offer. `skip` is how
-    /// many seconds the controls should offer to jump by.
+    /// gives through the media controls. With `steps`, what plays goes
+    /// from item to item and the controls offer the next and the previous
+    /// one. `skip` is how many seconds the controls should offer to jump
+    /// by.
     pub fn register(
         main_thread: MainThreadMarker,
-        item: &Item,
+        steps: bool,
         skip: f64,
         act: impl Fn(Command) + 'static,
     ) -> Self {
@@ -104,7 +105,6 @@ impl Remote {
             targets.push((command.retain(), target));
         };
 
-        let is_episode = item.kind == Kind::Episode;
         let intervals = NSArray::from_retained_slice(&[NSNumber::new_f64(skip)]);
         // SAFETY: these read the app's one command center and its commands,
         // and set a property to a value of its declared type.
@@ -113,7 +113,7 @@ impl Remote {
             add(&center.playCommand(), |_| Some(Command::Play));
             add(&center.pauseCommand(), |_| Some(Command::Pause));
             add(&center.togglePlayPauseCommand(), |_| Some(Command::TogglePause));
-            if is_episode {
+            if steps {
                 add(&center.nextTrackCommand(), |_| Some(Command::Next));
                 add(&center.previousTrackCommand(), |_| Some(Command::Previous));
             }

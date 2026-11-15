@@ -47,9 +47,9 @@ use objc2_foundation::{
 };
 use player::{Chapter, DolbyVision, EndReason, Event, Player, Sidecar, Track, TrackKind};
 use plex::MediaServer;
-use plex::library::{self, Neighbours};
 use plex::model::{Item, Kind, Marker, MarkerKind, Part};
 use plex::playback::{self, PlaybackState};
+use plex::queue::{Neighbours, Queue};
 
 use self::badge::Notice;
 use self::captions::{Shift, Size};
@@ -217,11 +217,12 @@ pub struct Ivars {
     chapters: RefCell<Vec<Chapter>>,
     /// The subtitle files to add to the file being opened, once it is.
     sidecars: RefCell<Vec<Sidecar>>,
-    /// Every episode of the show being played, in the server's order,
-    /// once the server has listed them.
-    episodes: RefCell<Option<Vec<Item>>>,
-    /// The episodes before and after the one playing. `None` for a film,
-    /// and for an episode until its show is listed.
+    /// What plays after what: a shuffle given on opening, or the
+    /// episodes of the show being played once the server has listed them.
+    /// `None` for a film played on its own.
+    queue: RefCell<Option<Queue>>,
+    /// The items before and after the one playing in the queue. `None`
+    /// while there is no queue.
     neighbours: RefCell<Option<Neighbours>>,
     up_next: Cell<UpNext>,
     /// Held while playing, so that the display does not go to sleep in the
@@ -298,7 +299,8 @@ impl PlayerScreen {
     /// `item` should be the full item from [`MediaServer::item`], which is
     /// the one that knows its intro and credits. An episode gives way to
     /// the one after it without the screen closing, so what
-    /// [`item`](Self::item) returns changes.
+    /// [`item`](Self::item) returns changes. With `queue`, `item` is its
+    /// first and the screen goes through the queue in its order instead.
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         main_thread: MainThreadMarker,
@@ -307,6 +309,7 @@ impl PlayerScreen {
         downloads: &Rc<Downloads>,
         images: Option<&Rc<Images>>,
         item: &Item,
+        queue: Option<Queue>,
         settings: Settings,
         purpose: Purpose,
         on_close: impl Fn() + 'static,
@@ -327,7 +330,8 @@ impl PlayerScreen {
         crate::ui::layout::cover(&root, &video);
         root.hold_picture(&video);
         let material = Material::choose();
-        let controls = Controls::new(main_thread, &root, item, material);
+        let steps = steps_through(item, queue.as_ref());
+        let controls = Controls::new(main_thread, &root, item, steps, material);
 
         let this = Self::alloc(main_thread).set_ivars(Ivars {
             root,
@@ -352,7 +356,7 @@ impl PlayerScreen {
             shows_length: Cell::new(false),
             chapters: RefCell::new(Vec::new()),
             sidecars: RefCell::new(Vec::new()),
-            episodes: RefCell::new(None),
+            queue: RefCell::new(queue),
             neighbours: RefCell::new(None),
             up_next: Cell::new(UpNext::Waiting),
             awake: RefCell::new(None),
@@ -377,7 +381,7 @@ impl PlayerScreen {
         screen.connect_controls();
         screen.listen();
         screen.show_speed();
-        screen.show_neighbours();
+        screen.find_neighbours();
         // Loaded before the timer and the event thread exist: both keep the
         // screen and its player alive, so a failure after them would leak.
         screen.load(None)?;
@@ -400,7 +404,7 @@ impl PlayerScreen {
         unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
         *screen.ivars().timer.borrow_mut() = Some(timer);
         if purpose == Purpose::Watching {
-            screen.take_media_controls(images);
+            screen.take_media_controls(steps);
         }
         screen.follow_events(main_thread);
         screen.list_episodes();
@@ -805,30 +809,42 @@ impl PlayerScreen {
         }
     }
 
-    /// Takes the system's media controls for this playback, and fetches
-    /// the poster they show next to its title.
-    fn take_media_controls(&self, images: Option<&Rc<Images>>) {
-        let item = self.item();
+    /// Takes the system's media controls for this playback, with a next
+    /// and a previous item if it `steps` through a queue, and fetches the
+    /// poster they show next to its title.
+    fn take_media_controls(&self, steps: bool) {
         let screen = Weak::new(self);
-        let remote = Remote::register(self.mtm(), &item, LONG_JUMP, move |command| {
+        let remote = Remote::register(self.mtm(), steps, LONG_JUMP, move |command| {
             if let Some(screen) = screen.load() {
                 screen.obey(command);
             }
         });
         *self.ivars().remote.borrow_mut() = Some(remote);
+        self.show_poster();
+    }
 
+    /// Fetches the poster the system's media controls show next to the
+    /// title of what plays: its show's, for an episode. A shuffle moves
+    /// from show to show and film to film, so each item fetches its own.
+    fn show_poster(&self) {
+        let item = self.item();
         let poster = item.grandparent_thumb.as_deref().or(item.thumb.as_deref());
-        let (Some(poster), Some(images)) = (poster, images) else {
+        let (Some(poster), Some(images)) = (poster, self.ivars().images.as_ref()) else {
             return;
         };
         // The size the item's own page shows it at, so it is rarely fetched.
         let (width, height) = crate::ui::theme::HERO_POSTER_REQUEST;
         let scale = crate::ui::theme::RETINA_SCALE;
         let screen = Weak::new(self);
+        let wanted = item.rating_key.clone();
         images.load(poster, width * scale, height * scale, move |artwork| {
             let Some(screen) = screen.load() else {
                 return;
             };
+            // The viewer may have gone on to another item meanwhile.
+            if screen.item().rating_key != wanted {
+                return;
+            }
             if let Some(remote) = screen.ivars().remote.borrow().as_ref() {
                 remote.set_artwork(artwork);
             }
@@ -1131,7 +1147,7 @@ impl PlayerScreen {
                         | ']'
                 )
         );
-        let is_episode = self.item().kind == Kind::Episode;
+        let steps = steps_through(&self.item(), self.ivars().queue.borrow().as_ref());
         let result = match key {
             // In an open list the arrows go from row to row.
             Key::Up | Key::Down if self.ivars().offer.get().is_some() => {
@@ -1185,11 +1201,11 @@ impl PlayerScreen {
                 self.enter_mini();
                 Ok(())
             }
-            Key::Character('n') if is_episode => {
+            Key::Character('n') if steps => {
                 self.go_to_next();
                 return true;
             }
-            Key::Character('p') if is_episode => self.go_to_previous(),
+            Key::Character('p') if steps => self.go_to_previous(),
             Key::Escape => {
                 self.back_out();
                 return true;
@@ -1341,16 +1357,19 @@ impl PlayerScreen {
     /// Asks the server for the episodes of the show being played, to know
     /// what comes before and after each. All of them, and not the season
     /// alone: the last episode of a season is followed by the first of
-    /// the next.
+    /// the next. A shuffle given on opening has its own order already.
     fn list_episodes(&self) {
         let (ivars, item) = (self.ivars(), self.item());
         let (Kind::Episode, Some(show)) = (item.kind, item.grandparent_rating_key.clone()) else {
             return;
         };
+        if ivars.queue.borrow().is_some() {
+            return;
+        }
         let Some(server) = ivars.server.clone() else {
             match ivars.downloads.episodes(&show) {
                 Ok(episodes) => {
-                    *ivars.episodes.borrow_mut() = Some(episodes);
+                    *ivars.queue.borrow_mut() = Some(Queue::of_show(episodes, &item.rating_key));
                     self.find_neighbours();
                 }
                 Err(error) => eprintln!("plex-rust: show not listed: {}", with_causes(&error)),
@@ -1365,7 +1384,8 @@ impl PlayerScreen {
             };
             match episodes {
                 Ok(episodes) => {
-                    *screen.ivars().episodes.borrow_mut() = Some(episodes);
+                    let queue = Queue::of_show(episodes, &item.rating_key);
+                    *screen.ivars().queue.borrow_mut() = Some(queue);
                     screen.find_neighbours();
                 }
                 // Next and Previous then stay as they are before the answer
@@ -1375,12 +1395,13 @@ impl PlayerScreen {
         });
     }
 
-    /// Works out which episodes are on either side of the one playing.
+    /// Works out which items of the queue are on either side of the one
+    /// playing, and offers the next one on the card that comes up as this
+    /// one ends.
     fn find_neighbours(&self) {
         let (ivars, item) = (self.ivars(), self.item());
-        let episodes = ivars.episodes.borrow();
         let neighbours =
-            episodes.as_ref().map(|episodes| library::neighbours(episodes, &item.rating_key));
+            ivars.queue.borrow().as_ref().map(|queue| queue.neighbours(&item.rating_key));
         if let Some(next) = neighbours.as_ref().and_then(|known| known.next.as_ref()) {
             ivars.controls.up_next.offer(next, &item, ivars.images.as_ref());
         }
@@ -1422,7 +1443,8 @@ impl PlayerScreen {
         Ok(())
     }
 
-    /// Goes to the next episode, if the show is listed and has one.
+    /// Goes to the next item of the queue, if there is a queue and it has
+    /// one.
     fn go_to_next(&self) {
         let next = match &*self.ivars().neighbours.borrow() {
             Some(known) => known.next.clone(),
@@ -1431,9 +1453,10 @@ impl PlayerScreen {
         match next {
             Some(next) => self.switch_to(next),
             None => {
+                let shuffled = self.ivars().queue.borrow().as_ref().is_some_and(Queue::is_shuffled);
                 self.notify(&Notice {
                     symbol: "forward.end.fill",
-                    text: "Last episode",
+                    text: if shuffled { "End of the shuffle" } else { "Last episode" },
                     level: None,
                 });
                 self.show_controls(true);
@@ -1516,6 +1539,9 @@ impl PlayerScreen {
             remote.show(&Playing { item: &item, position: start, duration, rate: 0.0 });
         }
         *ivars.item.borrow_mut() = Rc::new(item);
+        if ivars.remote.borrow().is_some() {
+            self.show_poster();
+        }
         ivars.controls.waiting.show(None);
         self.find_neighbours();
         self.show_controls(true);
@@ -2563,6 +2589,13 @@ impl PlayerScreen {
             eprintln!("plex-rust: {error}");
         }
     }
+}
+
+/// Whether a player that opened on `item` goes from item to item, and so
+/// has a next and a previous one to offer: an episode goes through its
+/// show, and anything goes through a queue it was given.
+fn steps_through(item: &Item, queue: Option<&Queue>) -> bool {
+    item.kind == Kind::Episode || queue.is_some()
 }
 
 /// The file of `item`, as the server describes it.
